@@ -148,17 +148,29 @@ export class RunnerApiAdapter {
     return json as T;
   }
 
+  /**
+   * Тело submit — РОВНО контракт Serverless Agent API (проверено живым прогоном
+   * против Runner'а на песочной VM): `userTaskId`, `engine`, `limits` и
+   * `envAllowlist`; необязательные поля ПРОПУСКАЮТСЯ, а не передаются как null —
+   * Runner отвергает `conversationId: null` / `instructions: null` (400
+   * INVALID_REQUEST: expected non-empty string). Текст задачи едет в
+   * `input.inlinePrompt` (поля `text` в контракте нет: секреты в контракт не
+   * попадают), ссылки — объектами `{ref}`.
+   */
   async submit(input: RunnerSubmitInput): Promise<RunnerReceipt> {
+    const prompt = input.inputText?.trim();
+    const refs = (input.inputRefs ?? []).map((ref) => ({ ref }));
+    const instructions = input.instructions?.trim();
     return this.request<RunnerReceipt>('POST', '/v1/runs', {
       idempotencyKey: input.idempotencyKey,
       body: {
         userTaskId: input.userTaskId,
-        conversationId: input.conversationId ?? null,
         engine: { name: input.engineName ?? 'opencode', adapterVersion: '1' },
-        input: { text: input.inputText ?? null, refs: input.inputRefs ?? [] },
         envAllowlist: [],
         limits: { timeoutMs: input.timeoutMs ?? 300000 },
-        instructions: input.instructions ?? null,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(prompt || refs.length ? { input: { ...(prompt ? { inlinePrompt: prompt } : {}), ...(refs.length ? { refs } : {}) } } : {}),
+        ...(instructions ? { instructions } : {}),
       },
     });
   }

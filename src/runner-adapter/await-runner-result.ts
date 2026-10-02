@@ -25,7 +25,7 @@ export interface AwaitRunnerResultOptions {
 
 export type AwaitRunnerResult =
   | { ok: true; result: RunnerResult; eventsRecorded: number }
-  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' };
+  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
 const RUNNER_EVENT_KIND: Record<string, TaskEventKind> = {
@@ -108,18 +108,28 @@ async function finalize(
     if (!page.hasMore) break;
   }
 
-  const result = await adapter.result(opts.runId);
+const result = await adapter.result(opts.runId);
 
-  // Финализация артефактов: ссылки на сохранённые выходы Runner'а.
-  for (const ref of result.outputRefs) {
+  // Финализация артефактов: ссылки на сохранённые выходы Runner'а. Источников два,
+  // потому что Runner отдаёт их по-разному: `result.outputRefs` — то, что движок
+  // сам положил в результат, а `GET /v1/runs/{runId}/artifacts` — манифесты
+  // зарегистрированных артефактов (живой прогон: регистрация вне контура, и
+  // outputRefs пуст, а артефакт виден только здесь). Дедуп — на уровне ссылки.
+  const manifests = await adapter.artifacts(opts.runId);
+  const byRef = new Map(manifests.map((m) => [m.storageKey || m.artifactId, m]));
+  for (const ref of new Set([...result.outputRefs, ...byRef.keys()])) {
+    const manifest = byRef.get(ref);
     await store.recordArtifact({
       taskId: opts.taskId,
       kind: 'file',
       artifactRef: ref,
+      sizeBytes: manifest?.size ?? null,
+      checksum: manifest?.sha256 ? `sha256:${manifest.sha256}` : null,
       runId: opts.runId,
       generation: opts.generation,
     });
   }
+
 
   if (result.persistence !== 'persisted') {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.
@@ -136,7 +146,7 @@ async function finalize(
       },
       payload: { runId: result.runId, persistence: result.persistence, exitReason: result.exitReason },
     });
-    return { ok: false, reason: 'runner_timeout' };
+    return { ok: false, reason: 'export_not_persisted' };
   }
 
   if (state !== 'succeeded') {
@@ -152,7 +162,7 @@ async function finalize(
       },
       payload: { runId: result.runId, exitReason: result.exitReason, failure: result.failure ?? null },
     });
-    return { ok: false, reason: 'runner_timeout' };
+    return { ok: false, reason: 'runner_failed' };
   }
 
   return { ok: true, result, eventsRecorded };

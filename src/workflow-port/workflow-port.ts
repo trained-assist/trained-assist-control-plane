@@ -48,6 +48,8 @@ export interface SubmitInput extends AdmitTaskInput {
   instructions?: string | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
+  /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
+  runnerEngine?: string;
 }
 
 export interface SubmitResult {
@@ -154,6 +156,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       instructions: input.instructions ?? null,
       runnerPollSec: input.runnerPollSec,
       runnerTimeoutSec: input.runnerTimeoutSec,
+      runnerEngine: input.runnerEngine,
     };
 
     // Экземпляр создаём, если задача новая или события старта попытки ещё не было.

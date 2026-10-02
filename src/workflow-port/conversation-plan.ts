@@ -49,6 +49,8 @@ export interface PlanParams {
   instructions?: string | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
+  /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
+  runnerEngine?: string;
 }
 
 /**
@@ -206,7 +208,7 @@ export async function conversationPlan(
       const receipt = await adapter.submit({
         userTaskId: taskId,
         conversationId: current?.conversation_id ?? null,
-        engineName: 'opencode',
+        engineName: p.runnerEngine ?? 'opencode',
         inputText: p.goal ?? current?.goal ?? null,
         inputRefs: [],
         instructions: p.instructions ?? null,
