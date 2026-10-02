@@ -11,7 +11,23 @@ import type {
   SignalSource,
   TaskStore,
 } from '../taskstore';
+import { logStructured } from '../logging/structured-log';
 import type { PlanParams } from './conversation-plan';
+
+function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
+  if (!userValue) return { route: 'legacy', reason: 'no_user_value' };
+  try {
+    const parsed = JSON.parse(userValue) as Record<string, unknown>;
+    const route = parsed.pilotRoute as string | undefined;
+    const reason = parsed.pilotReason as string | undefined;
+    if (route === 'new-plane' || route === 'legacy') {
+      return { route, reason: reason ?? 'unknown' };
+    }
+  } catch {
+    return { route: 'legacy', reason: 'unparseable_user_value' };
+  }
+  return { route: 'legacy', reason: 'no_pilot_route' };
+}
 
 export interface SubmitInput extends AdmitTaskInput {
   /** Уже начатая попытка (например после resume) — не создавать вторую. */
@@ -35,6 +51,9 @@ export interface SubmitResult {
   instanceCreated: boolean;
   generation: number;
   runId: string | null;
+  /** Маршрутизация пилотом: 'new-plane' или 'legacy'. */
+  pilotRoute: 'new-plane' | 'legacy';
+  pilotReason: string;
 }
 
 export interface SignalResult {
@@ -87,6 +106,31 @@ export class CfWorkflowPort implements WorkflowPortApi {
    */
   async submit(input: SubmitInput): Promise<SubmitResult> {
     const { created, task } = await this.store.admitTask(input);
+    const pilotRoute = parsePilotRoute(task.user_value);
+
+    // Пилотный гейт: cohort — только новые задачи. Legacy-задачи не запускаются
+    // на новом plane вообще; возвращаем маршрут, чтобы вызывающий знал.
+    if (pilotRoute.route === 'legacy') {
+      logStructured({
+        event: 'pilot.route_legacy',
+        level: 'info',
+        profileId: input.profileId,
+        userTaskId: task.id,
+        pilotRoute: 'legacy',
+        pilotReason: pilotRoute.reason,
+      });
+      return {
+        taskId: task.id,
+        instanceId: task.id,
+        created,
+        instanceCreated: false,
+        generation: task.generation,
+        runId: null,
+        pilotRoute: 'legacy',
+        pilotReason: pilotRoute.reason,
+      };
+    }
+
     const params: PlanParams = {
       taskId: task.id,
       generation: task.generation,
@@ -145,7 +189,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       }
     }
 
-    return { taskId: task.id, instanceId: task.id, created, instanceCreated, generation: task.generation, runId };
+    return { taskId: task.id, instanceId: task.id, created, instanceCreated, generation: task.generation, runId, pilotRoute: pilotRoute.route, pilotReason: pilotRoute.reason };
   }
 
   /**
