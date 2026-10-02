@@ -2,10 +2,10 @@
 // Контрольная сторона: submit / signal / cancel / status / recover.
 // Исполнительная сторона (step/sleep/waitFor) — step-ctx.ts; код плана не видит
 // API движка. Логика перенесена из пилота pilots/p-db/cf-workflows/src/port.ts.
-import type { CreateTaskInput, SignalSource, TaskStore } from '../taskstore';
+import type { AdmitTaskInput, SignalSource, TaskStore } from '../taskstore';
 import type { PlanParams } from './conversation-plan';
 
-export interface SubmitInput extends CreateTaskInput {
+export interface SubmitInput extends AdmitTaskInput {
   question?: string;
   waitTimeoutSec?: number;
   crashRunOnce?: boolean;
@@ -66,7 +66,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
    * план дальше живёт асинхронно.
    */
   async submit(input: SubmitInput): Promise<SubmitResult> {
-    const { created, task } = await this.store.createTask(input);
+    const { created, task } = await this.store.admitTask(input);
     const params: PlanParams = {
       taskId: task.id,
       generation: task.generation,

@@ -9,7 +9,7 @@ const nextId = (prefix: string) => `${prefix}-${++seq}-${Date.now()}`;
 
 /** Задача, дошедшая до done с результатом — как ut-cf-181011-deploy в #90. */
 const doneTask = async (store: TaskStore, id = nextId('done')) => {
-  const { task } = await store.createTask({ id, profileId: 'p', goal: 'doom' });
+  const { task } = await store.admitTask({ id, profileId: 'p', goal: 'doom' });
   await store.commit(id, task.generation, {
     status: 'active',
     stage: 'running',
@@ -67,7 +67,7 @@ describe('Guard терминальных состояний (issue #90)', () => 
     const store = new TaskStore(env.DB);
 
     const failedTaskId = nextId('failed');
-    const failedTask = (await store.createTask({ id: failedTaskId, profileId: 'p', goal: 'g' })).task;
+    const failedTask = (await store.admitTask({ id: failedTaskId, profileId: 'p', goal: 'g' })).task;
     await store.commit(failedTaskId, failedTask.generation, { status: 'failed', result: { reason: 'x' } });
     await expect(
       store.commit(failedTaskId, failedTask.generation, { status: 'done', result: { reason: 'recovered' } }),
@@ -76,7 +76,7 @@ describe('Guard терминальных состояний (issue #90)', () => 
     expect((await store.statusRow(failedTaskId))?.result).toEqual({ reason: 'x' });
 
     const cancelledTaskId = nextId('cancelled');
-    const cancelledTask = (await store.createTask({ id: cancelledTaskId, profileId: 'p', goal: 'g' })).task;
+    const cancelledTask = (await store.admitTask({ id: cancelledTaskId, profileId: 'p', goal: 'g' })).task;
     await store.cancel(cancelledTaskId);
     // cancel поднял поколение: запись со старым generation отклоняется fencing'ом,
     // запись с новым — guard'ом терминального статуса.
@@ -135,7 +135,7 @@ describe('Guard терминальных состояний (issue #90)', () => 
   it('терминальный commit закрывает открытое ожидание и снимает проекцию одной транзакцией', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId('auto-close');
-    const { task } = await store.createTask({ id, profileId: 'p', goal: 'g' });
+    const { task } = await store.admitTask({ id, profileId: 'p', goal: 'g' });
     await store.openAwaiting({ taskId: id, kind: 'data', question: '?', respondentScope: 'p' });
 
     await store.commit(id, task.generation, { status: 'done', stage: 'finished', result: { ok: true } });

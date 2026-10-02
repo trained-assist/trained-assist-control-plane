@@ -23,9 +23,22 @@ describe('migration 0001_task_store_v1', () => {
     }
   });
 
-  it('records the migration in d1_migrations', async () => {
-    const row = await env.DB.prepare(`SELECT name FROM d1_migrations WHERE name LIKE '0001%'`).first();
-    expect(row).not.toBeNull();
+  it('records the migrations in d1_migrations', async () => {
+    const rows = await env.DB.prepare(`SELECT name FROM d1_migrations ORDER BY name`).all<{ name: string }>();
+    const names = rows.results.map((r) => r.name);
+    expect(names).toContain('0001_task_store_v1.sql');
+    expect(names).toContain('0002_task_admission.sql');
+  });
+
+  it('0002: ключ приёма UNIQUE по (profile_id, request_id) и реестр принципалов', async () => {
+    expect(await indexSql('idx_tasks_request')).toContain('request_id IS NOT NULL');
+    const tables = await tableNames();
+    expect(tables).toContain('admission_principals');
+    const ddl = await env.DB
+      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='admission_principals'`)
+      .first<{ sql: string }>();
+    expect(ddl?.sql).toContain('scopes');
+    expect(ddl?.sql).toContain('json_valid(scopes)');
   });
 
   it('durable_tasks status allows awaiting_input and terminal statuses', async () => {

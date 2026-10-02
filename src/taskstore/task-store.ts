@@ -28,6 +28,7 @@ import {
   type AwaitingKind,
   type ConversationRow,
   type EventSource,
+  type PrincipalRow,
   type SignalSource,
   type TaskEventKind,
   type TaskEventRow,
@@ -39,7 +40,7 @@ import {
 
 const NON_TERMINAL_SQL = `status NOT IN (${TERMINAL_STATUS_SQL})`;
 
-export interface CreateTaskInput {
+export interface AdmitTaskInput {
   /** userTaskId (§5.1) — id строки durable_tasks. */
   id: string;
   profileId: string;
@@ -48,11 +49,31 @@ export interface CreateTaskInput {
   conversationId?: string | null;
   audienceId?: string | null;
   destinationId?: string | null;
+  /** Ключ идемпотентности приёма (C01 requestId); scope ключа = (profile_id, request_id). */
   requestId?: string | null;
+  /** Сессия-источник (C01 sessionId) -> durable_tasks.origin_session_id. */
+  sessionId?: string | null;
+  /** receiptId квитанции; попадает в task_events.event_id (UNIQUE). */
+  receiptId?: string | null;
+  /** Хэш нормализованного payload: тот же requestId с другим payload = conflict. */
+  envelopeHash?: string | null;
+  /** Поля квитанции/envelope, которые пишутся в payload события task_accepted. */
+  envelope?: Record<string, unknown> | null;
   userValue?: unknown;
   /** Заголовок диалога для conversations при создании разговора. */
   conversationTitle?: string | null;
   source?: EventSource;
+}
+
+/** Квитанция приёма (C01): durable acceptance, не запуск и не результат. */
+export interface AcceptReceipt {
+  receiptId: string;
+  requestId: string | null;
+  userTaskId: string;
+  profileId: string;
+  acceptedAt: number;
+  envelopeHash: string | null;
+  [key: string]: unknown;
 }
 
 export interface CommitOptions {
@@ -115,10 +136,19 @@ export class TaskStore {
   // ---------------------------------------------------------------- задачи
 
   /**
-   * Идемпотентный приём задачи: повтор с тем же userTaskId не создаёт вторую
-   * строку (created=false) и не дублирует событие task_accepted.
+   * Приём задачи (P04/C01): строка диалога + строка задачи + событие
+   * task_accepted с квитанцией (event_id = receiptId) ОДНОЙ D1-транзакцией.
+   *
+   * Идемпотентность: повтор с тем же userTaskId (или тем же (profile_id,
+   * request_id) — UNIQUE idx_tasks_request) не создаёт вторую строку задачи и не
+   * дублирует событие приёма: вставка события защищена NOT EXISTS по
+   * kind='task_accepted'. Возвращается созданная задача и её квитанция.
    */
-  async createTask(input: CreateTaskInput): Promise<{ created: boolean; task: TaskRow }> {
+  async admitTask(input: AdmitTaskInput): Promise<{
+    created: boolean;
+    task: TaskRow;
+    receipt: AcceptReceipt;
+  }> {
     const now = Date.now();
     const stmts: D1PreparedStatement[] = [];
 
@@ -148,9 +178,9 @@ export class TaskStore {
         .prepare(
           `INSERT INTO durable_tasks(
              id, profile_id, project_id, goal, status, stage,
-             conversation_id, audience_id, destination_id, request_id, user_value,
+             conversation_id, audience_id, destination_id, request_id, origin_session_id, user_value,
              generation, created_at, updated_at, revision)
-           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,1,?,?,0)
+           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0)
            ON CONFLICT(id) DO NOTHING`,
         )
         .bind(
@@ -162,31 +192,89 @@ export class TaskStore {
           input.audienceId ?? null,
           input.destinationId ?? null,
           input.requestId ?? null,
+          input.sessionId ?? null,
           input.userValue === undefined ? null : JSON.stringify(input.userValue),
           now,
           now,
         ),
     );
 
-    const results = await this.db.batch(stmts);
-    const created = results[results.length - 1]!.meta.changes === 1;
-    const task = await this.requireTask(input.id);
+    const taskInsertIndex = stmts.length - 1;
+    const receiptPayload: Record<string, unknown> = {
+      ...(input.envelope ?? {}),
+      // C01: квитанция подтверждает durable acceptance, а не запуск/результат.
+      durable: true,
+      receiptId: input.receiptId ?? null,
+      requestId: input.requestId ?? null,
+      envelopeHash: input.envelopeHash ?? null,
+      acceptedAt: now,
+      profileId: input.profileId,
+      goal: input.goal,
+    };
 
-    if (created) {
-      // Отдельная транзакция от создания строки: batch вставляет обе записи без
-      // условия «строка создана именно сейчас», а условие на существование строки
-      // сработало бы и для повторного приёма. Смена статуса (и её событие) всегда
-      // атомарны — см. runTransition().
-      await this.logEvent({
-        taskId: task.id,
-        kind: 'task_accepted',
-        source: input.source ?? 'input',
-        generation: task.generation,
-        statusAfter: task.status,
-        payload: { requestId: input.requestId ?? null, conversationId: input.conversationId ?? null, goal: input.goal },
-      });
-    }
-    return { created, task };
+    // Квитанция пишется только вместе с первой строкой задачи: NOT EXISTS по
+    // kind='task_accepted' делает повторный приём no-op в той же транзакции.
+    stmts.push(
+      this.db
+        .prepare(
+          `INSERT INTO task_events(event_id, user_task_id, kind, status_after, generation, source, payload_json, created_at)
+           SELECT ?, ?,'task_accepted','active',1,?,?,?
+           WHERE NOT EXISTS (SELECT 1 FROM task_events WHERE user_task_id = ? AND kind = 'task_accepted')`,
+        )
+        .bind(
+          input.receiptId ?? null,
+          input.id,
+          input.source ?? 'input',
+          JSON.stringify(receiptPayload),
+          now,
+          input.id,
+        ),
+    );
+
+    const results = await this.db.batch(stmts);
+    const created = results[taskInsertIndex]!.meta.changes === 1;
+    const task = await this.requireTask(input.id);
+    const storedReceipt = await this.acceptReceipt(task.id);
+    return {
+      created,
+      task,
+      receipt: storedReceipt ?? this.receiptFromPayload(task.id, input.profileId, receiptPayload),
+    };
+  }
+
+  private receiptFromPayload(userTaskId: string, profileId: string, payload: Record<string, unknown>): AcceptReceipt {
+    return {
+      receiptId: String(payload.receiptId ?? ''),
+      requestId: (payload.requestId as string | null) ?? null,
+      userTaskId,
+      profileId,
+      acceptedAt: Number(payload.acceptedAt ?? Date.now()),
+      envelopeHash: (payload.envelopeHash as string | null) ?? null,
+      ...payload,
+    };
+  }
+
+  /** Сохранённая квитанция приёма задачи (первое событие task_accepted). */
+  async acceptReceipt(userTaskId: string): Promise<AcceptReceipt | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT event_id, generation, created_at, payload_json FROM task_events
+         WHERE user_task_id = ? AND kind = 'task_accepted' ORDER BY id LIMIT 1`,
+      )
+      .bind(userTaskId)
+      .first<{ event_id: string | null; generation: number | null; created_at: number; payload_json: string }>();
+    if (!row) return null;
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    const task = await this.getTask(userTaskId);
+    return {
+      receiptId: row.event_id ?? String(payload.receiptId ?? ''),
+      requestId: (payload.requestId as string | null) ?? null,
+      userTaskId,
+      profileId: task?.profile_id ?? String(payload.profileId ?? ''),
+      acceptedAt: row.created_at,
+      envelopeHash: (payload.envelopeHash as string | null) ?? null,
+      ...payload,
+    };
   }
 
   async getTask(taskId: string): Promise<TaskRow | null> {
@@ -217,6 +305,52 @@ export class TaskStore {
 
   async getConversation(conversationId: string): Promise<ConversationRow | null> {
     return this.db.prepare(`SELECT * FROM conversations WHERE conversation_id = ?`).bind(conversationId).first();
+  }
+
+  // -------------------------------------------------- принципалы приёма
+
+  /**
+   * Регистр принципалов приёма (P04/C13): identity + профиль + scope.
+   * Секреты здесь не хранятся — проверка credential вне зоны control plane.
+   */
+  async upsertPrincipal(p: {
+    principalId: string;
+    profileId: string;
+    scopes: string[];
+    enabled?: boolean;
+  }): Promise<PrincipalRow> {
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO admission_principals(principal_id, profile_id, scopes, enabled, created_at, updated_at)
+         VALUES(?,?,?,?,?,?)
+         ON CONFLICT(principal_id) DO UPDATE SET
+           profile_id = excluded.profile_id,
+           scopes = excluded.scopes,
+           enabled = excluded.enabled,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(p.principalId, p.profileId, JSON.stringify(p.scopes), p.enabled === false ? 0 : 1, now, now)
+      .run();
+    const row = await this.getPrincipal(p.principalId);
+    if (!row) throw new TaskStoreError(`principal upsert failed: ${p.principalId}`);
+    return row;
+  }
+
+  async getPrincipal(principalId: string): Promise<PrincipalRow | null> {
+    const row = await this.db
+      .prepare(`SELECT * FROM admission_principals WHERE principal_id = ?`)
+      .bind(principalId)
+      .first<{ principal_id: string; profile_id: string; scopes: string; enabled: number; created_at: number; updated_at: number }>();
+    if (!row) return null;
+    return {
+      principalId: row.principal_id,
+      profileId: row.profile_id,
+      scopes: JSON.parse(row.scopes) as string[],
+      enabled: row.enabled === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   // ------------------------------------------------------------ события

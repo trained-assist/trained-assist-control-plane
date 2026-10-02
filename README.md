@@ -2,17 +2,18 @@
 
 Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workflows), поверх них — Input/Router/Output/GTD/Journal/Reporting.
 
-**Статус (02.10.2026): M1.1 и M1.2 реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port).
+**Статус (02.10.2026): M1.1, M1.2 и P04 (приём задачи + durable receipt) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция).
 
 ## Что здесь лежит
 
 | Путь | Что это |
 |---|---|
 | `migrations/0001_task_store_v1.sql` | D1-схема Task Store v1 по [TASK-STORE-SCHEMA-V1 §6](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-STORE-SCHEMA-V1.md): `durable_tasks`, `task_events`, `task_signals`, `awaiting_inputs`, `conversations` |
-| `src/taskstore/` | Репозиторий Task Store: атомарные state/event-переходы, generation fencing, дедуп сигналов, awaiting input, **guard терминальных состояний** (issue #90) |
+| `src/taskstore/` | Репозиторий Task Store: атомарные state/event-переходы, generation fencing, дедуп сигналов, awaiting input, **guard терминальных состояний** (issue #90), приём с квитанцией |
+| `src/intake/` | Приём задачи по контракту C01: envelope, профиль/права (scope), детерминированный userTaskId, durable receipt, идемпотентность по requestId |
 | `src/workflow-port/` | Workflow Port поверх Cloudflare Workflows: `submit/signal/cancel/status/recover`, `StepCtx` для кода планов, демо-план M1.2 |
 | `src/index.ts` | `TaskWorkflow` + HTTP-слой (`/start /signal /cancel /status /recover`) |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 39 тестов |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 51 тест |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -31,12 +32,28 @@ npm run check          # typecheck + test
 ```bash
 npm run db:migrate:local   # применить миграции в локальной D1 (.wrangler/state)
 npm run dev                # терминал 1: wrangler dev на :8787
-./tools/local-smoke.sh     # терминал 2: submit -> дубль -> awaiting -> сигнал -> done -> негативные
+./tools/local-smoke.sh     # терминал 2: приём -> квитанция -> запуск -> ... -> негативные
+```
+
+Локальный sandbox: принципал приёма (identity + scope, без секретов) засеивается в D1:
+
+```bash
+npx wrangler d1 execute control-plane-task-store --local --command \
+  "INSERT OR REPLACE INTO admission_principals(principal_id, profile_id, scopes, enabled, created_at, updated_at)
+   VALUES ('sandbox-local','profile-1','[\"tasks:intake\",\"tasks:read\",\"tasks:signal\"]',1,strftime('%s','now')*1000,strftime('%s','now')*1000)"
 ```
 
 То же руками:
 
 ```bash
+# Приём (P04/C01): квитанция = durable acceptance, НЕ запуск
+curl -X POST localhost:8787/intake -H 'content-type: application/json' -H 'X-Principal: sandbox-local' \
+  -d '{"contractVersion":1,"requestId":"req-1","profileId":"profile-1","inputItems":[{"text":"привет"}]}'
+# -> 201 {"receiptId":"...","userTaskId":"ut-...","durable":true,"duplicate":false}
+# Повтор того же requestId -> 200 с той же квитанцией (duplicate=true);
+# другой payload с тем же ключом -> 409; без X-Principal -> 401 (до любой записи)
+curl "localhost:8787/receipt?taskId=ut-..."   # чтение квитанции
+
 curl -X POST localhost:8787/start  -H 'content-type: application/json' \
   -d '{"taskId":"ut-1","profileId":"demo","goal":"привет"}'
 # ранний ответ: {"taskId":"ut-1","created":true,...} — задача ещё не завершена
@@ -48,7 +65,7 @@ curl -X POST localhost:8787/status -H 'content-type: application/json' -d '{"tas
 # -> status=done, result={"answer":"да","ok":true,"version":"m1-conversation-v1"}
 ```
 
-Итог прогона `tools/local-smoke.sh` (порядок журнала — доказательство сквозной цепочки):
+Итог прогона `tools/local-smoke.sh` (порядок журнала — доказательство сквозной цепочки; приём и запуск — разные шаги, `created=false` на `/start` после приёма):
 
 ```
 task_accepted -> run_started -> step_done -> awaiting_opened -> signal_received
@@ -56,6 +73,14 @@ task_accepted -> run_started -> step_done -> awaiting_opened -> signal_received
 ```
 
 CI на каждый PR: `npm ci` + `npm run typecheck` + `npm test` (`.github/workflows/ci.yml`).
+
+## Приём задачи и квитанция (P04/C01)
+
+- **Envelope** (`src/intake/envelope.ts`): `contractVersion, requestId, conversationRef, sessionId, projectId, audienceId, destinationId, inputItems, requestedExecutionPolicy, replyToRef` — имена из C01. Принципал не приходит из тела: `X-Principal` — проверенная аутентификация (C01), тело несёт только профиль и вход.
+- **Квитанция = durable acceptance** (`requestId, userTaskId, acceptedAt, durable=true`), не запуск и не результат. Выдаётся только после успешного сохранения: строка задачи и событие `task_accepted` (с `event_id = receiptId`) пишутся одной D1-транзакцией; сбой записи квитанции откатывает и задачу (тест с инжектированным триггером).
+- **Идемпотентность**: `UNIQUE(profile_id, request_id)` на `durable_tasks.request_id` (scope ключа включает проверенного вызывающего). Повтор с тем же payload → прежняя квитанция (`duplicate=true`); другой payload с тем же ключом → 409 conflict (хэш канонической формы envelope). `userTaskId` детерминирован от `(profileId, requestId)` — параллельные приёмы одного запроса дают один PK и ровно одну задачу.
+- **Профиль/права**: реестр `admission_principals` (identity + профиль + scope `tasks:intake|tasks:read|tasks:signal`). Неизвестный принципал → 401, чужой профиль или отсутствующий scope → 403 — до любой записи в Task Store. Секреты (API keys, C13) здесь не хранятся: проверка credential — зона credential broker.
+- **Логи** (C12): `intake.accepted / intake.duplicate / intake.conflict / intake.forbidden / intake.unauthorized` с `profileId, userTaskId, requestId, receiptId, reason` — без текста входа и содержимого артефактов.
 
 ## Контрактные решения
 
