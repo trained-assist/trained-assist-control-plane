@@ -17,6 +17,7 @@ import {
 import { IntakeService } from './intake';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { InvalidEnvelopeError } from './intake/envelope';
+import { defaultPilotRouter } from './pilot';
 
 export interface Env {
   DB: D1Database;
@@ -100,9 +101,9 @@ const localDeliveryAdapter: DeliveryAdapter = {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    const store = new TaskStore(env.DB);
-    const port = new CfWorkflowPort(env.TASK_WORKFLOW, store);
-    const intake = new IntakeService(store);
+const store = new TaskStore(env.DB);
+     const port = new CfWorkflowPort(env.TASK_WORKFLOW, store);
+     const intake = new IntakeService(store, defaultPilotRouter);
     const body: Record<string, unknown> =
       req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
@@ -133,20 +134,22 @@ export default {
       // сохранения; повтор с тем же requestId возвращает прежнюю квитанцию.
       if (url.pathname === '/intake') {
         if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-        const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body);
-        return json(
-          {
-            receiptId: result.receipt.receiptId,
-            requestId: result.receipt.requestId,
-            userTaskId: result.userTaskId,
-            profileId: result.receipt.profileId,
-            acceptedAt: result.receipt.acceptedAt,
-            durable: true,
-            duplicate: result.duplicate,
-          },
-          result.duplicate ? 200 : 201,
-        );
-      }
+const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body);
+         return json(
+           {
+             receiptId: result.receipt.receiptId,
+             requestId: result.receipt.requestId,
+             userTaskId: result.userTaskId,
+             profileId: result.receipt.profileId,
+             acceptedAt: result.receipt.acceptedAt,
+             durable: true,
+             duplicate: result.duplicate,
+             pilotRoute: result.pilotRoute ?? null,
+             pilotReason: result.pilotReason ?? null,
+           },
+           result.duplicate ? 200 : 201,
+         );
+       }
       if (url.pathname === '/events') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
         await authorizeTaskRoute(store, req, taskId, 'tasks:read');
@@ -224,8 +227,13 @@ export default {
             waitTimeoutSec: body.waitTimeoutSec as number | undefined,
             crashRunOnce: body.crashRunOnce as boolean | undefined,
           };
-          return json(await port.submit(input));
-        }
+const startResult = await port.submit(input);
+           return json({
+             ...startResult,
+             pilotRoute: startResult.pilotRoute,
+             pilotReason: startResult.pilotReason,
+           });
+         }
         case '/signal':
           await authorizeTaskRoute(store, req, taskId, 'tasks:signal');
           return json(

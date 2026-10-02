@@ -15,6 +15,7 @@ import { logStructured } from '../logging/structured-log';
 import { authorizeIntake, resolvePrincipal, requirePermission } from './authorization';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './errors';
 import { artifactRefsOf, envelopeHash, goalOf, normalizeEnvelope, type IntakeEnvelope } from './envelope';
+import { defaultPilotRouter, type PilotRouter } from '../pilot';
 
 export interface AdmitIdentity {
   /** Проверенный principalId (из аутентификации, не из тела запроса). */
@@ -27,6 +28,9 @@ export interface AdmitResult {
   duplicate: boolean;
   userTaskId: string;
   conversationId: string | null;
+  /** Маршрутизация пилотом на момент приёма. */
+  pilotRoute: 'new-plane' | 'legacy' | null;
+  pilotReason: string | null;
 }
 
 /**
@@ -40,7 +44,10 @@ export async function deriveUserTaskId(profileId: string, requestId: string): Pr
 }
 
 export class IntakeService {
-  constructor(private readonly store: TaskStore) {}
+  constructor(
+    private readonly store: TaskStore,
+    private readonly pilotRouter: PilotRouter = defaultPilotRouter,
+  ) {}
 
   async admit(identity: AdmitIdentity, rawEnvelope: unknown): Promise<AdmitResult> {
     const envelope = normalizeEnvelope(rawEnvelope);
@@ -77,6 +84,13 @@ export class IntakeService {
     const receiptId = crypto.randomUUID();
     const hash = await envelopeHash(envelope);
 
+    const route = await this.pilotRouter.route({
+      profileId,
+      userTaskId,
+      requestId: envelope.requestId,
+      createdAt: Date.now(),
+    });
+
     const { created, receipt } = await this.store.admitTask({
       id: userTaskId,
       profileId,
@@ -96,7 +110,12 @@ export class IntakeService {
         artifactRefs: artifactRefsOf(envelope),
         requestedExecutionPolicy: envelope.requestedExecutionPolicy ?? null,
       },
-      userValue: { inputItems: envelope.inputItems, artifactRefs: artifactRefsOf(envelope) },
+      userValue: {
+        inputItems: envelope.inputItems,
+        artifactRefs: artifactRefsOf(envelope),
+        pilotRoute: route.route,
+        pilotReason: route.reason,
+      },
     });
 
     if (!created) {
@@ -121,18 +140,18 @@ export class IntakeService {
         receiptId: receipt.receiptId,
         reason: 'same_request_id_same_payload',
       });
-      return { receipt, duplicate: true, userTaskId, conversationId: envelope.conversationRef ?? null };
-    }
+return { receipt, duplicate: true, userTaskId, conversationId: envelope.conversationRef ?? null, pilotRoute: null, pilotReason: null };
+     }
 
-    logStructured({
-      event: 'intake.accepted',
-      profileId,
-      userTaskId,
-      requestId: envelope.requestId,
-      receiptId,
-      reason: 'accepted',
-    });
-    return { receipt, duplicate: false, userTaskId, conversationId: envelope.conversationRef ?? null };
+     logStructured({
+       event: 'intake.accepted',
+       profileId,
+       userTaskId,
+       requestId: envelope.requestId,
+       receiptId,
+       reason: 'accepted',
+     });
+     return { receipt, duplicate: false, userTaskId, conversationId: envelope.conversationRef ?? null, pilotRoute: route.route, pilotReason: route.reason };
   }
 }
 
