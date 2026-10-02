@@ -24,7 +24,9 @@ import {
 import {
   TERMINAL_STATUS_SQL,
   isTerminalStatus,
+  type ArtifactRow,
   type AwaitingInputRow,
+  type DeliveryRow,
   type AwaitingKind,
   type ConversationRow,
   type EventSource,
@@ -534,6 +536,281 @@ export class TaskStore {
     return res.results;
   }
 
+  // ------------------------------------------------- доставка (outbox, C02)
+
+  /**
+   * Постановка доставки в outbox (C02: доставка владеет состоянием, а не
+   * вызовом Bot API из агента). Повтор того же logicalMessageId — no-op:
+   * UNIQUE(user_task_id, logical_message_id). Проекция delivery_state на задаче
+   * обновляется той же транзакцией (§5.0.2).
+   */
+  async queueDelivery(input: {
+    taskId: string;
+    logicalMessageId: string;
+    channel: string;
+    message: unknown;
+    eventId?: number | null;
+    conversationId?: string | null;
+    audienceId?: string | null;
+    destinationId?: string | null;
+    nextAttemptAt?: number | null;
+    source?: EventSource;
+  }): Promise<{ delivery: DeliveryRow; queued: boolean }> {
+    const now = Date.now();
+    const deliveryId = crypto.randomUUID();
+    const task = await this.requireTask(input.taskId);
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO deliveries(
+             id, user_task_id, event_id, logical_message_id, conversation_id, audience_id, destination_id,
+             channel, message_json, status, attempt, next_attempt_at, created_at, updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,'pending',0,?,?,?)
+           ON CONFLICT(user_task_id, logical_message_id) DO NOTHING`,
+        )
+        .bind(
+          deliveryId,
+          input.taskId,
+          input.eventId ?? null,
+          input.logicalMessageId,
+          input.conversationId ?? task.conversation_id,
+          input.audienceId ?? task.audience_id,
+          input.destinationId ?? task.destination_id,
+          input.channel,
+          JSON.stringify(input.message ?? {}),
+          input.nextAttemptAt ?? null,
+          now,
+          now,
+        ),
+      this.db
+        .prepare(`UPDATE durable_tasks SET delivery_state = 'pending', updated_at = ? WHERE id = ? AND ${NON_TERMINAL_SQL}`)
+        .bind(now, input.taskId),
+    ]);
+
+    const delivery =
+      (await this.db
+        .prepare(`SELECT * FROM deliveries WHERE user_task_id = ? AND logical_message_id = ?`)
+        .bind(input.taskId, input.logicalMessageId)
+        .first<DeliveryRow>()) ?? null;
+    if (!delivery) throw new TaskStoreError(`delivery enqueue failed for ${input.logicalMessageId}`, input.taskId);
+
+    if (results[0]!.meta.changes === 1) {
+      await this.logEvent({
+        taskId: input.taskId,
+        kind: 'delivery_queued',
+        generation: task.generation,
+        source: input.source ?? 'output',
+        payload: { deliveryId: delivery.id, logicalMessageId: input.logicalMessageId, channel: input.channel },
+      });
+      return { delivery, queued: true };
+    }
+    return { delivery, queued: false };
+  }
+
+  async listDeliveries(taskId: string): Promise<DeliveryRow[]> {
+    const res = await this.db
+      .prepare(`SELECT * FROM deliveries WHERE user_task_id = ? ORDER BY created_at, id`)
+      .bind(taskId)
+      .all<DeliveryRow>();
+    return res.results;
+  }
+
+  /**
+   * Забрать одну доставку из outbox (единственный владелец доставки): атомарно
+   * переводит pending -> accepted и увеличивает attempt. Два владельца не могут
+   * получить одну строку: UPDATE с подзапросом выполняется одним оператором.
+   * Возврат null — работать нечего.
+   */
+  async claimDelivery(
+    owner: string,
+    opts: { channel?: string | null; now?: number; leaseSec?: number } = {},
+  ): Promise<DeliveryRow | null> {
+    const now = opts.now ?? Date.now();
+    const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
+    const claimed = await this.db
+      .prepare(
+        `UPDATE deliveries SET status = 'accepted', attempt = attempt + 1, next_attempt_at = ?, updated_at = ?
+         WHERE id = (
+           SELECT id FROM deliveries
+           WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+             AND (? IS NULL OR channel = ?)
+           ORDER BY created_at, id LIMIT 1
+         )
+         RETURNING *`,
+      )
+      .bind(leaseUntil, now, now, opts.channel ?? null, opts.channel ?? null)
+      .first<DeliveryRow>();
+    // Claim — внутренняя учётная запись владельца доставки, не событие канала:
+    // в лексике A2 §5.2 и C02 такого события нет.
+    if (!claimed) return null;
+    void owner;
+    return claimed;
+  }
+
+  /** Провайдер принял: status='delivered' + проекция delivery_state. */
+  async confirmDelivery(deliveryId: string, opts: { providerMessageId?: string | null } = {}): Promise<DeliveryRow> {
+    const now = Date.now();
+    const delivery = await this.requireDelivery(deliveryId);
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE deliveries SET status = 'delivered', provider_message_id = ?, next_attempt_at = NULL, last_error = NULL, updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(opts.providerMessageId ?? null, now, deliveryId),
+      this.db
+        .prepare(`UPDATE durable_tasks SET delivery_state = 'delivered', updated_at = ? WHERE id = ?`)
+        .bind(now, delivery.user_task_id),
+    ]);
+    if (results[0]!.meta.changes !== 1) throw new TaskStoreError(`delivery confirm failed: ${deliveryId}`);
+    await this.logEvent({
+      taskId: delivery.user_task_id,
+      kind: 'delivery_sent',
+      source: 'output',
+      payload: {
+        deliveryId,
+        providerMessageId: opts.providerMessageId ?? null,
+        attempt: delivery.attempt,
+      },
+    });
+    return this.requireDelivery(deliveryId);
+  }
+
+  /**
+   * Провал отправки: bounded retry. Попытка исчерпана -> failed без нового
+   * next_attempt_at. Повтор доставки трогает ТОЛЬКО строку deliveries:
+   * задача, попытки и шаги не перезапускаются (шаг 6 эпика).
+   */
+  async failDelivery(
+    deliveryId: string,
+    opts: { error: string; retryAfterSec?: number; maxAttempts?: number } = { error: 'unknown' },
+  ): Promise<DeliveryRow> {
+    const now = Date.now();
+    const delivery = await this.requireDelivery(deliveryId);
+    const maxAttempts = opts.maxAttempts ?? 3;
+    const exhausted = delivery.attempt >= maxAttempts;
+    const nextAttemptAt = exhausted ? null : now + (opts.retryAfterSec ?? 60) * 1000;
+
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE deliveries
+           SET status = ?, last_error = ?, next_attempt_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(exhausted ? 'failed' : 'pending', opts.error, nextAttemptAt, now, deliveryId),
+      this.db
+        .prepare(`UPDATE durable_tasks SET delivery_state = ?, updated_at = ? WHERE id = ?`)
+        .bind(exhausted ? 'failed' : 'pending', now, delivery.user_task_id),
+    ]);
+    if (results[0]!.meta.changes !== 1) throw new TaskStoreError(`delivery fail record failed: ${deliveryId}`);
+    await this.logEvent({
+      taskId: delivery.user_task_id,
+      kind: 'delivery_failed',
+      source: 'output',
+      payload: {
+        deliveryId,
+        attempt: delivery.attempt,
+        maxAttempts,
+        exhausted,
+        nextAttemptAt,
+        reason: opts.error,
+      },
+    });
+    return this.requireDelivery(deliveryId);
+  }
+
+  /**
+   * Подтверждённая отмена подавляет технический retry доставки (C03: «Stop
+   * suppresses technical retries включая outbox»). Артефакты при этом НЕ
+   * трогаются: файлы переживают остановку (ARCHITECTURE §4.6).
+   */
+  async suppressPendingDeliveries(taskId: string, reason = 'suppressed_by_cancel'): Promise<number> {
+    const now = Date.now();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE deliveries SET status = 'failed', last_error = ?, next_attempt_at = NULL, updated_at = ?
+           WHERE user_task_id = ? AND status IN ('pending','accepted')`,
+        )
+        .bind(reason, now, taskId),
+    ]);
+    return results[0]!.meta.changes;
+  }
+
+  async requireDelivery(deliveryId: string): Promise<DeliveryRow> {
+    const row = await this.db.prepare(`SELECT * FROM deliveries WHERE id = ?`).bind(deliveryId).first<DeliveryRow>();
+    if (!row) throw new TaskStoreError(`delivery not found: ${deliveryId}`);
+    return row;
+  }
+
+  // ------------------------------------------------------ артефакты
+
+  /**
+   * Ссылка на артефакт: байты в Artifact Storage, здесь только ссылка, владелец,
+   * размер и контрольная сумма (ARCHITECTURE §4.1). Повторная запись той же
+   * ссылки — no-op (UNIQUE). Отмена задачи артефакты не удаляет.
+   */
+  async recordArtifact(input: {
+    taskId: string;
+    kind: string;
+    artifactRef: string;
+    sizeBytes?: number | null;
+    checksum?: string | null;
+    runId?: string | null;
+    generation?: number | null;
+  }): Promise<{ artifact: ArtifactRow; created: boolean }> {
+    const now = Date.now();
+    const artifactId = crypto.randomUUID();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO task_artifacts(artifact_id, user_task_id, kind, artifact_ref, size_bytes, checksum, run_id, created_at)
+           VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(user_task_id, artifact_ref) DO NOTHING`,
+        )
+        .bind(
+          artifactId,
+          input.taskId,
+          input.kind,
+          input.artifactRef,
+          input.sizeBytes ?? null,
+          input.checksum ?? null,
+          input.runId ?? null,
+          now,
+        ),
+    ]);
+    const artifact = (await this.db
+      .prepare(`SELECT * FROM task_artifacts WHERE user_task_id = ? AND artifact_ref = ?`)
+      .bind(input.taskId, input.artifactRef)
+      .first<ArtifactRow>()) ?? null;
+    if (!artifact) throw new TaskStoreError(`artifact record failed: ${input.artifactRef}`, input.taskId);
+    if (results[0]!.meta.changes === 1) {
+      await this.logEvent({
+        taskId: input.taskId,
+        kind: 'result_ready',
+        generation: input.generation ?? (await this.requireTask(input.taskId)).generation,
+        source: 'output',
+        payload: {
+          artifactId: artifact.artifact_id,
+          artifactRef: input.artifactRef,
+          kind: input.kind,
+          runId: input.runId ?? null,
+        },
+      });
+      return { artifact, created: true };
+    }
+    return { artifact, created: false };
+  }
+
+  async listArtifacts(taskId: string): Promise<ArtifactRow[]> {
+    const res = await this.db
+      .prepare(`SELECT * FROM task_artifacts WHERE user_task_id = ? ORDER BY created_at, artifact_id`)
+      .bind(taskId)
+      .all<ArtifactRow>();
+    return res.results;
+  }
+
   // -------------------------------------------------- принципалы приёма
 
   /**
@@ -976,6 +1253,8 @@ export class TaskStore {
       return { cancelled: false, generation: row.generation, status: row.status };
     }
 
+    // Подтверждённая остановка подавляет retry доставки этой задачи (C03).
+    const suppressed = await this.suppressPendingDeliveries(taskId);
     const after = await this.requireTask(taskId);
     await this.logEvent({
       taskId,
@@ -984,7 +1263,12 @@ export class TaskStore {
       statusAfter: 'cancelled',
       generation: after.generation,
       source,
-      payload: { reason: opts.reason ?? null, closedAwaiting: true, stopConfirmed: true },
+      payload: {
+        reason: opts.reason ?? null,
+        closedAwaiting: true,
+        stopConfirmed: true,
+        deliveriesSuppressed: suppressed,
+      },
     });
     return { cancelled: true, generation: after.generation, status: 'cancelled' };
   }
