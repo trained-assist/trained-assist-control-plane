@@ -2,7 +2,7 @@
 
 Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workflows), поверх них — Input/Router/Output/GTD/Journal/Reporting.
 
-**Статус (02.10.2026): M1.1, M1.2 и P04 (приём задачи + durable receipt) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция).
+**Статус (02.10.2026): M1.1, M1.2, P04 (приём+квитанция) и P05/P06 (поток событий, replay, восстановление) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
 
 ## Что здесь лежит
 
@@ -11,9 +11,10 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `migrations/0001_task_store_v1.sql` | D1-схема Task Store v1 по [TASK-STORE-SCHEMA-V1 §6](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-STORE-SCHEMA-V1.md): `durable_tasks`, `task_events`, `task_signals`, `awaiting_inputs`, `conversations` |
 | `src/taskstore/` | Репозиторий Task Store: атомарные state/event-переходы, generation fencing, дедуп сигналов, awaiting input, **guard терминальных состояний** (issue #90), приём с квитанцией |
 | `src/intake/` | Приём задачи по контракту C01: envelope, профиль/права (scope), детерминированный userTaskId, durable receipt, идемпотентность по requestId |
+| `src/events/` | Поток событий C02: envelope с курсором (sequence = task_events.id), тип выводится из kind журнала |
 | `src/workflow-port/` | Workflow Port поверх Cloudflare Workflows: `submit/signal/cancel/status/recover`, `StepCtx` для кода планов, демо-план M1.2 |
 | `src/index.ts` | `TaskWorkflow` + HTTP-слой (`/start /signal /cancel /status /recover`) |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 51 тест |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 63 теста |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -40,7 +41,7 @@ npm run dev                # терминал 1: wrangler dev на :8787
 ```bash
 npx wrangler d1 execute control-plane-task-store --local --command \
   "INSERT OR REPLACE INTO admission_principals(principal_id, profile_id, scopes, enabled, created_at, updated_at)
-   VALUES ('sandbox-local','profile-1','[\"tasks:intake\",\"tasks:read\",\"tasks:signal\"]',1,strftime('%s','now')*1000,strftime('%s','now')*1000)"
+   VALUES ('sandbox-local','profile-1','[\"tasks:intake\",\"tasks:read\",\"tasks:signal\",\"tasks:control\"]',1,strftime('%s','now')*1000,strftime('%s','now')*1000)"
 ```
 
 То же руками:
@@ -81,6 +82,16 @@ CI на каждый PR: `npm ci` + `npm run typecheck` + `npm test` (`.github/w
 - **Идемпотентность**: `UNIQUE(profile_id, request_id)` на `durable_tasks.request_id` (scope ключа включает проверенного вызывающего). Повтор с тем же payload → прежняя квитанция (`duplicate=true`); другой payload с тем же ключом → 409 conflict (хэш канонической формы envelope). `userTaskId` детерминирован от `(profileId, requestId)` — параллельные приёмы одного запроса дают один PK и ровно одну задачу.
 - **Профиль/права**: реестр `admission_principals` (identity + профиль + scope `tasks:intake|tasks:read|tasks:signal`). Неизвестный принципал → 401, чужой профиль или отсутствующий scope → 403 — до любой записи в Task Store. Секреты (API keys, C13) здесь не хранятся: проверка credential — зона credential broker.
 - **Логи** (C12): `intake.accepted / intake.duplicate / intake.conflict / intake.forbidden / intake.unauthorized` с `profileId, userTaskId, requestId, receiptId, reason` — без текста входа и содержимого артефактов.
+
+## Поток событий, replay и восстановление (P05/P06)
+
+- **Курсор событий (C02)**: `GET /events?taskId&after&limit` — страницы по `sequence` (= `task_events.id`), `nextCursor`/`hasMore`; разрыв потока не теряет итог: переподключение с последним курсором воспроизводит недостающие события и финальный результат. Envelope C02 (`eventId, userTaskId, runId?, sequence, type, occurredAt, payload, artifactRefs?`) строится поверх журнала `task_events`, второй журнал не заводится; тип выводится из `kind` (`task_accepted→accepted`, `run_started→started`, `awaiting_opened→waiting`, `task_status_changed→result_ready|task_failed|stopped` по `status_after`).
+- **Replay без rerun**: `POST /replay {taskId, fromStep?}` — перезапуск экземпляра с сохранением кэша шагов; план идемпотентен (повторный `prepare` не меняет состояние, `mark-awaiting` возвращает существующий `awaitingInputId`), при рестарте после терминала план выходит без шагов.
+- **status — только чтение** (P05: «status не запускает агента»): `GET /status` не создаёт событий, не меняет `revision`/`generation` и не запускает попыток. Фазы различимы по контрактным полям: `status`+`stage` задачи (`active/queued → awaiting_input/waiting_input → done/finished`) и `status` попытки (`running`).
+- **cancel requested ≠ stopped (C03/AC-67)**: `POST /cancel` сначала пишет `cancel_requested` и поднимает поколение (fencing), затем останавливает экземпляр; `status='cancelled'` ставится только после подтверждения остановки. Сбой `terminate` оставляет задачу не-терминальной с видимым `cancel_requested`. Отмена адресна: затронута только своя задача.
+- **Потеря связи = отдельное состояние** (P06, ARCHITECTURE §4.6): `POST /connection-lost {runId}` → попытка `unknown` с `error_class='connection_lost'`, `finished_at = NULL` (исход неизвестен, это не `failed`); задача не меняется. `POST /heartbeat {runId}` продлевает lease. Истечение lease — только сводка (`sweepExpiredLeases`), ни timeout, ни lease сами по себе не запускают агента повторно.
+- **Возобновление (AC-69)**: `POST /resume {taskId, reason?, instructions?}` — новый `runId`, тот же `userTaskId`, поколение поднято (старая попытка лишена прав), прежний экземпляр остановлен и удалён, новый запущен с новым поколением. Повтор сигнала дедуплицируется по ключу.
+- **Таблица `executions`** (имя и состав из A2 §6): попытки с `runId`, `generation`, `lease_until`, `last_heartbeat_at`. Статусы: `running/unknown/success/failed/interrupted/cancelled/waiting`; `unknown` — исход неизвестен, не `failed`.
 
 ## Контрактные решения
 

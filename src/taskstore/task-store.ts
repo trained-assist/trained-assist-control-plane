@@ -29,6 +29,7 @@ import {
   type ConversationRow,
   type EventSource,
   type PrincipalRow,
+  type RunAttemptRow,
   type SignalSource,
   type TaskEventKind,
   type TaskEventRow,
@@ -254,6 +255,30 @@ export class TaskStore {
     };
   }
 
+  // ------------------------------------------------- поток событий (C02)
+
+  /**
+   * События задачи с курсором (C02: «внутренний event store сохраняет порядок по
+   * task/session stream и поддерживает cursor/replay»). Курсор — task_events.id
+   * (монотонный sequence); `after` — последний виденный sequence.
+   */
+  async eventsAfter(
+    taskId: string,
+    after: number | null,
+    limit = 100,
+  ): Promise<{ events: TaskEventRow[]; nextCursor: number | null; hasMore: boolean }> {
+    const safeLimit = Math.min(Math.max(1, limit), 500);
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM task_events WHERE user_task_id = ? AND id > ? ORDER BY id LIMIT ?`,
+      )
+      .bind(taskId, after ?? 0, safeLimit)
+      .all<TaskEventRow>();
+    const events = res.results;
+    const hasMore = events.length === safeLimit;
+    return { events, nextCursor: events.length ? events[events.length - 1]!.id : after, hasMore };
+  }
+
   /** Сохранённая квитанция приёма задачи (первое событие task_accepted). */
   async acceptReceipt(userTaskId: string): Promise<AcceptReceipt | null> {
     const row = await this.db
@@ -305,6 +330,208 @@ export class TaskStore {
 
   async getConversation(conversationId: string): Promise<ConversationRow | null> {
     return this.db.prepare(`SELECT * FROM conversations WHERE conversation_id = ?`).bind(conversationId).first();
+  }
+
+  // --------------------------------------------- попытки исполнения (runId)
+
+  /**
+   * Старт попытки: строка executions (status='running') + событие run_started.
+   * Терминальной задаче попытку не начинаем.
+   */
+  async startRun(
+    taskId: string,
+    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number } = { generation: 1 },
+  ): Promise<RunAttemptRow> {
+    const task = await this.requireTask(taskId);
+    if (isTerminalStatus(task.status)) {
+      throw new TaskStoreError(`cannot start run on terminal task ${taskId} (${task.status})`, taskId);
+    }
+    const now = Date.now();
+    const runId = crypto.randomUUID();
+    const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
+    await this.db
+      .prepare(
+        `INSERT INTO executions(id, task_id, session_id, engine, model, status, generation, started_at, last_heartbeat_at, lease_until)
+         VALUES(?,?,?,?,?,'running',?,?,?,?)`,
+      )
+      .bind(
+        runId,
+        task.id,
+        opts.sessionId ?? null,
+        opts.engine ?? null,
+        null,
+        opts.generation,
+        now,
+        now,
+        leaseUntil,
+      )
+      .run();
+    await this.logEvent({
+      taskId: task.id,
+      kind: 'run_started',
+      generation: opts.generation,
+      source: 'executor',
+      payload: { runId, engine: opts.engine ?? null, sessionId: opts.sessionId ?? null, leaseUntil },
+    });
+    return this.requireRun(runId);
+  }
+
+  async getRun(runId: string): Promise<RunAttemptRow | null> {
+    const row = await this.db.prepare(`SELECT * FROM executions WHERE id = ?`).bind(runId).first<RunAttemptRow>();
+    return row ?? null;
+  }
+
+  async requireRun(runId: string): Promise<RunAttemptRow> {
+    const row = await this.getRun(runId);
+    if (!row) throw new TaskStoreError(`run not found: ${runId}`);
+    return row;
+  }
+
+  async listRuns(taskId: string): Promise<RunAttemptRow[]> {
+    const res = await this.db
+      .prepare(`SELECT * FROM executions WHERE task_id = ? ORDER BY started_at, id`)
+      .bind(taskId)
+      .all<RunAttemptRow>();
+    return res.results;
+  }
+
+  /** Активная (running) попытка задачи — для cancel/stop. */
+  async activeRun(taskId: string): Promise<RunAttemptRow | null> {
+    const res = await this.db
+      .prepare(`SELECT * FROM executions WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC, id DESC LIMIT 1`)
+      .bind(taskId)
+      .first<RunAttemptRow>();
+    return res ?? null;
+  }
+
+  /** Heartbeat: продлевает lease. Не меняет статус попытки. */
+  async heartbeat(runId: string, leaseSec = 600): Promise<RunAttemptRow> {
+    const now = Date.now();
+    const results = await this.db.batch([
+      this.db
+        .prepare(`UPDATE executions SET last_heartbeat_at = ?, lease_until = ? WHERE id = ? AND status = 'running'`)
+        .bind(now, now + leaseSec * 1000, runId),
+    ]);
+    if (results[0]!.meta.changes !== 1) {
+      const run = await this.getRun(runId);
+      throw new TaskStoreError(`heartbeat rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
+    }
+    return this.requireRun(runId);
+  }
+
+  /**
+   * Потеря связи (ARCHITECTURE §4.6): попытка переходит в 'unknown' — исход
+   * неизвестен, это НЕ 'failed'. Задача не меняется: ни timeout, ни истечение
+   * lease сами по себе не запускают агента повторно.
+   */
+  async markConnectionLost(runId: string, reason = 'connection_lost'): Promise<RunAttemptRow> {
+    const now = Date.now();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE executions SET status = 'unknown', error_class = 'connection_lost', error_text = ?
+           WHERE id = ? AND status = 'running'`,
+        )
+        .bind(reason, runId),
+    ]);
+    if (results[0]!.meta.changes !== 1) {
+      const run = await this.getRun(runId);
+      throw new TaskStoreError(`connection_lost rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
+    }
+    const task = await this.getTask((await this.requireRun(runId)).task_id);
+    await this.logEvent({
+      taskId: task?.id ?? '',
+      kind: 'error',
+      source: 'executor',
+      payload: { class: 'connection_lost', runId, reason, outcome: 'unknown' },
+    });
+    return this.requireRun(runId);
+  }
+
+  /**
+   * Завершение попытки с исходом (success/failed/interrupted/cancelled).
+   * Исход 'unknown' (connection_lost) — не завершение: попытка остаётся
+   * незакрытой, см. markConnectionLost().
+   */
+  async finishRun(
+    runId: string,
+    outcome: 'success' | 'failed' | 'interrupted' | 'cancelled',
+    opts: { errorClass?: string | null; errorText?: string | null; result?: unknown } = {},
+  ): Promise<RunAttemptRow> {
+    const now = Date.now();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE executions SET status = ?, finished_at = ?, error_class = ?, error_text = ?, result_json = ?
+           WHERE id = ?`,
+        )
+        .bind(
+          outcome,
+          now,
+          opts.errorClass ?? null,
+          opts.errorText ?? null,
+          opts.result === undefined ? null : JSON.stringify(opts.result),
+          runId,
+        ),
+    ]);
+    if (results[0]!.meta.changes !== 1) {
+      const run = await this.getRun(runId);
+      throw new TaskStoreError(`finish rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
+    }
+    const run = await this.requireRun(runId);
+    await this.logEvent({
+      taskId: run.task_id,
+      kind: 'run_finished',
+      generation: run.generation,
+      source: 'executor',
+      payload: { runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null },
+    });
+    return run;
+  }
+
+  /**
+   * Возобновление задачи после потери связи (A3 §3.2.5): НОВЫЙ runId, тот же
+   * userTaskId, поколение поднято — прежняя попытка лишена прав на запись.
+   */
+  async resumeRun(
+    taskId: string,
+    opts: { reason?: string; instructions?: string; engine?: string | null; sessionId?: string | null; leaseSec?: number } = {},
+  ): Promise<{ run: RunAttemptRow; generation: number }> {
+    const task = await this.requireTask(taskId);
+    if (isTerminalStatus(task.status)) {
+      throw new TaskStoreError(`cannot resume terminal task ${taskId} (${task.status})`, taskId);
+    }
+    const generation = await this.bumpGeneration(taskId, { reason: opts.reason ?? 'resume', source: 'gateway' });
+    const run = await this.startRun(taskId, {
+      generation,
+      engine: opts.engine ?? null,
+      sessionId: opts.sessionId ?? null,
+      leaseSec: opts.leaseSec,
+    });
+    await this.logEvent({
+      taskId,
+      kind: 'run_started',
+      generation,
+      source: 'gateway',
+      payload: { runId: run.id, resumed: true, reason: opts.reason ?? null, instructions: opts.instructions ?? null },
+    });
+    return { run, generation };
+  }
+
+  /**
+   * Истечение аренды — только СВОДКА кандидатов, без действий: ни timeout, ни
+   * lease сами по себе не запускают агента повторно (ARCHITECTURE §4.6).
+   * Перезапуск — отдельное решение (resumeRun).
+   */
+  async sweepExpiredLeases(now: number = Date.now()): Promise<RunAttemptRow[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM executions WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < ?
+         ORDER BY lease_until`,
+      )
+      .bind(now)
+      .all<RunAttemptRow>();
+    return res.results;
   }
 
   // -------------------------------------------------- принципалы приёма
@@ -658,14 +885,14 @@ export class TaskStore {
   }
 
   /**
-   * Отмена (INV-08): status='cancelled' + generation+1 + закрытие открытых
-   * ожиданий одной транзакцией. Записи in-flight исполнителей с прежним
-   * поколением отклоняются дальше (fencing).
+   * Запрос на отмену (C03 «stop requested»): событие cancel_requested + подъём
+   * поколения (fencing прежней попытки), но статус задачи НЕ меняется —
+   * «requested» не выдаётся за «stopped».
    */
-  async cancel(
+  async requestCancel(
     taskId: string,
     opts: { source?: EventSource; reason?: string } = {},
-  ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
+  ): Promise<{ requested: boolean; generation: number; status: TaskStatus }> {
     const now = Date.now();
     const before = await this.getTask(taskId);
     if (!before) throw new TaskNotFoundError(taskId);
@@ -680,21 +907,17 @@ export class TaskStore {
         source,
         payload: { rejected: 'terminal_state', status: before.status },
       });
-      return { cancelled: false, status: before.status };
+      return { requested: false, generation: before.generation, status: before.status };
     }
 
     const results = await this.db.batch([
       this.db
         .prepare(
-          `UPDATE durable_tasks SET generation = generation + 1, status = 'cancelled', updated_at = ?, revision = revision + 1
+          `UPDATE durable_tasks SET generation = generation + 1, updated_at = ?, revision = revision + 1
            WHERE id = ? AND ${NON_TERMINAL_SQL}`,
         )
         .bind(now, taskId),
-      this.db
-        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'`)
-        .bind(taskId),
     ]);
-
     if (results[0]!.meta.changes !== 1) {
       const row = await this.requireTask(taskId);
       await this.logEvent({
@@ -705,7 +928,52 @@ export class TaskStore {
         source,
         payload: { rejected: 'terminal_state', status: row.status },
       });
-      return { cancelled: false, status: row.status };
+      return { requested: false, generation: row.generation, status: row.status };
+    }
+    const after = await this.requireTask(taskId);
+    await this.logEvent({
+      taskId,
+      kind: 'cancel_requested',
+      statusBefore: before.status,
+      statusAfter: null,
+      generation: after.generation,
+      source,
+      payload: { reason: opts.reason ?? null, stopRequested: true },
+    });
+    return { requested: true, generation: after.generation, status: after.status };
+  }
+
+  /**
+   * Подтверждение отмены (C03 «stopped»): процесс остановлен — только теперь
+   * status='cancelled' + закрытие открытых ожиданий одной транзакцией.
+   */
+  async confirmCancel(
+    taskId: string,
+    opts: { source?: EventSource; reason?: string } = {},
+  ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
+    const now = Date.now();
+    const before = await this.getTask(taskId);
+    if (!before) throw new TaskNotFoundError(taskId);
+    const source = opts.source ?? 'gateway';
+
+    if (isTerminalStatus(before.status)) {
+      return { cancelled: false, generation: before.generation, status: before.status };
+    }
+
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE durable_tasks SET status = 'cancelled', updated_at = ?, revision = revision + 1
+           WHERE id = ? AND ${NON_TERMINAL_SQL}`,
+        )
+        .bind(now, taskId),
+      this.db
+        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'`)
+        .bind(taskId),
+    ]);
+    if (results[0]!.meta.changes !== 1) {
+      const row = await this.requireTask(taskId);
+      return { cancelled: false, generation: row.generation, status: row.status };
     }
 
     const after = await this.requireTask(taskId);
@@ -716,9 +984,24 @@ export class TaskStore {
       statusAfter: 'cancelled',
       generation: after.generation,
       source,
-      payload: { reason: opts.reason ?? null, closedAwaiting: true },
+      payload: { reason: opts.reason ?? null, closedAwaiting: true, stopConfirmed: true },
     });
     return { cancelled: true, generation: after.generation, status: 'cancelled' };
+  }
+
+  /**
+   * Отмена одной операцией (INV-08): запрос + подтверждение. Порт вызывает
+   * requestCancel/confirmCancel раздельно, чтобы не выдавать requested за stopped.
+   */
+  async cancel(
+    taskId: string,
+    opts: { source?: EventSource; reason?: string } = {},
+  ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
+    const requested = await this.requestCancel(taskId, opts);
+    if (!requested.requested) {
+      return { cancelled: false, generation: requested.generation, status: requested.status };
+    }
+    return this.confirmCancel(taskId, opts);
   }
 
   // ------------------------------------------------------------ сигналы
