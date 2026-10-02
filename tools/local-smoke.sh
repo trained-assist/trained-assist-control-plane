@@ -44,7 +44,7 @@ wait_status() {
 if command -v npx >/dev/null 2>&1; then
   npx wrangler d1 execute control-plane-task-store --local --command \
     "INSERT OR REPLACE INTO admission_principals(principal_id, profile_id, scopes, enabled, created_at, updated_at)
-     VALUES ('$PRINCIPAL','$PROFILE','[\"tasks:intake\",\"tasks:read\",\"tasks:signal\"]',1,strftime('%s','now')*1000,strftime('%s','now')*1000)" \
+     VALUES ('$PRINCIPAL','$PROFILE','[\"tasks:intake\",\"tasks:read\",\"tasks:signal\",\"tasks:control\"]',1,strftime('%s','now')*1000,strftime('%s','now')*1000)" \
     >/dev/null 2>&1 || echo "WARN: не удалось засеять принципал (продолжим; приём упадёт с 401)"
 fi
 
@@ -123,5 +123,61 @@ echo "$DUP_SIG" | py 'import json,sys; d=json.load(sys.stdin); assert d["duplica
 AFTER="$(post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; t=json.load(sys.stdin)["taskStore"]; print(t["revision"], json.dumps(t["result"]))')"
 [ "$BEFORE" = "$AFTER" ] || { echo "FAIL: статус/результат изменились: $BEFORE -> $AFTER" >&2; exit 1; }
 echo "OK: revision+result не изменились ($AFTER)"
+
+echo "== 8. потеря связи и возобновление (P06) =="
+REQ2="req-smoke-$(date +%s)"
+INTAKE2="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ2\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"resume smoke\"}]}")"
+TASK2="$(echo "$INTAKE2" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+START2="$(post /start "{\"taskId\":\"$TASK2\",\"profileId\":\"$PROFILE\",\"goal\":\"resume smoke\"}")"
+RUN2="$(echo "$START2" | py 'import json,sys; print(json.load(sys.stdin)["runId"])')"
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$TASK2\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "awaiting_input" ] && break
+  sleep 0.5
+done
+[ "$st" = "awaiting_input" ] || { echo "FAIL: задача 2 не дождалась ($st)" >&2; exit 1; }
+
+LOST="$(post /connection-lost "{\"runId\":\"$RUN2\",\"reason\":\"heartbeat lost\"}")"
+echo "$LOST" | py 'import json,sys; d=json.load(sys.stdin); assert d["status"]=="unknown" and d["errorClass"]=="connection_lost", d' || exit 1
+echo "OK: попытка unknown (не failed), задача не изменилась: $(post /status "{\"taskId\":\"$TASK2\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')"
+
+RESUMED="$(post /resume "{\"taskId\":\"$TASK2\",\"reason\":\"reconnect\",\"instructions\":\"продолжить\"}")"
+echo "$RESUMED" | py 'import json,sys; d=json.load(sys.stdin); assert d["runId"]!="'"$RUN2"'", d; print("OK: новый runId, generation =", d["generation"])'
+
+SIG2="$(post /signal "{\"taskId\":\"$TASK2\",\"type\":\"user_reply\",\"payload\":{\"answer\":\"да\"},\"idempotencyKey\":\"web:resume-smoke\"}")"
+echo "$SIG2" | py 'import json,sys; d=json.load(sys.stdin); assert d["delivered"] is True, d' || exit 1
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$TASK2\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "done" ] && break
+  sleep 0.5
+done
+[ "$st" = "done" ] || { echo "FAIL: задача 2 не дошла до done ($st)" >&2; exit 1; }
+echo "OK: после resume задача 2 дошла до done"
+
+echo "== 9. поток событий с курсором (P05/C02) =="
+python3 - "$TASK" "$BASE" "$PRINCIPAL" <<'PYEOF'
+import json, sys, urllib.request
+task_id, base = sys.argv[1], sys.argv[2]
+principal = sys.argv[3] if len(sys.argv) > 3 else "sandbox-local"
+def fetch(url):
+    req = urllib.request.Request(url, headers={"X-Principal": principal})
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+seen, cursor = [], None
+while True:
+    url = f"{base}/events?taskId={task_id}&limit=2" + (f"&after={cursor}" if cursor else "")
+    page = fetch(url)
+    seen.extend(e["sequence"] for e in page["events"])
+    if not page["hasMore"]:
+        break
+    cursor = page["nextCursor"]
+import urllib.parse
+full = fetch(f"{base}/status?" + urllib.parse.urlencode({"taskId": task_id}))["taskStore"]["history"]
+assert seen == [e["id"] for e in full], (len(seen), len(full))
+types = {e["kind"]: e["type"] for e in fetch(f"{base}/events?taskId={task_id}&limit=100")["events"]}
+assert types["task_accepted"] == "accepted" and types["awaiting_opened"] == "waiting", types
+print(f"OK: {len(seen)} событий через курсор без потерь/дублей; типы C02: accepted/waiting/started")
+PYEOF
+
 echo
-echo "PASS: прогон $REQUEST_ID (task $TASK) завершён"
+echo "PASS: прогон $REQUEST_ID (task $TASK) и $REQ2 (task $TASK2) завершён"

@@ -2,10 +2,12 @@
 // Контрольная сторона: submit / signal / cancel / status / recover.
 // Исполнительная сторона (step/sleep/waitFor) — step-ctx.ts; код плана не видит
 // API движка. Логика перенесена из пилота pilots/p-db/cf-workflows/src/port.ts.
-import type { AdmitTaskInput, SignalSource, TaskStore } from '../taskstore';
+import type { AdmitTaskInput, RunAttemptRow, SignalSource, TaskStore } from '../taskstore';
 import type { PlanParams } from './conversation-plan';
 
 export interface SubmitInput extends AdmitTaskInput {
+  /** Уже начатая попытка (например после resume) — не создавать вторую. */
+  runId?: string | null;
   question?: string;
   waitTimeoutSec?: number;
   crashRunOnce?: boolean;
@@ -18,6 +20,7 @@ export interface SubmitResult {
   created: boolean;
   instanceCreated: boolean;
   generation: number;
+  runId: string | null;
 }
 
 export interface SignalResult {
@@ -38,6 +41,7 @@ export interface CancelResult {
 export interface PortStatusResult {
   taskStore: Awaited<ReturnType<TaskStore['statusRow']>>;
   engine: unknown;
+  runs: RunAttemptRow[];
 }
 
 export interface WorkflowPortApi {
@@ -76,13 +80,39 @@ export class CfWorkflowPort implements WorkflowPortApi {
       crashRunOnce: input.crashRunOnce,
     };
 
-    // Единственная гарантия «один запуск» — состояние в Task Store, а не
-    // поведение create на разных платформах (в miniflare create с существующим
-    // id не бросает ошибку, в проде бросает). Экземпляр создаётся один раз:
-    // либо при первом приёме задачи, либо при восстановлении обрыва приёма
-    // (строка задачи есть, run_started ещё не записан).
+    // Экземпляр создаём, если задача новая или события старта попытки ещё не было.
+    const needInstance = created || !(await this.store.hasEvent(task.id, 'run_started'));
+
+    // Попытка исполнения (runId): явная (после resume) -> активная -> новая.
+    // Если прежняя попытка осталась в unknown/interrupted, новую начинаем только
+    // после подъёма поколения — старая попытка лишена прав на запись.
+    let runId = input.runId ?? null;
+    if (!runId) {
+      const runs = await this.store.listRuns(task.id);
+      runId = runs.find((r) => r.status === 'running')?.id ?? null;
+      if (!runId) {
+        const stale = runs.find((r) => r.status === 'unknown' || r.status === 'interrupted');
+        if (stale) {
+          await this.store.bumpGeneration(task.id, {
+            reason: `new attempt after ${stale.status}`,
+            source: 'gateway',
+          });
+        }
+        const run = await this.store.startRun(task.id, {
+          generation: (await this.store.requireTask(task.id)).generation,
+          engine: 'cloudflare-workflows',
+          sessionId: task.id,
+        });
+        runId = run.id;
+      }
+    }
+    params.runId = runId;
+
+    // Единственная гарантия «один запуск» — состояние в Task Store (событие
+    // run_started), а не поведение create на разных платформах (в miniflare
+    // повторный create не бросает ошибку, в проде бросает).
     let instanceCreated = false;
-    if (created || !(await this.store.hasEvent(task.id, 'run_started'))) {
+    if (needInstance) {
       try {
         await this.wf.create({ id: task.id, params });
         instanceCreated = true;
@@ -94,18 +124,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
           throw e;
         }
       }
-      if (!(await this.store.hasEvent(task.id, 'run_started'))) {
-        await this.store.logEvent({
-          taskId: task.id,
-          kind: 'run_started',
-          generation: task.generation,
-          source: 'gateway',
-          payload: { instanceId: task.id, created },
-        });
-      }
     }
 
-    return { taskId: task.id, instanceId: task.id, created, instanceCreated, generation: task.generation };
+    return { taskId: task.id, instanceId: task.id, created, instanceCreated, generation: task.generation, runId };
   }
 
   /**
@@ -149,25 +170,48 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
   }
 
-  /** Отмена (INV-08): сначала Task Store (fencing), потом остановка движка. */
-  async cancel(taskId: string, opts: { reason?: string } = {}): Promise<CancelResult> {
-    const res = await this.store.cancel(taskId, { reason: opts.reason });
-    if (res.cancelled) {
-      try {
-        const instance = await this.wf.get(taskId);
-        await instance.terminate();
-      } catch (e) {
-        // Статус уже cancelled в Task Store — источник истины; остановка
-        // движка лучшего усилия.
-        await this.store.logEvent({
-          taskId,
-          kind: 'error',
-          source: 'gateway',
-          payload: { where: 'cancel.terminate', message: String((e as Error)?.message ?? e) },
-        });
-      }
+  /**
+   * Отмена (INV-08/C03): «stop requested» и «stopped» — разные состояния.
+   * Сначала запрос (cancel_requested + fencing), потом остановка движка;
+   * статус cancelled ставится только после подтверждения остановки. Если
+   * остановка не удалась — задача остаётся не-терминальной, виден cancel_requested.
+   */
+  async cancel(taskId: string, opts: { reason?: string } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
+    const requested = await this.store.requestCancel(taskId, { reason: opts.reason });
+    if (!requested.requested) {
+      return { cancelled: false, generation: requested.generation, status: requested.status, stopConfirmed: false };
     }
-    return { cancelled: res.cancelled, generation: res.generation, status: res.status };
+
+    let terminated = false;
+    let terminateError: string | null = null;
+    try {
+      const instance = await this.wf.get(taskId);
+      await instance.terminate();
+      terminated = true;
+    } catch (e) {
+      terminateError = String((e as Error)?.message ?? e);
+    }
+
+    if (!terminated) {
+      await this.store.logEvent({
+        taskId,
+        kind: 'error',
+        source: 'gateway',
+        payload: { where: 'cancel.terminate', message: terminateError, stopRequested: true },
+      });
+      return { cancelled: false, generation: requested.generation, status: requested.status, stopConfirmed: false };
+    }
+
+    const confirmed = await this.store.confirmCancel(taskId, { reason: opts.reason });
+    // Активная попытка завершается как отменённая пользователем.
+    const active = await this.store.activeRun(taskId);
+    if (active) await this.store.finishRun(active.id, 'cancelled', { errorText: opts.reason ?? null });
+    return {
+      cancelled: confirmed.cancelled,
+      generation: confirmed.generation,
+      status: confirmed.status,
+      stopConfirmed: confirmed.cancelled,
+    };
   }
 
   async status(taskId: string): Promise<PortStatusResult> {
@@ -178,7 +222,74 @@ export class CfWorkflowPort implements WorkflowPortApi {
     } catch (e) {
       engine = { error: String((e as Error)?.message ?? e) };
     }
-    return { taskStore, engine };
+    // Только чтение: status не запускает агента и не меняет состояние (P05).
+    const runs = await this.store.listRuns(taskId);
+    return { taskStore, engine, runs };
+  }
+
+  /**
+   * Replay без rerun (P05/P06, ARCHITECTURE §4.6): перезапуск экземпляра с
+   * сохранением кэша шагов — выполненные шаги не пересчитываются, побочные
+   * эффекты не повторяются. fromStep — шаг, с которого начать (кэш шагов до
+   * него сохраняется).
+   */
+  async replay(taskId: string, opts: { fromStep?: string } = {}): Promise<{ restarted: boolean }> {
+    const instance = await this.wf.get(taskId);
+    await instance.restart(opts.fromStep ? { from: { name: opts.fromStep } } : undefined);
+    return { restarted: true };
+  }
+
+  /**
+   * Возобновление после потери связи (A3 §3.2.5): НОВЫЙ runId, тот же
+   * userTaskId, поколение поднято — прежняя попытка лишена прав на запись.
+   */
+  async resume(
+    taskId: string,
+    opts: { reason?: string; instructions?: string } = {},
+  ): Promise<{ runId: string; generation: number }> {
+    // Сначала Task Store: новый runId + подъём поколения (старая попытка лишена
+    // прав), затем остановка прежнего экземпляра и запуск нового с новым
+    // поколением (A3 §3.2.5: сверка и отзыв прав прежнего процесса до нового
+    // запуска).
+    const { run, generation } = await this.store.resumeRun(taskId, opts);
+
+    try {
+      const instance = await this.wf.get(taskId);
+      await instance.terminate();
+      // В эмуляторе terminate+create с тем же id не поднимает новый экземпляр —
+      // удаляем остановленный, чтобы create запустил новый с новым поколением.
+      await instance.delete();
+    } catch (e) {
+      await this.store.logEvent({
+        taskId,
+        kind: 'error',
+        source: 'gateway',
+        payload: { where: 'resume.terminate', message: String((e as Error)?.message ?? e) },
+      });
+    }
+
+    const task = await this.store.requireTask(taskId);
+    await this.wf.create({
+      id: taskId,
+      params: {
+        taskId,
+        generation,
+        profileId: task.profile_id,
+        runId: run.id,
+        question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
+      },
+    });
+    return { runId: run.id, generation };
+  }
+
+  /** Потеря связи с исполнителем: попытка -> 'unknown' (не 'failed'), задача не меняется. */
+  async markConnectionLost(runId: string, reason = 'connection_lost'): Promise<RunAttemptRow> {
+    return this.store.markConnectionLost(runId, reason);
+  }
+
+  /** Heartbeat попытки: продлевает lease, статус не меняет. */
+  async heartbeat(runId: string, leaseSec?: number): Promise<RunAttemptRow> {
+    return this.store.heartbeat(runId, leaseSec);
   }
 
   /**

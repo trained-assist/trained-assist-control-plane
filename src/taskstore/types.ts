@@ -193,5 +193,26 @@ export interface PrincipalRow {
  * Scope приёма (P04 «scope»). Только владение и изменение задач; выбор движка,
  * региона и квоты — это C04/placement policy и вне control plane.
  */
-export const ADMISSION_SCOPES = ['tasks:intake', 'tasks:read', 'tasks:signal'] as const;
+export const ADMISSION_SCOPES = ['tasks:intake', 'tasks:read', 'tasks:signal', 'tasks:control'] as const;
 export type AdmissionScope = (typeof ADMISSION_SCOPES)[number];
+
+/** Попытка исполнения (runId): строка executions (A2 §6). */
+export interface RunAttemptRow {
+  id: string;
+  task_id: string;
+  session_id: string | null;
+  engine: string | null;
+  model: string | null;
+  /** running | unknown | success | failed | interrupted | cancelled | waiting. */
+  status: string;
+  generation: number;
+  started_at: number;
+  finished_at: number | null;
+  error_class: string | null;
+  error_text: string | null;
+  result_json: string | null;
+  last_heartbeat_at: number | null;
+  lease_until: number | null;
+}
+
+export type RunOutcome = 'success' | 'failed' | 'interrupted' | 'cancelled';
