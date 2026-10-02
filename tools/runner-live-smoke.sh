@@ -33,15 +33,18 @@ mkdir -p "$RUNTIME_DIR"
 py() { python3 -c "$1"; }
 post() { curl -sS -X POST "$BASE$1" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "$2"; }
 get() { curl -sS -H "X-Principal: $PRINCIPAL" "$BASE$1"; }
-task_status() { post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])'; }
+# task_id аргументом не задаётся — берётся первая задача смоука; фазы 2-3
+# (обрыв туннеля, восстановление) ждут СВОЮ задачу, иначе ждали бы уже
+# закрытую задачу первой фазы и ждали бы вечно.
+task_status() { post /status "{\"taskId\":\"${1:-$TASK}\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])'; }
 wait_status() {
-  local want="$1" st="" i
+  local want="$1" tid="${2:-$TASK}" st="" i
   for i in $(seq 1 120); do
-    st="$(task_status)"
+    st="$(task_status "$tid")"
     [ "$st" = "$want" ] && return 0
     sleep 0.5
   done
-  echo "FAIL: ждали status=$want, получили st=$st (task=$TASK)" >&2
+  echo "FAIL: ждали status=$want, получили st=$st (task=$tid)" >&2
   exit 1
 }
 runner_get() { # $1 = путь на Runnerе (через туннель)
@@ -103,7 +106,7 @@ if [ ! -f .dev.vars ] || ! grep -q '^RUNNER_API_KEY=' .dev.vars; then
   chmod 600 .dev.vars
 fi
 
-echo "== 0. туннель и контракт Runner'а =="
+echo "== 0. туннель и контракт Runner =="
 tunnel_up
 CAPS="$(runner_get /v1/capabilities)"
 echo "$CAPS" | py '
@@ -129,7 +132,7 @@ npx wrangler d1 execute control-plane-task-store --local --command \
    VALUES ('$PRINCIPAL','$PROFILE','[\"tasks:intake\",\"tasks:read\",\"tasks:signal\",\"tasks:control\"]',1,strftime('%s','now')*1000,strftime('%s','now')*1000)" \
   >/dev/null
 
-echo "== 1. сквозной прогон: intake -> start -> реальный Run на Runner'е =="
+echo "== 1. сквозной прогон: intake -> start -> реальный Run на Runner =="
 REQ1="req-live-$(date +%s)"
 INTAKE="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ1\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"собери отчёт одним предложением\"}]}")"
 TASK="$(echo "$INTAKE" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
@@ -152,7 +155,7 @@ echo "$MANIFEST" | py '
 import json,sys
 m=json.load(sys.stdin)
 assert m["storageKey"] and m["sha256"] and m["size"]>0, m
-print("OK: артефакт зарегистрирован на Runner'е:", m["name"], "size=", m["size"], "sha256=", m["sha256"][:12]+"...")
+print("OK: артефакт зарегистрирован на Runner:", m["name"], "size=", m["size"], "sha256=", m["sha256"][:12]+"...")
 '
 echo "OK: артефакт доступен по контракту: $(runner_get "/v1/runs/$RUN1/artifacts" | py 'import json,sys; d=json.load(sys.stdin); print("count="+str(d["count"]))')"
 
@@ -178,10 +181,11 @@ print("OK: history =", " -> ".join(kinds))
 '
 RUN1="$(echo "$FINAL" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["result"]["runId"])')"
 RUNS1="$(runs_of "$TASK")"
-[ "$RUNS1" = "1" ] || { echo "FAIL: на Runner'е $RUNS1 ранов для $TASK (ожидали 1)" >&2; exit 1; }
-echo "OK: на Runner'е ровно 1 ран для userTaskId=$TASK (runId=$RUN1)"
+[ "$RUNS1" = "1" ] || { echo "FAIL: на Runner $RUNS1 ранов для $TASK (ожидали 1)" >&2; exit 1; }
+echo "OK: на Runner ровно 1 ран для userTaskId=$TASK (runId=$RUN1)"
 echo "OK: артефакт рана доступен по контракту: $(runner_get "/v1/runs/$RUN1/artifacts" | py 'import json,sys; d=json.load(sys.stdin); print("count="+str(d["count"]))')"
-echo "OK: скачивание артефакта: HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RUNNER_API_KEY" "$RUNNER_API_URL/v1/artifacts/$(echo "$MANIFEST" | py 'import json,sys; print(json.load(sys.stdin)["artifactId"])')")"
+ART_ID="$(echo "$MANIFEST" | py 'import json,sys; print(json.load(sys.stdin)["artifactId"])')"
+echo "OK: скачивание артефакта: HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RUNNER_API_KEY" "$RUNNER_API_URL/v1/artifacts/$ART_ID")"
 
 echo "== 2. управляемый сбой: обрыв туннеля посреди попытки =="
 REQ2="req-live-fail-$(date +%s)"
@@ -198,7 +202,7 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 [ "$LOST" = "unknown" ] || { echo "FAIL: попытка 2 не стала unknown ($LOST)" >&2; exit 1; }
-echo "OK: попытка 2 = unknown (не failed), задача: $(task_status)"
+echo "OK: попытка 2 = unknown (не failed), задача: $(task_status "$TASK2")"
 post /status "{\"taskId\":\"$TASK2\"}" | py '
 import json,sys
 d=json.load(sys.stdin); t=d["taskStore"]
@@ -208,7 +212,7 @@ r=[x for x in d["runs"] if x["id"]=="'"$ATTEMPT2"'"][0]
 assert r["error_class"]=="runner_unavailable", r
 print("OK: задача цела (active), попытка unknown/runner_unavailable, второго рана нет")
 '
-echo "OK: на Runner'е ранов для $TASK2: $(runs_of "$TASK2") (submit не дошёл)"
+echo "OK: на Runner ранов для $TASK2: $(runs_of "$TASK2") (submit не дошёл)"
 
 echo "== 3. восстановление: тот же ключ попытки -> тот же Run, не второй =="
 tunnel_up
@@ -218,22 +222,22 @@ for i in $(seq 1 120); do
   [ -n "$RECOVERED" ] && break
   sleep 1
 done
-[ -n "$RECOVERED" ] || { echo "FAIL: попытка 2 не получила runId Runner'а после восстановления" >&2; exit 1; }
+[ -n "$RECOVERED" ] || { echo "FAIL: попытка 2 не получила runId Runner после восстановления" >&2; exit 1; }
 RUN2="$RECOVERED"
 RUNS2="$(runs_of "$TASK2")"
-[ "$RUNS2" = "1" ] || { echo "FAIL: на Runner'е $RUNS2 ранов для $TASK2 (второй Run!)" >&2; exit 1; }
-echo "OK: тот же ключ попытки вернул тот же Run: runId=$RUN2, ранов на Runner'е=$RUNS2"
+[ "$RUNS2" = "1" ] || { echo "FAIL: на Runner $RUNS2 ранов для $TASK2 (второй Run!)" >&2; exit 1; }
+echo "OK: тот же ключ попытки вернул тот же Run: runId=$RUN2, ранов на Runner=$RUNS2"
 
-wait_status awaiting_input
+wait_status awaiting_input "$TASK2"
 AID2="$(post /status "{\"taskId\":\"$TASK2\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["awaiting_input_id"])')"
 post "/awaiting/$AID2/answer" '{"idempotencyKey":"web:live-2","answer":{"answer":"да"}}' >/dev/null
-wait_status done
+wait_status done "$TASK2"
 post /status "{\"taskId\":\"$TASK2\"}" | py '
 import json,sys
 d=json.load(sys.stdin); t=d["taskStore"]
 assert t["status"]=="done", t["status"]
 assert t["result"]["runId"]=="'"$RUN2"'", t["result"]
-print("OK: задача 2 дошла до done с тем же runId Runner'а")
+print("OK: задача 2 дошла до done с тем же runId Runner")
 '
 
 echo

@@ -198,58 +198,64 @@ export async function conversationPlan(
   );
 
   // Настоящий Runner (issue #122): попытка отправляется в Serverless Agent API
-  // со СТАБИЛЬНЫМ ключом, вычисленным до отправки. Недоступность Runner'а не
-  // теряет задачу: попытка остаётся незапущенной, повтор с тем же ключом
-  // возвращает тот же receipt.
+  // со СТАБИЛЬНЫМ ключом, вычисленным до отправки. Отправка — ШАГ с явным
+  // повтором: недоступность Runner'а не теряет задачу (попытка -> unknown,
+  // статус задачи не меняется), а повтор с тем же ключом возвращает тот же
+  // Run, а не второй.
   let runnerRunId: string | null = null;
   if (adapter) {
     const attemptKey = await stableAttemptKey(taskId, generation);
-    try {
-      const receipt = await adapter.submit({
-        userTaskId: taskId,
-        conversationId: current?.conversation_id ?? null,
-        engineName: p.runnerEngine ?? 'opencode',
-        inputText: p.goal ?? current?.goal ?? null,
-        inputRefs: [],
-        instructions: p.instructions ?? null,
-        idempotencyKey: attemptKey,
-        timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
-      });
-      runnerRunId = receipt.runId;
-      // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
-      if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId);
-      await store.logEvent({
-        taskId,
-        kind: 'run_started',
-        generation,
-        source: 'executor',
-        payload: {
-          runId: receipt.runId,
-          requestId: receipt.requestId,
-          ownerGeneration: null,
-          attempt: 1,
-          deduplicated: receipt.deduplicated,
-          idempotencyKey: attemptKey,
-        },
-      });
-    } catch (e) {
-      if (e instanceof RunnerUnavailableError) {
-        // Задача не теряется: попытка -> unknown, статус задачи не меняется,
-        // повтор с тем же ключом безопасен.
-        if (p.runId) {
-          await store.markConnectionLost(p.runId, e.message, 'runner_unavailable').catch(() => null);
+    const receipt = await ctx.step(
+      'submit-runner',
+      async () => {
+        try {
+          return await adapter.submit({
+            userTaskId: taskId,
+            conversationId: current?.conversation_id ?? null,
+            engineName: p.runnerEngine ?? 'opencode',
+            inputText: p.goal ?? current?.goal ?? null,
+            inputRefs: [],
+            instructions: p.instructions ?? null,
+            idempotencyKey: attemptKey,
+            timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
+          });
+        } catch (e) {
+          if (e instanceof RunnerUnavailableError) {
+            // Задача не теряется: попытка -> unknown, статус задачи не меняется,
+            // повтор с тем же ключом безопасен.
+            if (p.runId) {
+              await store.markConnectionLost(p.runId, e.message, 'runner_unavailable').catch(() => null);
+            }
+            await store.logEvent({
+              taskId,
+              kind: 'error',
+              generation,
+              source: 'executor',
+              payload: { class: 'runner_unavailable', message: e.message, idempotencyKey: attemptKey },
+            });
+          }
+          throw e;
         }
-        await store.logEvent({
-          taskId,
-          kind: 'error',
-          generation,
-          source: 'executor',
-          payload: { class: 'runner_unavailable', message: e.message, idempotencyKey: attemptKey },
-        });
-        throw e; // платформа повторит шаг с тем же ключом
-      }
-      throw e;
-    }
+      },
+      { limit: 8, delaySec: 3 },
+    );
+    runnerRunId = receipt.runId;
+    // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
+    if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId);
+    await store.logEvent({
+      taskId,
+      kind: 'run_started',
+      generation,
+      source: 'executor',
+      payload: {
+        runId: receipt.runId,
+        requestId: receipt.requestId,
+        ownerGeneration: null,
+        attempt: 1,
+        deduplicated: receipt.deduplicated,
+        idempotencyKey: attemptKey,
+      },
+    });
   }
 
   if (p.crashRunOnce) {
@@ -328,7 +334,7 @@ export async function conversationPlan(
       runId: runnerResult.runId,
       ownerGeneration: runnerResult.ownerGeneration,
       attempt: 1,
-      artifacts: runnerResult.outputRefs,
+      artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
       exitReason: runnerResult.exitReason,
     };

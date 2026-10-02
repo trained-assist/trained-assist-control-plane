@@ -9,7 +9,8 @@
  *    `task_events` с оригинальными `eventId`/`sequence` в payload — клиент
  *    может воспроизвести их независимо от движка.
  *  - Финализация артефактов: каждый `outputRef` становится строкой
- *    `task_artifacts` (ссылка, не байты). Экспорт не подтверждён
+ *    `task_artifacts` (ссылка, не байты) И элементом `artifacts` результата,
+ *    который собирает план. Экспорт не подтверждён
  *    (`persistence != 'persisted'`) — задача не завершается успехом молча.
  */
 import type { TaskStore, TaskEventKind } from '../taskstore';
@@ -24,7 +25,7 @@ export interface AwaitRunnerResultOptions {
 }
 
 export type AwaitRunnerResult =
-  | { ok: true; result: RunnerResult; eventsRecorded: number }
+  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: string[] }
   | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
@@ -108,16 +109,19 @@ async function finalize(
     if (!page.hasMore) break;
   }
 
-const result = await adapter.result(opts.runId);
+  const result = await adapter.result(opts.runId);
 
   // Финализация артефактов: ссылки на сохранённые выходы Runner'а. Источников два,
   // потому что Runner отдаёт их по-разному: `result.outputRefs` — то, что движок
   // сам положил в результат, а `GET /v1/runs/{runId}/artifacts` — манифесты
   // зарегистрированных артефактов (живой прогон: регистрация вне контура, и
   // outputRefs пуст, а артефакт виден только здесь). Дедуп — на уровне ссылки.
+  // Этот же набор — источник для `task_artifacts` и для `result.artifacts` плана:
+  // второго источника ссылок нет.
   const manifests = await adapter.artifacts(opts.runId);
   const byRef = new Map(manifests.map((m) => [m.storageKey || m.artifactId, m]));
-  for (const ref of new Set([...result.outputRefs, ...byRef.keys()])) {
+  const artifactRefs = [...new Set([...result.outputRefs, ...byRef.keys()])];
+  for (const ref of artifactRefs) {
     const manifest = byRef.get(ref);
     await store.recordArtifact({
       taskId: opts.taskId,
@@ -129,7 +133,6 @@ const result = await adapter.result(opts.runId);
       generation: opts.generation,
     });
   }
-
 
   if (result.persistence !== 'persisted') {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.
@@ -165,5 +168,5 @@ const result = await adapter.result(opts.runId);
     return { ok: false, reason: 'runner_failed' };
   }
 
-  return { ok: true, result, eventsRecorded };
+  return { ok: true, result, eventsRecorded, artifacts: artifactRefs };
 }
