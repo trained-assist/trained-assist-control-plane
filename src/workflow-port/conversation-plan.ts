@@ -16,6 +16,8 @@ export const PLAN_VERSION = 'm1-conversation-v1';
 
 export interface PlanParams {
   taskId: string;
+  /** runId попытки: план завершает её при терминальных переходах. */
+  runId?: string;
   /** ownerGeneration, с которым запущен экземпляр; записи идут только с ним. */
   generation: number;
   profileId: string;
@@ -33,6 +35,8 @@ export interface PlanOutcome {
 
 async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
   const { taskId, generation } = p;
+  const finishRun = (outcome: 'success' | 'failed', opts: { errorClass?: string | null; result?: unknown } = {}) =>
+    p.runId ? store.finishRun(p.runId, outcome, opts) : Promise.resolve(null);
   const current = await store.getTask(taskId);
   if (!current) return { ok: false, reason: 'task_missing' };
   // Устаревшее поколение не пишет ничего (fencing).
@@ -62,6 +66,16 @@ async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanO
 
 export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
   const { taskId, generation } = p;
+  const finishRun = (outcome: 'success' | 'failed', opts: { errorClass?: string | null; result?: unknown } = {}) =>
+    p.runId ? store.finishRun(p.runId, outcome, opts) : Promise.resolve(null);
+
+  // Задача уже терминальна (например, экземпляр перезапущен после done):
+  // шаги не выполняем, состояние не трогаем — иначе терминальный guard уронит
+  // экземпляр на повторном finalize.
+  const current = await store.getTask(taskId);
+  if (current && isTerminalStatus(current.status)) {
+    return { ok: current.status === 'done', reason: 'already_terminal' };
+  }
 
   await ctx.step('prepare', () =>
     store.commit(taskId, generation, {
@@ -152,6 +166,7 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
       payload: { version: PLAN_VERSION },
     }),
   );
+  await finishRun('success', { result: { answer, ok: answer === 'да', version: PLAN_VERSION } });
 
   return { ok: true, answer };
 }
