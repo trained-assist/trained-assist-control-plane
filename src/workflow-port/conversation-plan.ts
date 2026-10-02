@@ -45,12 +45,18 @@ export interface PlanParams {
   waitPollSec?: number;
   /** Тестовый хук: шаг падает на 1-й попытке, платформа должна продолжить сама. */
   crashRunOnce?: boolean;
-  /** Настоящий Runner (issue #122). Без него — прежний stub-путь. */
-  adapter?: RunnerApiAdapter | null;
   goal?: string | null;
   instructions?: string | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
+}
+
+/**
+ * Зависимости рантайма (НЕ сериализуются в params Workflow): adapter строится
+ * из env в TaskWorkflow, чтобы ключ Runner'а не попадал в durable params движка.
+ */
+export interface PlanDeps {
+  adapter?: RunnerApiAdapter | null;
 }
 
 export interface PlanOutcome {
@@ -136,7 +142,13 @@ async function finishAfterAnswer(
   return { ok: true, answer };
 }
 
-export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
+export async function conversationPlan(
+  ctx: StepCtx,
+  store: TaskStore,
+  p: PlanParams,
+  deps: PlanDeps = {},
+): Promise<PlanOutcome> {
+  const adapter = deps.adapter ?? null;
   const { taskId, generation } = p;
 
   // Задача уже терминальна (например, экземпляр перезапущен после done):
@@ -188,22 +200,22 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
   // теряет задачу: попытка остаётся незапущенной, повтор с тем же ключом
   // возвращает тот же receipt.
   let runnerRunId: string | null = null;
-  let runnerOwnerGeneration: number | null = null;
-  if (p.adapter) {
+  if (adapter) {
     const attemptKey = await stableAttemptKey(taskId, generation);
     try {
-      const receipt = await p.adapter.submit({
+      const receipt = await adapter.submit({
         userTaskId: taskId,
         conversationId: current?.conversation_id ?? null,
         engineName: 'opencode',
-        inputText: p.goal ?? null,
+        inputText: p.goal ?? current?.goal ?? null,
         inputRefs: [],
         instructions: p.instructions ?? null,
         idempotencyKey: attemptKey,
         timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
       });
       runnerRunId = receipt.runId;
-      await store.startRun(taskId, { generation, engine: 'opencode', sessionId: receipt.runId });
+      // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
+      if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId);
       await store.logEvent({
         taskId,
         kind: 'run_started',
@@ -212,7 +224,7 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
         payload: {
           runId: receipt.runId,
           requestId: receipt.requestId,
-          ownerGeneration: runnerOwnerGeneration,
+          ownerGeneration: null,
           attempt: 1,
           deduplicated: receipt.deduplicated,
           idempotencyKey: attemptKey,
@@ -220,7 +232,11 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
       });
     } catch (e) {
       if (e instanceof RunnerUnavailableError) {
-        // Задача не теряется: статус не меняется, событие видно, повтор безопасен.
+        // Задача не теряется: попытка -> unknown, статус задачи не меняется,
+        // повтор с тем же ключом безопасен.
+        if (p.runId) {
+          await store.markConnectionLost(p.runId, e.message, 'runner_unavailable').catch(() => null);
+        }
         await store.logEvent({
           taskId,
           kind: 'error',
@@ -285,9 +301,9 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
 
   // Настоящий Runner: читаем результат и события по курсору, финализируем
   // артефакты. connection_lost — неизвестный исход, не failed, без авто-rerun.
-  if (p.adapter && runnerRunId) {
+  if (adapter && runnerRunId) {
     const outcome = await ctx.step('await-runner', () =>
-      awaitRunnerResult(p.adapter!, store, {
+      awaitRunnerResult(adapter, store, {
         runId: runnerRunId,
         taskId,
         generation,

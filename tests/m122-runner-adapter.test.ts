@@ -6,6 +6,8 @@
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
 import { awaitRunnerResult, RunnerApiAdapter, stableAttemptKey } from '../src/runner-adapter';
+import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
+import type { StepCtx } from '../src/workflow-port/step-ctx';
 import { RunnerUnavailableError } from '../src/runner-adapter/errors';
 import { describe, expect, it } from 'vitest';
 
@@ -319,5 +321,91 @@ describe('Runner adapter: результат, курсор событий, ар�
     expect(result.persistence).toBe('failed');
     // Артефакты всё равно зафиксированы (ссылки), результат не потерян молча.
     expect(await store.listArtifacts(taskId)).toHaveLength(1);
+  });
+});
+
+describe('Runner adapter: план с adapter\'ом (интеграция, fake StepCtx)', () => {
+  it('submit -> ожидание человека -> результат Runner\'а по курсору -> артефакт -> done', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-plan');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'сделай работу' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+
+    const { adapter } = makeFakeRunner();
+    const submittedKeys: string[] = [];
+    const wrapped = {
+      ...adapter,
+      submit: async (input: { userTaskId: string; idempotencyKey: string }) => {
+        submittedKeys.push(input.idempotencyKey);
+        return adapter.submit(input);
+      },
+    };
+
+    // Пользователь отвечает, пока план ждёт: durable-ответ, затем «пробуждение».
+    const ctx: StepCtx = {
+      step: async (_name, fn) => fn({ attempt: 1 }),
+      sleep: async () => {},
+      waitFor: async () => {
+        const open = await store.getOpenAwaiting(taskId);
+        if (open) {
+          await store.answerAwaitingById({ awaitingInputId: open.awaiting_input_id, idempotencyKey: 'web:plan-test', answer: { answer: 'да' } });
+        }
+        throw new Error('event timed out');
+      },
+    };
+
+    const params: PlanParams = {
+      taskId,
+      generation: 1,
+      profileId: 'profile-1',
+      runId: attempt.id,
+      goal: 'сделай работу',
+      runnerPollSec: 1,
+      runnerTimeoutSec: 30,
+    };
+    const outcome = await conversationPlan(ctx, store, params, { adapter: wrapped as unknown as RunnerApiAdapter });
+
+    expect(outcome.ok).toBe(true);
+    expect(submittedKeys).toHaveLength(1);
+    expect(submittedKeys[0]).toBe(await stableAttemptKey(taskId, 1));
+
+    // Результат несёт маркеры попытки и артефакт Runner'а.
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('done');
+    const result = JSON.parse(task.result_json!);
+    expect(result.ok).toBe(true);
+    expect(result.runId).toMatch(/^run-/);
+    expect(result.ownerGeneration).toBe(1);
+    expect(result.attempt).toBe(1);
+    expect(result.persistence).toBe('persisted');
+    expect(result.artifacts[0]).toContain('answer.json');
+
+    // runId Runner'а привязан к попытке; события Runner'а — в журнале.
+    const runs = await store.listRuns(taskId);
+    expect(runs[0]!.session_id).toMatch(/^run-/);
+    const runnerEvents = (await store.history(taskId)).filter((e) => e.execution_id === runs[0]!.session_id);
+    expect(runnerEvents.length).toBeGreaterThanOrEqual(3);
+    expect(await store.listArtifacts(taskId)).toHaveLength(1);
+  });
+
+  it('Runner недоступен в плане: задача не теряется, попытка unknown, повтор безопасен', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-plan-down');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'runner лежит' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter: down } = makeFakeRunner({ failSubmit: true });
+
+    const ctx: StepCtx = { step: async (_n, fn) => fn({ attempt: 1 }), sleep: async () => {}, waitFor: async () => { throw new Error('t'); } };
+    await expect(
+      conversationPlan(ctx, store, { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id }, { adapter: down as unknown as RunnerApiAdapter }),
+    ).rejects.toBeInstanceOf(RunnerUnavailableError);
+
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('active'); // задача не потеряна
+    const run = await store.getRun(attempt.id);
+    expect(run!.status).toBe('unknown');
+    expect(run!.error_class).toBe('runner_unavailable');
+    const events = await store.history(taskId);
+    expect(events.some((e) => e.kind === 'error' && e.payload_json.includes('runner_unavailable'))).toBe(true);
   });
 });
