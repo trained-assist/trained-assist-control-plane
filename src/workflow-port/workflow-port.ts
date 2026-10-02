@@ -15,7 +15,7 @@ import { logStructured } from '../logging/structured-log';
 import type { PlanParams } from './conversation-plan';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
-  if (!userValue) return { route: 'legacy', reason: 'no_user_value' };
+  if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
   try {
     const parsed = JSON.parse(userValue) as Record<string, unknown>;
     const route = parsed.pilotRoute as string | undefined;
@@ -24,9 +24,12 @@ function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'lega
       return { route, reason: reason ?? 'unknown' };
     }
   } catch {
-    return { route: 'legacy', reason: 'unparseable_user_value' };
+    return { route: 'new-plane', reason: 'unparseable_user_value' };
   }
-  return { route: 'legacy', reason: 'no_pilot_route' };
+  // Метки нет — решение по умолчанию принимает IntakeService (приёма задачи).
+  // Порт только ЧЕСТУЕТ явному решению; молчаливый legacy здесь означал бы, что
+  // прямой submit без маршрута тихо ничего не запускает.
+  return { route: 'new-plane', reason: 'no_pilot_route' };
 }
 
 export interface SubmitInput extends AdmitTaskInput {
