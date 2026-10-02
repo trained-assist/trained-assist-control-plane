@@ -11,7 +11,6 @@ import type {
   SignalSource,
   TaskStore,
 } from '../taskstore';
-import type { RunnerApiAdapter } from '../runner-adapter';
 import { logStructured } from '../logging/structured-log';
 import type { PlanParams } from './conversation-plan';
 
@@ -45,8 +44,7 @@ export interface SubmitInput extends AdmitTaskInput {
   awaitingOptions?: { id: string; label: string }[] | null;
   /** Период durable-опроса ответа в ожидании. */
   waitPollSec?: number;
-  /** Настоящий Runner (issue #122). Без него — stub-путь. */
-  adapter?: RunnerApiAdapter | null;
+  /** Инструкции для попытки Runner'а и параметры опроса результата. */
   instructions?: string | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
@@ -150,6 +148,12 @@ export class CfWorkflowPort implements WorkflowPortApi {
       awaitingPurpose: input.awaitingPurpose ?? null,
       awaitingOptions: input.awaitingOptions ?? null,
       waitPollSec: input.waitPollSec,
+      // adapter в params НЕ кладём: секрет не должен сериализоваться в движок;
+      // план строит его из env (deps) в TaskWorkflow.
+      goal: task.goal,
+      instructions: input.instructions ?? null,
+      runnerPollSec: input.runnerPollSec,
+      runnerTimeoutSec: input.runnerTimeoutSec,
     };
 
     // Экземпляр создаём, если задача новая или события старта попытки ещё не было.
@@ -173,7 +177,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
         const run = await this.store.startRun(task.id, {
           generation: (await this.store.requireTask(task.id)).generation,
           engine: 'cloudflare-workflows',
-          sessionId: task.id,
+          // session_id заполнит план, привязав runId настоящего Runner'а.
+          sessionId: null,
         });
         runId = run.id;
       }
@@ -319,7 +324,15 @@ export class CfWorkflowPort implements WorkflowPortApi {
    */
   async resume(
     taskId: string,
-    opts: { reason?: string; instructions?: string; previousRunId?: string | null; awaitingPurpose?: AwaitingPurpose | null; awaitingOptions?: { id: string; label: string }[] | null } = {},
+    opts: {
+      reason?: string;
+      instructions?: string;
+      previousRunId?: string | null;
+      awaitingPurpose?: AwaitingPurpose | null;
+      awaitingOptions?: { id: string; label: string }[] | null;
+      runnerPollSec?: number;
+      runnerTimeoutSec?: number;
+    } = {},
   ): Promise<{ runId: string; generation: number }> {
     // Сначала Task Store: новый runId + подъём поколения (старая попытка лишена
     // прав), затем остановка прежнего экземпляра и запуск нового с новым
@@ -327,18 +340,27 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // запуска).
     const { run, generation } = await this.store.resumeRun(taskId, opts);
 
+    // Остановка прежнего экземпляра и запуск нового с новым поколением.
+    // terminate и delete — РАЗНЫЕ шаги: упавший/завершённый экземпляр нельзя
+    // terminate (бросает), но можно delete; иначе create упадёт already_exists.
     try {
-      const instance = await this.wf.get(taskId);
-      await instance.terminate();
-      // В эмуляторе terminate+create с тем же id не поднимает новый экземпляр —
-      // удаляем остановленный, чтобы create запустил новый с новым поколением.
-      await instance.delete();
+      await (await this.wf.get(taskId)).terminate();
     } catch (e) {
       await this.store.logEvent({
         taskId,
         kind: 'error',
         source: 'gateway',
         payload: { where: 'resume.terminate', message: String((e as Error)?.message ?? e) },
+      });
+    }
+    try {
+      await (await this.wf.get(taskId)).delete();
+    } catch (e) {
+      await this.store.logEvent({
+        taskId,
+        kind: 'error',
+        source: 'gateway',
+        payload: { where: 'resume.delete', message: String((e as Error)?.message ?? e) },
       });
     }
 
@@ -357,6 +379,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
         awaitingPurpose: opts.awaitingPurpose ?? available.awaitingPurpose ?? null,
         awaitingOptions: opts.awaitingOptions ?? null,
         question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
+        goal: task.goal,
+        instructions: opts.instructions ?? null,
+        runnerPollSec: opts.runnerPollSec,
+        runnerTimeoutSec: opts.runnerTimeoutSec,
       },
     });
     return { runId: run.id, generation };

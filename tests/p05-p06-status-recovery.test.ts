@@ -1,3 +1,4 @@
+import { introspectWorkflowInstance } from 'cloudflare:test';
 import { toC02Event } from '../src/events';
 import { FencedError, TaskStore } from '../src/taskstore';
 import { CfWorkflowPort, PLAN_VERSION } from '../src/workflow-port';
@@ -263,6 +264,39 @@ describe('P05/P06: replay без rerun и отмена', () => {
     expect(confirmed.stopConfirmed).toBe(true);
     expect((await store.requireTask(taskId)).status).toBe('cancelled');
     expect((await store.history(taskId)).some((e) => e.kind === 'task_cancelled')).toBe(true);
+  }, 60_000);
+
+  it('resume после упавшего экземпляра: terminate не блокирует delete+create', async () => {
+    const { store, port } = setup();
+    const taskId = nextId('resume-errored');
+    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'упавший экземпляр' });
+    await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
+
+    // Доводим экземпляр до errored: поднимаем поколение и будим сигналом —
+    // план пишет старым поколением, получает fencing и падает (NonRetryable).
+    await store.bumpGeneration(taskId, { reason: 'test: force errored' });
+    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, taskId);
+    await port.signal(taskId, 'user_reply', { answer: 'да' }, { idempotencyKey: 'web:errored' });
+    await instance.waitForStatus('errored');
+    await instance.dispose();
+
+    // resume: terminate по errored бросает, но delete+create обязаны поднять новый.
+    const resumed = await port.resume(taskId, { reason: 'recover after errored' });
+    expect(resumed.runId).toBeTruthy();
+    expect(resumed.runId).not.toBe(submit.runId);
+    expect(resumed.generation).toBeGreaterThan(submit.generation);
+
+    // Ответ уже сохранён durable (сигнал применился по актуальному поколению),
+    // поэтому продолжение идёт от него сразу к результату, не открывая новый вопрос.
+    await pollUntil('done после resume', async () => {
+      const row = await store.requireTask(taskId);
+      return row.status === 'done' ? row : null;
+    });
+    expect((await store.statusRow(taskId))?.result).toEqual({
+      answer: 'да',
+      ok: true,
+      version: PLAN_VERSION,
+    });
   }, 60_000);
 
   it('отмена адресна: затронута только своя задача', async () => {

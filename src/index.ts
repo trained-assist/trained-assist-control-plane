@@ -18,7 +18,7 @@ import { IntakeService } from './intake';
 import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
-import { RunnerApiAdapter, stableAttemptKey } from './runner-adapter';
+import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -45,7 +45,11 @@ export class TaskWorkflow extends WorkflowEntrypoint<Env, PlanParams> {
           `invalid plan params: ${JSON.stringify({ taskId: event.payload?.taskId, generation: event.payload?.generation })}`,
         );
       }
-      return await conversationPlan(cfStepCtx(step), store, event.payload);
+      // adapter строится из env (bindings), не из params: ключ Runner'а не
+      // попадает в durable params экземпляра.
+      return await conversationPlan(cfStepCtx(step), store, event.payload, {
+        adapter: runnerAdapterOf(this.env),
+      });
     } catch (e) {
       // Повтор не исправит fencing и терминальный статус — валить экземпляр.
       if (isPermanent(e)) throw new NonRetryableError(String((e as Error)?.message ?? e));
@@ -90,10 +94,6 @@ const authorizeTaskRoute = async (
 };
 
 const principalOf = (req: Request): string | null => req.headers.get('x-principal');
-
-/** Adapter к настоящему Runner'у, если заданы RUNNER_API_URL/RUNNER_API_KEY. */
-const runnerAdapterOf = (env: Env): RunnerApiAdapter | null =>
-  env.RUNNER_API_URL && env.RUNNER_API_KEY ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY) : null;
 
 /**
  * Адаптер канала для локальной песочницы: доставка подтверждается без вызова
@@ -363,7 +363,6 @@ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body)
         case '/start': {
           await authorizeTaskRoute(store, req, taskId, 'tasks:intake');
           const input: SubmitInput = {
-            adapter: runnerAdapterOf(env),
             id: taskId,
             profileId: (body.profileId as string | undefined) ?? 'default',
             goal: (body.goal as string | undefined) ?? taskId,

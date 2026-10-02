@@ -185,6 +185,20 @@ export class RunnerApiAdapter {
   }
 }
 
+/**
+ * Adapter из env рантайма: URL/ключ приходят только из окружения (bindings
+ * Workers), в репозиторий и в params Workflow не попадают — секрет не должен
+ * сериализоваться в движок.
+ */
+export function runnerAdapterOf(env: {
+  RUNNER_API_URL?: string;
+  RUNNER_API_KEY?: string;
+}): RunnerApiAdapter | null {
+  return env.RUNNER_API_URL && env.RUNNER_API_KEY
+    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY)
+    : null;
+}
+
 /** Стабильный ключ попытки: вычисляется ДО отправки из (userTaskId, generation). */
 export async function stableAttemptKey(userTaskId: string, generation: number): Promise<string> {
   // WebCrypto: доступен и в Workers, и в Node 20+. require('node:crypto') в
