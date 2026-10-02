@@ -296,7 +296,8 @@ export class ControlPlaneClient {
   private async eventsFromStatus(userTaskId: string, after: number | null, limit: number): Promise<EventPage> {
     const { value } = await this.request<Record<string, unknown>>('POST', '/status', { body: { taskId: userTaskId } });
     const row = asObject(value['taskStore']);
-    const history = Array.isArray(row['history']) ? (row['history'] as Record<string, unknown>[]) : [];
+    // В /status история приходит JSON-строкой (json_group_array), в /events — массивом.
+    const history = parseJsonArray(row['history']);
     const events = history
       .map((e) => toC02Event(e))
       .filter((e) => e.sequence > (after ?? 0))
@@ -387,6 +388,19 @@ function base64ToBytes(value: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+function parseJsonArray(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value as Record<string, unknown>[];
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? (parsed as Record<string, unknown>[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 function parseAwaiting(value: unknown): TaskStatusView['awaiting'] {

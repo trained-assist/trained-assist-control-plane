@@ -15,7 +15,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `src/workflow-port/delivery-worker.ts` | Воркер доставки: единственный владелец отправки, bounded retry, адаптер канала внедряется |
 | `src/workflow-port/` | Workflow Port поверх Cloudflare Workflows: `submit/signal/cancel/status/recover`, `StepCtx` для кода планов, демо-план M1.2 |
 | `src/index.ts` | `TaskWorkflow` + HTTP-слой (`/start /signal /cancel /status /recover`) |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 70 тестов |
+| `web/` | Web-срез (M1, шаг 7): тонкий клиент к API control plane, страница одной conversation, сквозной прогон с рестартом посередине. Подключение — только из env |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 70 тестов + 22 теста web-среза |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -104,6 +105,44 @@ CI на каждый PR: `npm ci` + `npm run typecheck` + `npm test` (`.github/w
 - **Артефакты переживают отмену** (ARCHITECTURE §4.6): `task_artifacts` хранит только ссылку, размер и контрольную сумму (байты в Artifact Storage); отмена задачи артефакты не удаляет, а `message_json` доставки несёт ссылки, а не байты.
 - **HTTP**: `POST /deliveries` (постановка), `POST /deliveries/deliver` (забор+отправка владельцем), `GET|POST /artifacts`.
 
+## Sandbox Web и сквозная приёмка (M1, шаг 7)
+
+Отдельный web-адаптер к API control plane: приём задачи по envelope с
+идемпотентным ключом, чтение журнала **по курсору** (C02), ответ в awaited
+input с дедупликацией, рестарт процесса посередине без перезапуска попытки,
+терминальный результат и ссылка на артефакт. Подключение и ключ — **только из
+env** (`CONTROL_PLANE_URL`, `CONTROL_PLANE_PRINCIPAL`, `CONTROL_PLANE_PROFILE`,
+`CONTROL_PLANE_API_KEY`): в репозитории и логах секретов нет.
+
+```bash
+npm test                       # 92 теста, из них 22 — web-срез и сквозной прогон
+node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против настоящего control plane
+```
+
+Сквозной сценарий и четыре управляемых сбоя (оборванная доставка пробуждения,
+рестарт посреди ожидания, потеря связи, потерянный ответ) —
+[`docs/M1-STEP7-WEB-SLICE.md`](docs/M1-STEP7-WEB-SLICE.md), отчёт живого
+прогона — `docs/e2e/m1-step7-live-report.json`.
+
+## Sandbox Web и сквозная приёмка (M1, шаг 7)
+
+Отдельный web-адаптер к API control plane: приём задачи по envelope с
+идемпотентным ключом, чтение журнала **по курсору** (C02), ответ в awaited
+input с дедупликацией, рестарт процесса посередине без перезапуска попытки,
+терминальный результат и ссылка на артефакт. Подключение и ключ — **только из
+env** (`CONTROL_PLANE_URL`, `CONTROL_PLANE_PRINCIPAL`, `CONTROL_PLANE_PROFILE`,
+`CONTROL_PLANE_API_KEY`): в репозитории и логах секретов нет.
+
+```bash
+npm test                       # 92 теста, из них 22 — web-срез и сквозной прогон
+node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против настоящего control plane
+```
+
+Сквозной сценарий и четыре управляемых сбоя (оборванная доставка пробуждения,
+рестарт посреди ожидания, потеря связи, потерянный ответ) —
+[`docs/M1-STEP7-WEB-SLICE.md`](docs/M1-STEP7-WEB-SLICE.md), отчёт живого
+прогона — `docs/e2e/m1-step7-live-report.json`.
+
 ## Контрактные решения
 
 - **Терминальные статусы неизменяемы** (`done/failed/cancelled`): статусный апдейт идёт с `AND status NOT IN ('done','failed','cancelled')`; поздняя запись даёт `TerminalStateError` и событие в `task_events` с `status_after = NULL, payload.rejected = terminal_state`. Закрывает суть [issue #90](https://github.com/trained-assist/trained-agent-architecture/issues/90) на двух уровнях: guard в репозитории (тест `taskstore-terminal-guard`) + «catch» в плане (тест `workflow-port`, «поздний wait_timeout»).
@@ -117,7 +156,7 @@ CI на каждый PR: `npm ci` + `npm run typecheck` + `npm test` (`.github/w
 
 - **Деплой и замеры на реальном аккаунте Cloudflare** — только по явной команде владельца (там же: настоящий `database_id`, latency пробуждения после `wrangler deploy` = [#91](https://github.com/trained-assist/trained-agent-architecture/issues/91), поведение под старым кодом = [#92](https://github.com/trained-assist/trained-agent-architecture/issues/92)). Токены — GCP Secret Manager / GitHub Secrets, в репо их нет и не будет.
 - **M1.3** — подключение настоящего Runner (ai-agent-runner): idempotent submit, события, cancellation, финализация артефактов.
-- **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter).
+- **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter). **Web adapter и сквозная приёмка — в PR `feat/m1-web-slice`** (страница разговора, клиент к API, сквозной прогон с рестартом); `deliveries` как таблица и единственный delivery owner — остаются на шаг 8.
 - **M1.5** — пилот и rollback: compatibility-сценарии, разрешённый cohort только для новых задач.
 - Схема дальше: таблицы вне скоупа M1.1 (`task_items`, `executions`, `deliveries`, legacy cron/hook) — отдельными аддитивными миграциями; outbox доставки (`deliveries`) и его проекция `delivery_state`.
 

@@ -1,0 +1,72 @@
+{
+  "conversationId": "m1-step7-1790940025450",
+  "restartMode": "process",
+  "fault": "none",
+  "messages": [
+    {
+      "seq": 1,
+      "kind": "new",
+      "text": "собери сводку по песочнице",
+      "userTaskId": "ut-2d28a806eaad7a6197b3",
+      "requestId": "web:m1-step7-1790940025450:m1",
+      "status": "awaiting_input",
+      "runId": null
+    },
+    {
+      "seq": 2,
+      "kind": "answer",
+      "text": "только за вчера",
+      "userTaskId": "ut-2d28a806eaad7a6197b3",
+      "requestId": "web:m1-step7-1790940025450:m2",
+      "status": "done",
+      "runId": null,
+      "answersUsed": 1,
+      "awaitingAnsweredEvents": 1
+    },
+    {
+      "seq": 3,
+      "kind": "new",
+      "text": "выгрузи результат в файл",
+      "userTaskId": "ut-cb83fc915c55905d6e88",
+      "requestId": "web:m1-step7-1790940025450:m3",
+      "status": "awaiting_input",
+      "runId": null
+    },
+    {
+      "seq": 4,
+      "kind": "answer",
+      "text": "да, выгружай",
+      "userTaskId": "ut-cb83fc915c55905d6e88",
+      "requestId": "web:m1-step7-1790940025450:m4",
+      "status": "done",
+      "runId": null,
+      "answersUsed": 1
+    },
+    {
+      "seq": 5,
+      "kind": "new",
+      "text": "итоговая сводка",
+      "userTaskId": "ut-1f049cd4a4c9761c6247",
+      "requestId": "web:m1-step7-1790940025450:m5",
+      "status": "awaiting_input",
+      "artifactRefs": []
+    }
+  ],
+  "runStartedByTask": {
+    "ut-cb83fc915c55905d6e88": 1
+  },
+  "checks": {
+    "awaitingConsumedExactlyOnce": true,
+    "noRerunAfterRestart": true,
+    "terminalResultAvailable": true,
+    "artifactRefsVisible": 0,
+    "lastMessageStatus": "awaiting_input",
+    "cursorReplayComplete": true,
+    "runStartedOnceInJournal": true,
+    "transport": "status-history",
+    "fiveMessages": true
+  },
+  "runIdNote": "runId доступен через /status (executions)",
+  "ok": true,
+  "secretsInReport": false
+}
