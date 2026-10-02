@@ -106,10 +106,18 @@ export class RunnerApiAdapter {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /**
+   * Вызов fetch с привязкой к globalThis: в Workers глобальный fetch требует
+   * правильного `this`, иначе `Illegal invocation` (поймано живым прогоном).
+   */
+  private doFetch(url: string, init: RequestInit): Promise<Response> {
+    return this.fetchImpl.call(globalThis, url, init) as Promise<Response>;
+  }
+
   private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
     let res: Response;
     try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      res = await this.doFetch(`${this.baseUrl}${path}`, {
         method,
         headers: {
           authorization: `Bearer ${this.apiKey}`,
@@ -178,13 +186,13 @@ export class RunnerApiAdapter {
 }
 
 /** Стабильный ключ попытки: вычисляется ДО отправки из (userTaskId, generation). */
-export function stableAttemptKey(userTaskId: string, generation: number): string {
-  return `run-${sha256Hex(`${userTaskId}:${generation}`).slice(0, 20)}`;
-}
-
-function sha256Hex(input: string): string {
-  // node:crypto доступен и в Workers, и в Node 20+.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { createHash } = require('node:crypto') as typeof import('node:crypto');
-  return createHash('sha256').update(input).digest('hex');
+export async function stableAttemptKey(userTaskId: string, generation: number): Promise<string> {
+  // WebCrypto: доступен и в Workers, и в Node 20+. require('node:crypto') в
+  // бандле Workers не работает (Dynamic require is not supported).
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${userTaskId}:${generation}`));
+  const hex = [...new Uint8Array(digest)]
+    .slice(0, 10)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `run-${hex}`;
 }

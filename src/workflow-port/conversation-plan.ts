@@ -190,7 +190,7 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
   let runnerRunId: string | null = null;
   let runnerOwnerGeneration: number | null = null;
   if (p.adapter) {
-    const attemptKey = stableAttemptKey(taskId, generation);
+    const attemptKey = await stableAttemptKey(taskId, generation);
     try {
       const receipt = await p.adapter.submit({
         userTaskId: taskId,

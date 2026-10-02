@@ -5,7 +5,7 @@
 //  - Runner недоступен -> задача не теряется, повтор безопасен.
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
-import { awaitRunnerResult, stableAttemptKey, type RunnerApiAdapter } from '../src/runner-adapter';
+import { awaitRunnerResult, RunnerApiAdapter, stableAttemptKey } from '../src/runner-adapter';
 import { RunnerUnavailableError } from '../src/runner-adapter/errors';
 import { describe, expect, it } from 'vitest';
 
@@ -132,7 +132,7 @@ const makeFakeRunner = (opts: { failSubmit?: boolean; connectionLost?: boolean; 
 describe('Runner adapter: стабильный ключ и идемпотентность', () => {
   it('ключ попытки вычисляется ДО отправки; повтор с тем же ключом = тот же Run', async () => {
     const { adapter, receipts } = makeFakeRunner();
-    const key = stableAttemptKey('ut-1', 1);
+    const key = await stableAttemptKey('ut-1', 1);
 
     const first = await adapter.submit({ userTaskId: 'ut-1', idempotencyKey: key });
     const second = await adapter.submit({ userTaskId: 'ut-1', idempotencyKey: key });
@@ -144,9 +144,81 @@ describe('Runner adapter: стабильный ключ и идемпотент�
   });
 
   it('другой generation = другой ключ = новая попытка', async () => {
-    const key1 = stableAttemptKey('ut-1', 1);
-    const key2 = stableAttemptKey('ut-1', 2);
+    const key1 = await stableAttemptKey('ut-1', 1);
+    const key2 = await stableAttemptKey('ut-1', 2);
     expect(key1).not.toBe(key2);
+  });
+});
+
+describe('Runner adapter: HTTP-клиент (маршруты, auth, идемпотентность, ошибки)', () => {
+  it('submit: POST /v1/runs с Bearer и Idempotency-Key; deduplicated из ответа', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ requestId: 'req-1', userTaskId: 'ut-1', runId: 'run-1', deduplicated: false }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', fetchImpl);
+
+    const receipt = await adapter.submit({ userTaskId: 'ut-1', idempotencyKey: 'run-key-1' });
+
+    expect(receipt.runId).toBe('run-1');
+    expect(calls[0]!.url).toBe('http://runner.local/v1/runs');
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers.authorization).toBe('Bearer test-key');
+    expect(headers['idempotency-key']).toBe('run-key-1');
+    expect(JSON.parse(String(calls[0]!.init.body)).userTaskId).toBe('ut-1');
+  });
+
+  it("status/result/events/artifacts/cancel идут по маршрутам Runner'а с курсором", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ runId: 'run-1', events: [], cursor: 5, hasMore: false, artifacts: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'k', fetchImpl);
+
+    await adapter.status('run-1');
+    await adapter.result('run-1');
+    await adapter.events('run-1', 5, 100);
+    await adapter.artifacts('run-1');
+    await adapter.cancel('run-1', { ownerGeneration: 2, reason: 'stop' });
+
+    expect(seen).toEqual([
+      'http://runner.local/v1/runs/run-1/status',
+      'http://runner.local/v1/runs/run-1/result',
+      'http://runner.local/v1/runs/run-1/events?cursor=5&limit=100',
+      'http://runner.local/v1/runs/run-1/artifacts',
+      'http://runner.local/v1/runs/run-1/cancel',
+    ]);
+  });
+
+  it('маппинг ошибок: 5xx -> Unavailable, 404 -> NotFound, 409 -> Conflict, STALE -> StaleGeneration', async () => {
+    const mk = (status: number, code: string) =>
+      (async () =>
+        new Response(JSON.stringify({ error: { code, message: code } }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        })) as unknown as typeof fetch;
+
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'INTERNAL')).status('x')).rejects.toMatchObject({ name: 'RunnerUnavailableError' });
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(404, 'NOT_FOUND')).status('x')).rejects.toMatchObject({ name: 'RunnerNotFoundError' });
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(400, 'INVALID_REQUEST')).submit({ userTaskId: 'u', idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'RunnerConflictError' });
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(409, 'STALE_OWNER_GENERATION')).cancel('x')).rejects.toMatchObject({ name: 'RunnerStaleGenerationError' });
+  });
+
+  it('сетевой сбой -> RunnerUnavailableError (задача не теряется)', async () => {
+    const boom = (async () => {
+      throw new TypeError('network down');
+    }) as unknown as typeof fetch;
+    await expect(new RunnerApiAdapter('http://r', 'k', boom).submit({ userTaskId: 'u', idempotencyKey: 'k' })).rejects.toMatchObject({
+      name: 'RunnerUnavailableError',
+    });
   });
 });
 
@@ -156,7 +228,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'сделай работу' });
     const { adapter } = makeFakeRunner();
-    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: stableAttemptKey(taskId, 1) });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
 
     const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
@@ -187,7 +259,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'потеряем связь' });
     const { adapter } = makeFakeRunner({ connectionLost: true });
-    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: stableAttemptKey(taskId, 1) });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
 
     const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
@@ -211,7 +283,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'runner лежит' });
     const { adapter: down } = makeFakeRunner({ failSubmit: true });
-    const key = stableAttemptKey(taskId, 1);
+    const key = await stableAttemptKey(taskId, 1);
 
     await expect(down.submit({ userTaskId: taskId, idempotencyKey: key })).rejects.toBeInstanceOf(RunnerUnavailableError);
 
@@ -234,7 +306,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'export упадёт' });
     const { adapter } = makeFakeRunner({ persistence: 'failed' });
-    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: stableAttemptKey(taskId, 1) });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
 
     const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
