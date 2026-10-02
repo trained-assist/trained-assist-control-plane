@@ -496,6 +496,51 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     expect(engines).toEqual(['fake', 'opencode']);
   });
 
+  // Живая находка: у реального Runner'а outputRefs пуст, артефакт виден только в
+  // манифестах. Раньше result.artifacts собирался из outputRefs — и был пуст,
+  // хотя артефакт лежал в task_artifacts.
+  it('result.artifacts несёт финализированные ссылки из манифестов (пустые outputRefs)', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-plan-manifest');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'соберём артефакт' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter } = makeFakeRunner({
+      outputRefs: [],
+      artifactManifests: [{ artifactId: 'art-1', name: 'ran.txt', storageKey: 'runs/run-1/ran.txt', size: 2, sha256: 'deadbeef' }],
+    });
+
+    const ctx: StepCtx = {
+      step: async (_name, fn) => fn({ attempt: 1 }),
+      sleep: async () => {},
+      waitFor: async () => {
+        const open = await store.getOpenAwaiting(taskId);
+        if (open) {
+          await store.answerAwaitingById({ awaitingInputId: open.awaiting_input_id, idempotencyKey: 'web:plan-manifest', answer: { answer: 'да' } });
+        }
+        throw new Error('event timed out');
+      },
+    };
+
+    const params: PlanParams = {
+      taskId,
+      generation: 1,
+      profileId: 'profile-1',
+      runId: attempt.id,
+      goal: 'соберём артефакт',
+      runnerPollSec: 1,
+      runnerTimeoutSec: 30,
+    };
+    const outcome = await conversationPlan(ctx, store, params, { adapter: adapter as unknown as RunnerApiAdapter });
+    expect(outcome.ok).toBe(true);
+
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('done');
+    const result = JSON.parse(task.result_json!);
+    expect(result.artifacts).toEqual(['runs/run-1/ran.txt']);
+    // Ровно тот же набор, что записан в task_artifacts — источник один.
+    expect((await store.listArtifacts(taskId)).map((a) => a.artifact_ref)).toEqual(result.artifacts);
+  });
+
   it('Runner недоступен в плане: задача не теряется, попытка unknown, повтор безопасен', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-plan-down');
@@ -515,5 +560,77 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     expect(run!.error_class).toBe('runner_unavailable');
     const events = await store.history(taskId);
     expect(events.some((e) => e.kind === 'error' && e.payload_json.includes('runner_unavailable'))).toBe(true);
+  });
+
+  // Живая находка: недоступность Runner'а посреди отправки не должна оставлять
+  // задачу навсегда без прогона. Отправка — шаг с повтором: недоступность
+  // прописана в журнал, повтор с тем же ключом возвращает тот же Run.
+  it('отправка — шаг с повтором: обрыв связи переживается тем же Run, задача доходит до done', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-plan-retry');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'обрыв на отправке' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter } = makeFakeRunner();
+
+    const keys: string[] = [];
+    let failFirst = true;
+    const flaky = {
+      ...adapter,
+      submit: async (input: { userTaskId: string; idempotencyKey: string }) => {
+        keys.push(input.idempotencyKey);
+        if (failFirst) {
+          failFirst = false;
+          throw new RunnerUnavailableError('injected: tunnel down');
+        }
+        return adapter.submit(input);
+      },
+    };
+
+    // StepCtx, который честно повторяет шаг: так же, как движок Workflows.
+    const retryCtx: StepCtx = {
+      step: async <T>(_name: string, fn: (a?: { attempt?: number }) => Promise<T>, retry?: { limit: number; delaySec: number }): Promise<T> => {
+        let last: unknown;
+        for (let n = 1; n <= (retry?.limit ?? 1); n++) {
+          try {
+            return await fn({ attempt: n });
+          } catch (e) {
+            last = e;
+          }
+        }
+        throw last;
+      },
+      sleep: async () => {},
+      waitFor: async () => {
+        const open = await store.getOpenAwaiting(taskId);
+        if (open) {
+          await store.answerAwaitingById({ awaitingInputId: open.awaiting_input_id, idempotencyKey: 'web:plan-retry', answer: { answer: 'да' } });
+        }
+        throw new Error('event timed out');
+      },
+    };
+
+    const params: PlanParams = {
+      taskId,
+      generation: 1,
+      profileId: 'profile-1',
+      runId: attempt.id,
+      goal: 'обрыв на отправке',
+      runnerPollSec: 1,
+      runnerTimeoutSec: 30,
+    };
+    const outcome = await conversationPlan(retryCtx, store, params, { adapter: flaky as unknown as RunnerApiAdapter });
+    expect(outcome.ok).toBe(true);
+
+    // Оба вызова отправки — с одним ключом: Runner дедуплицирует, второй Run не создан.
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toBe(await stableAttemptKey(taskId, 1));
+
+    // Попытка: обрыв помечен, но попытка живёт и привязана к Run Runner'а.
+    const events = await store.history(taskId);
+    expect(events.some((e) => e.kind === 'error' && e.payload_json.includes('runner_unavailable'))).toBe(true);
+    const run = await store.getRun(attempt.id);
+    expect(run!.session_id).toMatch(/^run-/);
+    expect((await store.requireTask(taskId)).status).toBe('done');
   });
 });
