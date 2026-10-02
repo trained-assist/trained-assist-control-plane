@@ -16,7 +16,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `src/workflow-port/` | Workflow Port поверх Cloudflare Workflows: `submit/signal/cancel/status/recover`, `StepCtx` для кода планов, демо-план M1.2 |
 | `src/index.ts` | `TaskWorkflow` + HTTP-слой (`/start /signal /cancel /status /recover`) |
 | `web/` | Web-срез (M1, шаг 7): тонкий клиент к API control plane, страница одной conversation, сквозной прогон с рестартом посередине. Подключение — только из env |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 70 тестов + 22 теста web-среза |
+| `src/awaiting/` | Ожидание человека: маппинг purpose→kind, durable-ожидание (истина в Task Store, движок только будит) |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 79 тестов control plane + 22 теста web-среза |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -142,6 +143,18 @@ node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против �
 рестарт посреди ожидания, потеря связи, потерянный ответ) —
 [`docs/M1-STEP7-WEB-SLICE.md`](docs/M1-STEP7-WEB-SLICE.md), отчёт живого
 прогона — `docs/e2e/m1-step7-live-report.json`.
+
+## Ожидание человека и разговор (эпик #109, шаг 5, гейт #115)
+
+Гейт #115 выбрал host-owned interaction tool через MCP: **durable wait живёт в HOST/Task Store, а не в движке**. Здесь реализована host-сторона этого взаимодействия.
+
+- **Явный адрес ответа**: `awaiting_inputs.awaiting_input_id` — одноразовый адрес ответа; `POST /awaiting` открывает ожидание, `GET /awaiting/{id}` читает, `POST /awaiting/{id}/answer` отвечает по этому адресу. Одно открытое ожидание на задачу (partial unique index) — второе открытие отклоняется.
+- **Дедуп ответа**: ответ адресуется ключом идемпотентности реплики (`requestId` канала) и хранится в `task_signals`. Повтор того же ключа — **no-op с прежним результатом** (возвращаются тот же ответ и тот же `answeredAt`); другой ключ на уже отвеченном ожидании — **409 conflict**; поздний ответ на `expired`/`cancelled` — отказ, задача **не возобновляется**.
+- **purpose → kind (маппинг, без второго набора терминов)**: `preference → choice`, `missing_fact → data`, `credential → approval`, `approval → approval`. `kind` остаётся лексикой A2 §5.4, `purpose` — «зачем спрашиваем». Для `credential` ответом является **подтверждение**: сам секрет приходит через credential broker и в ответе/логах не появляется. Варианты выбора хранятся со **стабильными option ID** (не переинтерпретируется изменившийся текст кнопки, #115).
+- **Ожидание переживает смерть движка**: истина ответа — строка `awaiting_inputs`. Движок ждёт событие-срез (по умолчанию 60 с), затем **перечитывает durable состояние**; ответ, пришедший только событием движка, **сразу сохраняется durable**. Потеря пробуждения не теряет ответ (#116).
+- **Явное продолжение**: при возобновлении экземпляр получает адрес последнего ожидания и продолжает **от него** — шаги до ожидания не переигрываются (проверено: `prepare` выполняется один раз). Новая попытка помечена явно: **новый `runId`, тот же `userTaskId`, подъём поколения** (прежняя попытка лишена прав) и перечень `availableData` (открытое ожидание, артефакты, наличие результата) в событии `run_started`. Это явная семантика продолжения, а не молчаливый повтор всей задачи.
+- **Ссылки движка** (`engine_session_ref`, `engine_request_ref`, `tool_call_ref`) хранятся как корреляция: engine ID **не заменяют** platform ID (`userTaskId`, `awaitingInputId`, `generation`).
+- **HTTP**: `POST /awaiting` (`tasks:control`), `GET /awaiting/{id}` (`tasks:read`), `POST /awaiting/{id}/answer` (`tasks:signal`; 200/409). Логи: `awaiting.opened / awaiting.answered / awaiting.answer_duplicate / awaiting.answer_rejected` с `profileId`, `userTaskId`, `runId`, `requestId`, `awaitingInputId`, `idempotencyKey`, `reason`.
 
 ## Контрактные решения
 

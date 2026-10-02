@@ -62,3 +62,25 @@ export class AlreadyOpenAwaitingError extends TaskStoreError {
     this.name = 'AlreadyOpenAwaitingError';
   }
 }
+
+/** На это ожидание уже ответили ДРУГИМ ключом идемпотентности (C01: conflict). */
+export class AnswerConflictError extends Error {
+  constructor(
+    public readonly awaitingInputId: string,
+    public readonly idempotencyKey: string,
+  ) {
+    super(`answer conflict: awaitingInputId=${awaitingInputId} already answered with a different key (${idempotencyKey})`);
+    this.name = 'AnswerConflictError';
+  }
+}
+
+/** Поздний ответ: ожидание уже истекло или отменено — задачу он не возобновляет. */
+export class AnswerRejectedError extends Error {
+  constructor(
+    public readonly awaitingInputId: string,
+    public readonly awaitingStatus: string,
+  ) {
+    super(`answer rejected: awaitingInputId=${awaitingInputId} is ${awaitingStatus}`);
+    this.name = 'AnswerRejectedError';
+  }
+}

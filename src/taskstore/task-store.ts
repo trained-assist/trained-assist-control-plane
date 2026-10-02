@@ -16,11 +16,14 @@
 
 import {
   AlreadyOpenAwaitingError,
+  AnswerConflictError,
+  AnswerRejectedError,
   FencedError,
   TerminalStateError,
   TaskNotFoundError,
   TaskStoreError,
 } from './errors';
+import { kindForPurpose } from '../awaiting/purpose';
 import {
   TERMINAL_STATUS_SQL,
   isTerminalStatus,
@@ -28,6 +31,7 @@ import {
   type AwaitingInputRow,
   type DeliveryRow,
   type AwaitingKind,
+  type AwaitingPurpose,
   type ConversationRow,
   type EventSource,
   type PrincipalRow,
@@ -95,17 +99,23 @@ export interface CommitOptions {
 
 export interface OpenAwaitingInput {
   taskId: string;
-  kind: AwaitingKind;
+  /** Форма ответа (A2 §5.4). Если задан purpose, kind выводится из него. */
+  kind?: AwaitingKind;
+  /** Зачем спрашиваем: preference | missing_fact | credential | approval. */
+  purpose?: AwaitingPurpose | null;
   question: string;
   /** Кто вправе ответить; формат значений задаёт контракт A3 (§5.6). */
   respondentScope: string;
   step?: string | null;
   runId?: string | null;
+  /** Форма ответа/варианты; для choice — со стабильными option ID (#115). */
   schema?: unknown;
   checkpointRef?: string | null;
   deadlineAt?: number;
   generation?: number;
   source?: EventSource;
+  /** Ссылки движка (#115): не идентичность, а корреляция с platform IDs. */
+  engineRefs?: { sessionRef?: string | null; requestRef?: string | null; toolCallRef?: string | null } | null;
 }
 
 export interface AnswerAwaitingInput {
@@ -497,7 +507,14 @@ export class TaskStore {
    */
   async resumeRun(
     taskId: string,
-    opts: { reason?: string; instructions?: string; engine?: string | null; sessionId?: string | null; leaseSec?: number } = {},
+    opts: {
+      reason?: string;
+      instructions?: string;
+      engine?: string | null;
+      sessionId?: string | null;
+      leaseSec?: number;
+      previousRunId?: string | null;
+    } = {},
   ): Promise<{ run: RunAttemptRow; generation: number }> {
     const task = await this.requireTask(taskId);
     if (isTerminalStatus(task.status)) {
@@ -510,12 +527,28 @@ export class TaskStore {
       sessionId: opts.sessionId ?? null,
       leaseSec: opts.leaseSec,
     });
+    // Явная семантика продолжения: новый runId, тот же userTaskId, и перечень
+    // доступных сохранённых данных (открытое ожидание, артефакты, результат).
+    const available = await this.availableContinuationData(taskId);
     await this.logEvent({
       taskId,
       kind: 'run_started',
       generation,
       source: 'gateway',
-      payload: { runId: run.id, resumed: true, reason: opts.reason ?? null, instructions: opts.instructions ?? null },
+      payload: {
+        runId: run.id,
+        resumed: true,
+        reason: opts.reason ?? null,
+        instructions: opts.instructions ?? null,
+        previousRunId: opts.previousRunId ?? null,
+        availableData: {
+          awaitingInputId: available.awaitingInputId,
+          awaitingStatus: available.awaitingStatus,
+          awaitingPurpose: available.awaitingPurpose,
+          artifacts: available.artifacts,
+          hasResult: available.resultJson !== null,
+        },
+      },
     });
     return { run, generation };
   }
@@ -1443,6 +1476,8 @@ export class TaskStore {
     const now = Date.now();
     const task = await this.requireTask(input.taskId);
     const generation = input.generation ?? task.generation;
+    const purpose = input.purpose ?? null;
+    const kind = input.kind ?? kindForPurpose(purpose);
 
     const open = await this.getOpenAwaiting(input.taskId);
     if (open) throw new AlreadyOpenAwaitingError(input.taskId, open.awaiting_input_id);
@@ -1453,8 +1488,9 @@ export class TaskStore {
       .prepare(
         `INSERT INTO awaiting_inputs(
            awaiting_input_id, user_task_id, task_item_id, run_id, kind, question, schema_json,
-           respondent_scope, checkpoint_ref, status, created_at, deadline_at, generation, version)
-         SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?
+           respondent_scope, checkpoint_ref, status, created_at, deadline_at, generation, version,
+           purpose, engine_session_ref, engine_request_ref, tool_call_ref)
+         SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
          WHERE EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL})`,
       )
       .bind(
@@ -1462,7 +1498,7 @@ export class TaskStore {
         input.taskId,
         input.step ?? null,
         input.runId ?? null,
-        input.kind,
+        kind,
         input.question,
         input.schema === undefined ? null : JSON.stringify(input.schema),
         input.respondentScope,
@@ -1472,6 +1508,10 @@ export class TaskStore {
         deadlineAt,
         generation,
         1,
+        purpose,
+        input.engineRefs?.sessionRef ?? null,
+        input.engineRefs?.requestRef ?? null,
+        input.engineRefs?.toolCallRef ?? null,
         input.taskId,
         generation,
       );
@@ -1486,7 +1526,7 @@ export class TaskStore {
           step: input.step ?? null,
           source: input.source ?? 'input',
           statusAfter: 'awaiting_input',
-          payload: { question: input.question, kind: input.kind, deadlineAt },
+          payload: { question: input.question, kind, purpose, deadlineAt, engineRefs: input.engineRefs ?? null },
         },
         [insert],
       );
@@ -1585,6 +1625,169 @@ export class TaskStore {
       [close],
     );
     return { awaitingInputId: open.awaiting_input_id };
+  }
+
+  /**
+   * Ответ человека по ЯВНОМУ адресу ответа awaitingInputId (C01: одно ожидание
+   * ответа, одноразовый идемпотентный ответ).
+   *
+   * Идемпотентность: ответ адресуется ключом идемпотентности канала (native id
+   * реплики) и хранится в task_signals (UNIQUE(user_task_id, step_key,
+   * idempotency_key)), поэтому:
+   *  - повтор того же ключа = no-op и возвращает ПРЕЖНИЙ результат;
+   *  - другой ключ на уже отвеченном ожидании = conflict (не «второй ответ»);
+   *  - поздний ответ на expired/cancelled ожидание отклоняется и НЕ возобновляет
+   *    задачу (#116: поздний callback после cancel не должен её будить).
+   */
+  async answerAwaitingById(input: {
+    awaitingInputId: string;
+    idempotencyKey: string;
+    answer: unknown;
+    source?: EventSource;
+    step?: string | null;
+  }): Promise<{
+    applied: boolean;
+    duplicate: boolean;
+    awaitingInputId: string;
+    taskId: string;
+    answer: unknown;
+    answeredAt: number | null;
+    signalId: number | null;
+  }> {
+    const awaiting = await this.getAwaiting(input.awaitingInputId);
+    if (!awaiting) throw new TaskStoreError(`awaiting input not found: ${input.awaitingInputId}`);
+
+    // Повтор того же ключа: вернуть прежний результат, ничего не меняя.
+    const previous = await this.db
+      .prepare(
+        `SELECT id FROM task_signals
+         WHERE user_task_id = ? AND step_key = ? AND idempotency_key = ?`,
+      )
+      .bind(awaiting.user_task_id, input.awaitingInputId, input.idempotencyKey)
+      .first<{ id: number }>();
+    if (previous && awaiting.status === 'answered') {
+      return {
+        applied: false,
+        duplicate: true,
+        awaitingInputId: awaiting.awaiting_input_id,
+        taskId: awaiting.user_task_id,
+        answer: awaiting.answer_json === null ? null : JSON.parse(awaiting.answer_json),
+        answeredAt: awaiting.answered_at,
+        signalId: awaiting.answer_signal_id,
+      };
+    }
+    if (awaiting.status === 'answered') {
+      throw new AnswerConflictError(input.awaitingInputId, input.idempotencyKey);
+    }
+    if (awaiting.status !== 'open') {
+      throw new AnswerRejectedError(input.awaitingInputId, awaiting.status);
+    }
+
+    // Сигнал ответа: durable экземпляр ответа (task_signals), дедуп по ключу
+    // сообщения. Ключ идемпотентности — идентичность реплики, поэтому уже
+    // записанный сигнал (например пришедший через Port /signal с пустым
+    // step_key) ПЕРЕИСПОЛЬЗУЕТСЯ, а не дублируется второй строкой.
+    const existing = await this.db
+      .prepare(`SELECT * FROM task_signals WHERE user_task_id = ? AND idempotency_key = ? ORDER BY id LIMIT 1`)
+      .bind(awaiting.user_task_id, input.idempotencyKey)
+      .first<TaskSignalRow>();
+    const signal =
+      existing ??
+      (
+        await this.recordSignal({
+          taskId: awaiting.user_task_id,
+          stepKey: input.awaitingInputId,
+          idempotencyKey: input.idempotencyKey,
+          eventType: 'user_reply',
+          payload: input.answer,
+          source: 'web',
+        })
+      ).signal;
+
+    const applied = await this.answerAwaiting({
+      taskId: awaiting.user_task_id,
+      answer: input.answer,
+      signalId: signal.id,
+      generation: (await this.requireTask(awaiting.user_task_id)).generation,
+      step: input.step ?? awaiting.task_item_id,
+      source: input.source ?? 'input',
+    });
+
+    // Сигнал-ответ помечается потреблённым: он стал ответом на этот адрес.
+    // Отдельным оператором: ответ уже применён, и повторное чтение durable
+    // состояния работает даже если эта отметка не прошла.
+    await this.db
+      .prepare(`UPDATE task_signals SET consumed_at = ?, consumed_by_execution = ? WHERE id = ? AND consumed_at IS NULL`)
+      .bind(Date.now(), applied.awaitingInputId, signal.id)
+      .run();
+
+    const stored = await this.getAwaiting(applied.awaitingInputId);
+    return {
+      applied: true,
+      duplicate: false,
+      awaitingInputId: applied.awaitingInputId,
+      taskId: awaiting.user_task_id,
+      answer: input.answer,
+      answeredAt: stored?.answered_at ?? Date.now(),
+      signalId: signal.id,
+    };
+  }
+
+  async getAwaiting(awaitingInputId: string): Promise<AwaitingInputRow | null> {
+    return this.db
+      .prepare(`SELECT * FROM awaiting_inputs WHERE awaiting_input_id = ?`)
+      .bind(awaitingInputId)
+      .first<AwaitingInputRow>();
+  }
+
+  /**
+   * Durable-чтение ответа (истина для продолжения): ответ лежит в Task Store,
+   * а не в памяти движка и не в единственной копии сигнала пробуждения (#116).
+   */
+  async readAnswer(awaitingInputId: string): Promise<{ answer: unknown; answeredAt: number; signalId: number | null } | null> {
+    const row = await this.getAwaiting(awaitingInputId);
+    if (!row || row.status !== 'answered' || row.answer_json === null) return null;
+    return {
+      answer: JSON.parse(row.answer_json),
+      answeredAt: row.answered_at ?? 0,
+      signalId: row.answer_signal_id,
+    };
+  }
+
+  /**
+   * Что продолжение может взять с собой: открытое ожидание, сохранённые
+   * артефакты и последний результат задачи (эпик #109 шаг 5: «доступные
+   * сохранённые данные»).
+   */
+  async availableContinuationData(taskId: string): Promise<{
+    /** Открытое ожидание, если задача ждёт человека прямо сейчас. */
+    awaitingInputId: string | null;
+    awaitingStatus: string | null;
+    awaitingPurpose: string | null;
+    /** Последнее ожидание задачи в любом статусе: на него продолжает работа. */
+    lastAwaitingInputId: string | null;
+    lastAwaitingStatus: string | null;
+    artifacts: string[];
+    resultJson: string | null;
+    revision: number;
+  }> {
+    const task = await this.requireTask(taskId);
+    const open = await this.getOpenAwaiting(taskId);
+    const artifacts = await this.listArtifacts(taskId);
+    const last = await this.db
+      .prepare(`SELECT awaiting_input_id, status FROM awaiting_inputs WHERE user_task_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .bind(taskId)
+      .first<{ awaiting_input_id: string; status: string }>();
+    return {
+      awaitingInputId: open?.awaiting_input_id ?? null,
+      awaitingStatus: open?.status ?? null,
+      awaitingPurpose: open?.purpose ?? null,
+      lastAwaitingInputId: last?.awaiting_input_id ?? null,
+      lastAwaitingStatus: last?.status ?? null,
+      artifacts: artifacts.map((a) => a.artifact_ref),
+      resultJson: task.result_json,
+      revision: task.revision,
+    };
   }
 
   async getOpenAwaiting(taskId: string): Promise<AwaitingInputRow | null> {

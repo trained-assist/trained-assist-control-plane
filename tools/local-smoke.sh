@@ -125,7 +125,7 @@ AFTER="$(post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; t=json.loa
 echo "OK: revision+result не изменились ($AFTER)"
 
 echo "== 8. потеря связи и возобновление (P06) =="
-REQ2="req-smoke-$(date +%s)"
+REQ2="req-resume-$(date +%s)"
 INTAKE2="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ2\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"resume smoke\"}]}")"
 TASK2="$(echo "$INTAKE2" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
 START2="$(post /start "{\"taskId\":\"$TASK2\",\"profileId\":\"$PROFILE\",\"goal\":\"resume smoke\"}")"
@@ -195,7 +195,7 @@ post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; d=json.load(sys.std
 echo "OK: доставка own-статус delivered, задача/поколение/результат не тронуты"
 
 echo "== 11. артефакты переживают отмену =="
-REQ3="req-smoke-$(date +%s)"
+REQ3="req-artifacts-$(date +%s)"
 INTAKE3="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ3\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"артефакты и отмена\"}]}")"
 TASK3="$(echo "$INTAKE3" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
 post /start "{\"taskId\":\"$TASK3\",\"profileId\":\"$PROFILE\",\"goal\":\"артефакты и отмена\"}" >/dev/null
@@ -219,5 +219,58 @@ assert d["deliveries"][0]["status"] == "failed" and d["deliveries"][0]["last_err
 ' || exit 1
 echo "OK: cancelled; артефакт на месте; retry доставки подавлен (suppressed_by_cancel)"
 
+echo "== 12. host-owned interaction: ожидание с явным ID и дедуп ответа (шаг 5) =="
+REQ4="req-awaiting-$(date +%s)"
+INTAKE4="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ4\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"спрошу выбор\"}]}")"
+TASK4="$(echo "$INTAKE4" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+OPENED="$(post /awaiting "{\"taskId\":\"$TASK4\",\"purpose\":\"preference\",\"question\":\"Какой вариант?\",\"options\":[{\"id\":\"opt-a\",\"label\":\"А\"},{\"id\":\"opt-b\",\"label\":\"Б\"}]}")"
+echo "$OPENED" | py 'import json,sys; d=json.load(sys.stdin); assert d["kind"]=="choice" and d["purpose"]=="preference", d' || exit 1
+AID="$(echo "$OPENED" | py 'import json,sys; print(json.load(sys.stdin)["awaitingInputId"])')"
+echo "OK: purpose=preference -> kind=choice, awaitingInputId=$AID"
+
+ANSWERED="$(post "/awaiting/$AID/answer" "{\"idempotencyKey\":\"web:smoke-1\",\"answer\":{\"optionId\":\"opt-a\"}}")"
+echo "$ANSWERED" | py 'import json,sys; d=json.load(sys.stdin); assert d["applied"] is True and d["duplicate"] is False, d' || exit 1
+DUP_ANSWER="$(post "/awaiting/$AID/answer" "{\"idempotencyKey\":\"web:smoke-1\",\"answer\":{\"optionId\":\"opt-a\"}}")"
+echo "$DUP_ANSWER" | py 'import json,sys; d=json.load(sys.stdin); assert d["applied"] is False and d["duplicate"] is True and d["answeredAt"]=='"$(echo "$ANSWERED" | py 'import json,sys; print(json.load(sys.stdin)["answeredAt"])')"', d' || exit 1
+echo "OK: повтор ответа = no-op с прежним результатом"
+CONFLICT="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/awaiting/$AID/answer" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d '{"idempotencyKey":"web:smoke-2","answer":{"optionId":"opt-b"}}')"
+[ "$CONFLICT" = "409" ] || { echo "FAIL: ждали 409 (другой ключ), получили $CONFLICT" >&2; exit 1; }
+echo "OK: другой ключ на отвеченном ожидании -> 409 conflict"
+
+echo "== 13. ответ переживает смерть движка: продолжение явное =="
+REQ5="req-death-$(date +%s)"
+INTAKE5="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ5\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"умру во время ожидания\"}]}")"
+TASK5="$(echo "$INTAKE5" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+START5="$(post /start "{\"taskId\":\"$TASK5\",\"profileId\":\"$PROFILE\",\"goal\":\"умру во время ожидания\"}")"
+RUN5="$(echo "$START5" | py 'import json,sys; print(json.load(sys.stdin)["runId"])')"
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$TASK5\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "awaiting_input" ] && break
+  sleep 0.5
+done
+[ "$st" = "awaiting_input" ] || { echo "FAIL: задача 5 не дождалась ($st)" >&2; exit 1; }
+AID5="$(get "/awaiting?taskId=$TASK5" 2>/dev/null | py 'import json,sys; print(json.load(sys.stdin).get("open",{}).get("awaiting_input_id",""))' 2>/dev/null || true)"
+AID5="$(post /status "{\"taskId\":\"$TASK5\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["awaiting_input_id"])')"
+# Движок «умер»: отвечаем в durable-состояние БЕЗ пробуждения, затем явное продолжение.
+post "/awaiting/$AID5/answer" "{\"idempotencyKey\":\"web:after-death\",\"answer\":{\"answer\":\"да\"}}" >/dev/null
+RESUMED="$(post /resume "{\"taskId\":\"$TASK5\",\"reason\":\"engine died\"}")"
+echo "$RESUMED" | py 'import json,sys; d=json.load(sys.stdin); assert d["runId"]!="'"$RUN5"'", d; print("OK: новый runId, generation =", d["generation"])' || exit 1
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$TASK5\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "done" ] && break
+  sleep 0.5
+done
+[ "$st" = "done" ] || { echo "FAIL: задача 5 не дошла до done после продолжения ($st)" >&2; exit 1; }
+post /status "{\"taskId\":\"$TASK5\"}" | py '
+import json,sys
+d = json.load(sys.stdin); t = d["taskStore"]
+assert t["result"]["answer"] == "да", t["result"]
+prepare = [e for e in t["history"] if e.get("step") == "prepare"]
+assert len(prepare) == 1, "продолжение не должно переигрывать шаги до ожидания"
+resumes = [e for e in t["history"] if e["kind"] == "run_started" and json.loads(e["payload"]).get("resumed")]
+assert resumes, "нет явной отметки продолжения"
+print("OK: ответ пережил смерть движка; шаг prepare выполнен один раз; продолжение помечено resumed")
+'
+
 echo
-echo "PASS: прогон $REQUEST_ID (task $TASK), $REQ2 (task $TASK2), $REQ3 (task $TASK3) завершён"
+echo "PASS: прогоны $REQUEST_ID/$REQ2/$REQ3/$REQ4/$REQ5 завершены"
