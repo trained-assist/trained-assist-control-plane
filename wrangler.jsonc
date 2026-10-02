@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trained-assist-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": false,
+  "observability": { "enabled": false },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "control-plane-task-store",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "task-workflow",
+      "binding": "TASK_WORKFLOW",
+      "class_name": "TaskWorkflow"
+    }
+  ]
+}
