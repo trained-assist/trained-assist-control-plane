@@ -6,7 +6,7 @@ let seq = 0;
 const nextId = (prefix: string) => `${prefix}-${++seq}-${Date.now()}`;
 
 const newTask = async (store: TaskStore, id = nextId('t')) => {
-  const { created, task } = await store.createTask({
+  const { created, task } = await store.admitTask({
     id,
     profileId: 'profile-1',
     goal: 'проверить переходы',
@@ -20,8 +20,8 @@ describe('Task Store: приём и переходы', () => {
   it('повторный приём той же задачи идемпотентен (created=false, один task_accepted)', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId('dup');
-    const first = await store.createTask({ id, profileId: 'p', goal: 'g' });
-    const second = await store.createTask({ id, profileId: 'p', goal: 'g' });
+    const first = await store.admitTask({ id, profileId: 'p', goal: 'g' });
+    const second = await store.admitTask({ id, profileId: 'p', goal: 'g' });
 
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
@@ -217,8 +217,8 @@ describe('Task Store: conversation', () => {
   it('создание задачи создаёт строку разговора и задачи видны по conversation_id', async () => {
     const store = new TaskStore(env.DB);
     const convId = nextId('conv');
-    await store.createTask({ id: nextId('t'), profileId: 'p', goal: 'первая просьба', conversationId: convId });
-    await store.createTask({ id: nextId('t'), profileId: 'p', goal: 'вторая просьба', conversationId: convId });
+    await store.admitTask({ id: nextId('t'), profileId: 'p', goal: 'первая просьба', conversationId: convId });
+    await store.admitTask({ id: nextId('t'), profileId: 'p', goal: 'вторая просьба', conversationId: convId });
 
     const conv = await store.getConversation(convId);
     expect(conv?.conversation_id).toBe(convId);

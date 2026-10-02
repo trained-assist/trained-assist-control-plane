@@ -9,7 +9,7 @@ describe('Task Store: generation fencing (INV-02)', () => {
   it('запись с устаревшим generation отклоняется, состояние не меняется, событие fenced видно', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId('fence');
-    const { task } = await store.createTask({ id, profileId: 'p', goal: 'fencing' });
+    const { task } = await store.admitTask({ id, profileId: 'p', goal: 'fencing' });
     expect(task.generation).toBe(1);
 
     await store.commit(id, 1, { status: 'active', stage: 'running', step: 'run' });
@@ -35,7 +35,7 @@ describe('Task Store: generation fencing (INV-02)', () => {
   it('bumpGeneration переводит задачу в новое поколение: старый владелец отвергнут, новый пишет', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId('bump');
-    const { task } = await store.createTask({ id, profileId: 'p', goal: 'bump' });
+    const { task } = await store.admitTask({ id, profileId: 'p', goal: 'bump' });
 
     const gen2 = await store.bumpGeneration(id, { reason: 'lease expired' });
     expect(gen2).toBe(task.generation + 1);
@@ -58,7 +58,7 @@ describe('Task Store: generation fencing (INV-02)', () => {
   it('терминальной задаче bumpGeneration отклоняется', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId('bump-terminal');
-    const { task } = await store.createTask({ id, profileId: 'p', goal: 'terminal bump' });
+    const { task } = await store.admitTask({ id, profileId: 'p', goal: 'terminal bump' });
     await store.commit(id, task.generation, { status: 'done', result: { ok: true } });
     await expect(store.bumpGeneration(id)).rejects.toBeInstanceOf(TerminalStateError);
   });
@@ -66,7 +66,7 @@ describe('Task Store: generation fencing (INV-02)', () => {
   it('отмена поднимает поколение и закрывает открытые ожидания', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId('cancel');
-    const { task } = await store.createTask({ id, profileId: 'p', goal: 'cancel' });
+    const { task } = await store.admitTask({ id, profileId: 'p', goal: 'cancel' });
     await store.openAwaiting({ taskId: id, kind: 'data', question: 'Вопрос?', respondentScope: 'p' });
 
     const res = await store.cancel(id, { reason: 'user pressed stop' });

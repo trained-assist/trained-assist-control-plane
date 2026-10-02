@@ -178,3 +178,20 @@ export interface ConversationRow {
   updated_at: number;
   revision: number;
 }
+
+/** Принципал приёма: identity + профиль + выданные scope (P04/C13). */
+export interface PrincipalRow {
+  principalId: string;
+  profileId: string;
+  scopes: string[];
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * Scope приёма (P04 «scope»). Только владение и изменение задач; выбор движка,
+ * региона и квоты — это C04/placement policy и вне control plane.
+ */
+export const ADMISSION_SCOPES = ['tasks:intake', 'tasks:read', 'tasks:signal'] as const;
+export type AdmissionScope = (typeof ADMISSION_SCOPES)[number];

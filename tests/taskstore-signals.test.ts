@@ -6,7 +6,7 @@ let seq = 0;
 const nextId = (prefix: string) => `${prefix}-${++seq}-${Date.now()}`;
 
 const newTask = async (store: TaskStore, id = nextId('sig')) => {
-  const { task } = await store.createTask({ id, profileId: 'p', goal: 'сигналы' });
+  const { task } = await store.admitTask({ id, profileId: 'p', goal: 'сигналы' });
   return task;
 };
 
