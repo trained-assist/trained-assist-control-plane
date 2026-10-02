@@ -392,6 +392,15 @@ export class TaskStore {
    * Попытка по её id ИЛИ по runId Runner'а (runId хранится в session_id:
    * строка executions — внутренняя, а runId приходит извне).
    */
+  /** Привязать runId Runner'а к попытке (session_id): корреляция, не идентичность. */
+  async attachRunnerRun(runId: string, runnerRunId: string, ownerGeneration?: number | null): Promise<void> {
+    await this.db
+      .prepare(`UPDATE executions SET session_id = ? WHERE id = ?`)
+      .bind(runnerRunId, runId)
+      .run();
+    void ownerGeneration;
+  }
+
   async getRun(runId: string): Promise<RunAttemptRow | null> {
     const row = await this.db
       .prepare(`SELECT * FROM executions WHERE id = ? OR session_id = ? ORDER BY started_at LIMIT 1`)
@@ -443,16 +452,20 @@ export class TaskStore {
    * неизвестен, это НЕ 'failed'. Задача не меняется: ни timeout, ни истечение
    * lease сами по себе не запускают агента повторно.
    */
-  async markConnectionLost(runId: string, reason = 'connection_lost'): Promise<RunAttemptRow> {
+  async markConnectionLost(
+    runId: string,
+    reason = 'connection_lost',
+    errorClass = 'connection_lost',
+  ): Promise<RunAttemptRow> {
     const now = Date.now();
     // runId Runner'а хранится в session_id попытки (id строки — внутренний).
     const results = await this.db.batch([
       this.db
         .prepare(
-          `UPDATE executions SET status = 'unknown', error_class = 'connection_lost', error_text = ?
+          `UPDATE executions SET status = 'unknown', error_class = ?, error_text = ?
            WHERE (id = ? OR session_id = ?) AND status = 'running'`,
         )
-        .bind(reason, runId, runId),
+        .bind(errorClass, reason, runId, runId),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const run = await this.getRun(runId);
@@ -463,7 +476,7 @@ export class TaskStore {
       taskId: task?.id ?? '',
       kind: 'error',
       source: 'executor',
-      payload: { class: 'connection_lost', runId, reason, outcome: 'unknown' },
+      payload: { class: errorClass, runId, reason, outcome: 'unknown' },
     });
     return this.requireRun(runId);
   }
