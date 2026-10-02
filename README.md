@@ -12,9 +12,10 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `src/taskstore/` | Репозиторий Task Store: атомарные state/event-переходы, generation fencing, дедуп сигналов, awaiting input, **guard терминальных состояний** (issue #90), приём с квитанцией |
 | `src/intake/` | Приём задачи по контракту C01: envelope, профиль/права (scope), детерминированный userTaskId, durable receipt, идемпотентность по requestId |
 | `src/events/` | Поток событий C02: envelope с курсором (sequence = task_events.id), тип выводится из kind журнала |
+| `src/workflow-port/delivery-worker.ts` | Воркер доставки: единственный владелец отправки, bounded retry, адаптер канала внедряется |
 | `src/workflow-port/` | Workflow Port поверх Cloudflare Workflows: `submit/signal/cancel/status/recover`, `StepCtx` для кода планов, демо-план M1.2 |
 | `src/index.ts` | `TaskWorkflow` + HTTP-слой (`/start /signal /cancel /status /recover`) |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 63 теста |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 70 тестов |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -92,6 +93,16 @@ CI на каждый PR: `npm ci` + `npm run typecheck` + `npm test` (`.github/w
 - **Потеря связи = отдельное состояние** (P06, ARCHITECTURE §4.6): `POST /connection-lost {runId}` → попытка `unknown` с `error_class='connection_lost'`, `finished_at = NULL` (исход неизвестен, это не `failed`); задача не меняется. `POST /heartbeat {runId}` продлевает lease. Истечение lease — только сводка (`sweepExpiredLeases`), ни timeout, ни lease сами по себе не запускают агента повторно.
 - **Возобновление (AC-69)**: `POST /resume {taskId, reason?, instructions?}` — новый `runId`, тот же `userTaskId`, поколение поднято (старая попытка лишена прав), прежний экземпляр остановлен и удалён, новый запущен с новым поколением. Повтор сигнала дедуплицируется по ключу.
 - **Таблица `executions`** (имя и состав из A2 §6): попытки с `runId`, `generation`, `lease_until`, `last_heartbeat_at`. Статусы: `running/unknown/success/failed/interrupted/cancelled/waiting`; `unknown` — исход неизвестен, не `failed`.
+
+## Отмена и доставка (эпик #109, шаг 6)
+
+- **Отмена раздельная**: «запрос отмены» (`cancel_requested` + подъём поколения, fencing прежней попытки) и «подтверждённая остановка» (`status='cancelled'` + `task_cancelled` со `stopConfirmed`). Пока остановка не подтверждена, задача остаётся не-терминальной — `requested` не выдаётся за `stopped` (C03, AC-67).
+- **Один владелец доставки**: `claimDelivery` атомарно переводит `pending → accepted` одним UPDATE с подзапросом — две конкурентные отправки не могут забрать одну строку. Адаптер канала внедряется (`DeliveryAdapter`); в песочнице — локальная заглушка, настоящий канал подключает M1.4.
+- **Доставка имеет свой статус** (C02, A2 §5.5): `deliveries.status` не связан со статусом задачи; `delivery_state` — проекция, которая обновляется и на терминальной задаче (результат доставляют после `done`). Повтор того же `logicalMessageId` — no-op; `provider_message_id` гасит дубль у провайдера.
+- **Retry доставки не повторяет execution**: `failDelivery` трогает только строку `deliveries` (+ проекция и события `delivery_failed/delivery_sent`). Статус задачи, поколение, результат, попытки (`executions`) и шаги не меняются — проверено тестом.
+- **Отмена подавляет retry доставки** (C03: stop suppresses technical retries, включая outbox): подтверждённая остановка переводит `pending/accepted` доставки задачи в `failed` с `last_error='suppressed_by_cancel'` без `next_attempt_at`.
+- **Артефакты переживают отмену** (ARCHITECTURE §4.6): `task_artifacts` хранит только ссылку, размер и контрольную сумму (байты в Artifact Storage); отмена задачи артефакты не удаляет, а `message_json` доставки несёт ссылки, а не байты.
+- **HTTP**: `POST /deliveries` (постановка), `POST /deliveries/deliver` (забор+отправка владельцем), `GET|POST /artifacts`.
 
 ## Контрактные решения
 

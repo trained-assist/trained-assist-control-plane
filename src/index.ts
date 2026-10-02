@@ -8,6 +8,8 @@ import {
   CfWorkflowPort,
   cfStepCtx,
   conversationPlan,
+  deliverOnce,
+  type DeliveryAdapter,
   type PlanOutcome,
   type PlanParams,
   type SubmitInput,
@@ -81,6 +83,15 @@ const authorizeTaskRoute = async (
 const principalOf = (req: Request): string | null => req.headers.get('x-principal');
 
 /**
+ * Адаптер канала для локальной песочницы: доставка подтверждается без вызова
+ * провайдера (сеть/Telegram вне зоны control plane). Настоящий канал подключает
+ * карточка доставки M1.4 — контракт тот же (DeliveryAdapter).
+ */
+const localDeliveryAdapter: DeliveryAdapter = {
+  send: async (delivery) => ({ providerMessageId: `local-${delivery.channel}-${delivery.id.slice(0, 8)}` }),
+};
+
+/**
  * Локальный HTTP-слой для воспроизводимого прогона (см. README «Как запустить»):
  *   POST /start {taskId, profileId, goal, ...}  -> submit (ранний ответ)
  *   POST /signal {taskId, type, payload, idempotencyKey}
@@ -147,6 +158,50 @@ export default {
           nextCursor: page.nextCursor,
           hasMore: page.hasMore,
         });
+      }
+      // Outbox доставки: постановка и чтение. Отправку делает единственный
+      // владелец — воркер доставки (delivery-worker.ts), адаптер канала в песочнице
+      // локальный (M1.4 подключит настоящий канал).
+      if (url.pathname === '/deliveries') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+        const { delivery, queued } = await store.queueDelivery({
+          taskId,
+          logicalMessageId: (body.logicalMessageId as string | undefined) ?? `msg-${crypto.randomUUID()}`,
+          channel: (body.channel as string | undefined) ?? 'api',
+          message: body.message ?? {},
+          eventId: (body.eventId as number | undefined) ?? null,
+        });
+        return json({ deliveryId: delivery.id, status: delivery.status, queued }, queued ? 201 : 200);
+      }
+      if (url.pathname === '/deliveries/deliver') {
+        const owner = (body.owner as string | undefined) ?? 'local-worker';
+        const result = await deliverOnce(store, owner, localDeliveryAdapter, {
+          taskId: (body.taskId as string | undefined) ?? null,
+          channel: (body.channel as string | undefined) ?? null,
+          maxAttempts: (body.maxAttempts as number | undefined) ?? 3,
+          retryAfterSec: (body.retryAfterSec as number | undefined) ?? 0,
+        });
+        return result ? json(result) : json({ delivered: false, reason: 'outbox empty' });
+      }
+      if (url.pathname === '/artifacts') {
+        if (req.method !== 'POST') {
+          if (!taskId) return json({ error: 'taskId is required' }, 400);
+          await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+          return json({ artifacts: await store.listArtifacts(taskId) });
+        }
+        if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+        const { artifact, created } = await store.recordArtifact({
+          taskId,
+          kind: (body.kind as string | undefined) ?? 'file',
+          artifactRef: body.artifactRef as string,
+          sizeBytes: (body.sizeBytes as number | undefined) ?? null,
+          checksum: (body.checksum as string | undefined) ?? null,
+          runId: (body.runId as string | undefined) ?? null,
+        });
+        return json({ artifactId: artifact.artifact_id, artifactRef: artifact.artifact_ref, created }, created ? 201 : 200);
       }
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);

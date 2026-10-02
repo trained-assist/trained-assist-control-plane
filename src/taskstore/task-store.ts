@@ -582,8 +582,11 @@ export class TaskStore {
           now,
           now,
         ),
+      // Проекция доставки обновляется и на терминальной задаче: результат
+      // доставляют ПОСЛЕ done (C02: исполнение и доставка — разные статусы).
+      // Терминальный guard защищает status/result, а не delivery_state.
       this.db
-        .prepare(`UPDATE durable_tasks SET delivery_state = 'pending', updated_at = ? WHERE id = ? AND ${NON_TERMINAL_SQL}`)
+        .prepare(`UPDATE durable_tasks SET delivery_state = 'pending', updated_at = ?, revision = revision + 1 WHERE id = ?`)
         .bind(now, input.taskId),
     ]);
 
@@ -623,7 +626,7 @@ export class TaskStore {
    */
   async claimDelivery(
     owner: string,
-    opts: { channel?: string | null; now?: number; leaseSec?: number } = {},
+    opts: { channel?: string | null; taskId?: string | null; now?: number; leaseSec?: number } = {},
   ): Promise<DeliveryRow | null> {
     const now = opts.now ?? Date.now();
     const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
@@ -634,11 +637,20 @@ export class TaskStore {
            SELECT id FROM deliveries
            WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
              AND (? IS NULL OR channel = ?)
+             AND (? IS NULL OR user_task_id = ?)
            ORDER BY created_at, id LIMIT 1
          )
          RETURNING *`,
       )
-      .bind(leaseUntil, now, now, opts.channel ?? null, opts.channel ?? null)
+      .bind(
+        leaseUntil,
+        now,
+        now,
+        opts.channel ?? null,
+        opts.channel ?? null,
+        opts.taskId ?? null,
+        opts.taskId ?? null,
+      )
       .first<DeliveryRow>();
     // Claim — внутренняя учётная запись владельца доставки, не событие канала:
     // в лексике A2 §5.2 и C02 такого события нет.
@@ -659,7 +671,7 @@ export class TaskStore {
         )
         .bind(opts.providerMessageId ?? null, now, deliveryId),
       this.db
-        .prepare(`UPDATE durable_tasks SET delivery_state = 'delivered', updated_at = ? WHERE id = ?`)
+        .prepare(`UPDATE durable_tasks SET delivery_state = 'delivered', updated_at = ?, revision = revision + 1 WHERE id = ?`)
         .bind(now, delivery.user_task_id),
     ]);
     if (results[0]!.meta.changes !== 1) throw new TaskStoreError(`delivery confirm failed: ${deliveryId}`);
@@ -700,7 +712,7 @@ export class TaskStore {
         )
         .bind(exhausted ? 'failed' : 'pending', opts.error, nextAttemptAt, now, deliveryId),
       this.db
-        .prepare(`UPDATE durable_tasks SET delivery_state = ?, updated_at = ? WHERE id = ?`)
+        .prepare(`UPDATE durable_tasks SET delivery_state = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
         .bind(exhausted ? 'failed' : 'pending', now, delivery.user_task_id),
     ]);
     if (results[0]!.meta.changes !== 1) throw new TaskStoreError(`delivery fail record failed: ${deliveryId}`);
