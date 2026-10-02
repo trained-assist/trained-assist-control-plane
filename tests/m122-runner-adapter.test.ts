@@ -30,7 +30,15 @@ interface FakeRun {
 }
 
 /** Фейковый Runner: тот же контракт, что у Serverless Agent API, без сети. */
-const makeFakeRunner = (opts: { failSubmit?: boolean; connectionLost?: boolean; persistence?: 'persisted' | 'failed' } = {}) => {
+const makeFakeRunner = (
+  opts: {
+    failSubmit?: boolean;
+    connectionLost?: boolean;
+    persistence?: 'persisted' | 'failed';
+    outputRefs?: string[];
+    artifactManifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string }>;
+  } = {},
+) => {
   const runs = new Map<string, FakeRun>();
   const receipts = new Map<string, { runId: string; deduplicated: boolean }>();
 
@@ -52,7 +60,7 @@ const makeFakeRunner = (opts: { failSubmit?: boolean; connectionLost?: boolean; 
         result: {
           outcome: 'succeeded',
           exitReason: 'completed',
-          outputRefs: [`r2://control-plane/${input.userTaskId}/answer.json`],
+          outputRefs: opts.outputRefs ?? [`r2://control-plane/${input.userTaskId}/answer.json`],
           persistence: opts.persistence ?? 'persisted',
           ownerGeneration: 1,
         },
@@ -121,7 +129,7 @@ const makeFakeRunner = (opts: { failSubmit?: boolean; connectionLost?: boolean; 
       return { runId, events, cursor: run.events.length, hasMore: false, snapshot: { state: run.state, connectionLost: run.connectionLost, sequence: run.events.length, ownerGeneration: run.result.ownerGeneration } };
     },
     async artifacts() {
-      return [];
+      return opts.artifactManifests ?? [];
     },
     async cancel() {
       return { status: 'cancelled' };
@@ -172,6 +180,48 @@ describe('Runner adapter: HTTP-клиент (маршруты, auth, идемп�
     expect(headers.authorization).toBe('Bearer test-key');
     expect(headers['idempotency-key']).toBe('run-key-1');
     expect(JSON.parse(String(calls[0]!.init.body)).userTaskId).toBe('ut-1');
+  });
+
+  // Контракт тела submit сверен с живым Runner'ом: null вместо необязательного поля
+  // и `input.text` он отвергает (400 INVALID_REQUEST).
+  it('тело submit по контракту Runner\'а: null пропускаются, текст в input.inlinePrompt, refs объектами', async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ requestId: 'req-1', userTaskId: 'ut-1', runId: 'run-1', deduplicated: false }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'k', fetchImpl);
+
+    await adapter.submit({ userTaskId: 'ut-1', idempotencyKey: 'k1' });
+    await adapter.submit({
+      userTaskId: 'ut-1',
+      idempotencyKey: 'k2',
+      conversationId: 'conv-1',
+      inputText: 'сделай отчёт',
+      inputRefs: ['r2://in/a.txt'],
+      instructions: 'коротко',
+      engineName: 'fake',
+      timeoutMs: 60000,
+    });
+
+    expect(bodies[0]).toEqual({
+      userTaskId: 'ut-1',
+      engine: { name: 'opencode', adapterVersion: '1' },
+      envAllowlist: [],
+      limits: { timeoutMs: 300000 },
+    });
+    expect(bodies[1]).toEqual({
+      userTaskId: 'ut-1',
+      engine: { name: 'fake', adapterVersion: '1' },
+      envAllowlist: [],
+      limits: { timeoutMs: 60000 },
+      conversationId: 'conv-1',
+      input: { inlinePrompt: 'сделай отчёт', refs: [{ ref: 'r2://in/a.txt' }] },
+      instructions: 'коротко',
+    });
   });
 
   it("status/result/events/artifacts/cancel идут по маршрутам Runner'а с курсором", async () => {
@@ -256,8 +306,30 @@ describe('Runner adapter: результат, курсор событий, ар�
     expect(artifacts[0]!.run_id).toBe(receipt.runId);
   });
 
-  it('connection_lost = неизвестный исход: попытка unknown, задача не failed, без авто-rerun', async () => {
+  it('артефакты из манифестов Runner\'а попадают в задачу даже при пустых outputRefs', async () => {
     const store = new TaskStore(env.DB);
+    const taskId = nextId('ut');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'соберём артефакт' });
+    // Живой Runner: outputRefs пуст, артефакт виден в GET /v1/runs/{runId}/artifacts.
+    const { adapter } = makeFakeRunner({
+      outputRefs: [],
+      artifactManifests: [{ artifactId: 'art-1', name: 'ran.txt', storageKey: 'runs/run-1/ran.txt', size: 2, sha256: 'deadbeef' }],
+    });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
+    await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
+
+    const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
+    expect(outcome.ok).toBe(true);
+
+    const artifacts = await store.listArtifacts(taskId);
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]!.artifact_ref).toBe('runs/run-1/ran.txt');
+    expect(artifacts[0]!.size_bytes).toBe(2);
+    expect(artifacts[0]!.checksum).toBe('sha256:deadbeef');
+    expect(artifacts[0]!.run_id).toBe(receipt.runId);
+  });
+
+  it('connection_lost = неизвестный исход: попытка unknown, задача не failed, без авто-rerun', async () => {    const store = new TaskStore(env.DB);
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'потеряем связь' });
     const { adapter } = makeFakeRunner({ connectionLost: true });
@@ -386,6 +458,42 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     const runnerEvents = (await store.history(taskId)).filter((e) => e.execution_id === runs[0]!.session_id);
     expect(runnerEvents.length).toBeGreaterThanOrEqual(3);
     expect(await store.listArtifacts(taskId)).toHaveLength(1);
+  });
+
+  it('движок попытки берётся из параметров плана (runnerEngine), по умолчанию opencode', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-engine');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'выбери движок' });
+
+    const engines: Array<string | undefined> = [];
+    const fake: RunnerApiAdapter = {
+      submit: async (input: { engineName?: string }) => {
+        engines.push(input.engineName);
+        return { requestId: 'req-1', userTaskId: taskId, runId: 'run-eng', deduplicated: false };
+      },
+      status: async () => ({ state: 'succeeded' }),
+      result: async () => ({ outcome: 'succeeded', exitReason: 'completed', outputRefs: [], persistence: 'persisted', ownerGeneration: 1 }),
+      events: async () => ({ events: [], cursor: 0, hasMore: false }),
+      artifacts: async () => [],
+    } as unknown as RunnerApiAdapter;
+    const ctx: StepCtx = {
+      step: async (_n, fn) => fn({ attempt: 1 }),
+      sleep: async () => {},
+      waitFor: async () => {
+        const open = await store.getOpenAwaiting(taskId) ?? (await store.getOpenAwaiting(taskId2));
+        if (open) {
+          await store.answerAwaitingById({ awaitingInputId: open.awaiting_input_id, idempotencyKey: 'web:engine-test', answer: { answer: 'да' } });
+        }
+        throw new Error('event timed out');
+      },
+    };
+
+    await conversationPlan(ctx, store, { taskId, generation: 1, profileId: 'profile-1', runnerEngine: 'fake' }, { adapter: fake });
+    const taskId2 = nextId('ut-engine2');
+    await store.admitTask({ id: taskId2, profileId: 'profile-1', goal: 'по умолчанию' });
+    await conversationPlan(ctx, store, { taskId: taskId2, generation: 1, profileId: 'profile-1' }, { adapter: fake });
+
+    expect(engines).toEqual(['fake', 'opencode']);
   });
 
   it('Runner недоступен в плане: задача не теряется, попытка unknown, повтор безопасен', async () => {

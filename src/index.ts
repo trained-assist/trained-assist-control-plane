@@ -370,6 +370,7 @@ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body)
             question: body.question as string | undefined,
             waitTimeoutSec: body.waitTimeoutSec as number | undefined,
             crashRunOnce: body.crashRunOnce as boolean | undefined,
+            runnerEngine: body.runnerEngine as string | undefined,
           };
 const startResult = await port.submit(input);
            return json({
