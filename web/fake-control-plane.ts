@@ -216,6 +216,7 @@ export interface FakeControlPlaneOptions {
   state?: FakeDurableState;
   plan?: Partial<FakePlanOptions>;
   faults?: FakeFaults;
+  principals?: FakePrincipal[];
   /** Мгновение времени (тесты фиксируют его, чтобы курсоры были детермированы). */
   now?: () => number;
   /** Фиксировать сетевые ответы (для отчётов e2e). */
@@ -237,7 +238,13 @@ export class FakeControlPlane {
     this.faults = { ...options.faults };
     this.now = options.now ?? (() => Date.now());
     this.httpLog = options.httpLog;
-    this.state = options.state ?? emptyState();
+    if (options.state) {
+      this.state = options.state;
+    } else if (options.principals) {
+      this.state = { ...emptyState(), principals: options.principals };
+    } else {
+      this.state = emptyState();
+    }
   }
 
   // ---------------------------------------------------------------- состояние
@@ -266,6 +273,19 @@ export class FakeControlPlane {
     return Object.entries(this.faults)
       .filter(([, on]) => on === true)
       .map(([name]) => name);
+  }
+
+  /** Прямое помечание доставки как неудачной (для теста «доставка ≠ исполнение»). */
+  failDeliveryDirect(taskId: string): boolean {
+    const delivery = this.state.events.find(
+      (e) => e.user_task_id === taskId && e.kind === 'delivery_queued',
+    );
+    if (!delivery) return false;
+    this.log(this.state.tasks.find((t) => t.id === taskId)!, {
+      kind: 'delivery_failed',
+      payload: { deliveryId: delivery.event_id, reason: 'provider_unavailable', retryScheduled: true },
+    });
+    return true;
   }
 
   task(taskId: string): FakeTaskRow | undefined {
@@ -358,6 +378,8 @@ export class FakeControlPlane {
     if (url.pathname === '/resume') return this.resume(request, taskId, body);
     if (url.pathname === '/connection-lost') return this.connectionLost(body);
     if (url.pathname === '/recover') return this.recover();
+    if (url.pathname === '/report') return this.report(taskId);
+    if (url.pathname === '/report/history') return this.reportHistory(taskId, url);
     return json({ error: 'not found' }, 404);
   }
 
@@ -436,6 +458,7 @@ export class FakeControlPlane {
     if (!goal) throw httpError(400, 'inputItems must not be empty');
 
     const conversationRef = typeof body['conversationRef'] === 'string' ? body['conversationRef'] : null;
+    const conversationId = typeof body['conversationId'] === 'string' ? body['conversationId'] : conversationRef;
     const taskId = `ut-${requestId.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 48)}-${hash6(requestId)}`;
     const at = this.now();
     const task: FakeTaskRow = {
@@ -444,7 +467,7 @@ export class FakeControlPlane {
       goal,
       status: 'draft',
       stage: null,
-      conversation_id: conversationRef,
+      conversation_id: conversationId,
       generation: 1,
       revision: 0,
       result_json: null,
@@ -785,6 +808,12 @@ export class FakeControlPlane {
       runId: instance.runId,
       payload: { result, artifactRefs, runId: instance.runId, reason: 'plan_finished' },
     });
+    this.commit(task, {
+      kind: 'delivery_queued',
+      step: 'delivery',
+      runId: instance.runId,
+      payload: { deliveryId: `del-${hash6(task.id)}`, reason: 'pending', retryScheduled: false },
+    });
     this.instances.delete(task.id);
   }
 
@@ -951,9 +980,63 @@ export class FakeControlPlane {
         });
         this.advance(task.id);
       }
-      out.push({ id: task.id, runId: run?.id ?? null, engineStatus: this.instances.has(task.id) ? 'running' : 'complete' });
+       out.push({ id: task.id, runId: run?.id ?? null, engineStatus: this.instances.has(task.id) ? 'running' : 'complete' });
     }
     return json(out);
+  }
+
+  /** Read model report: snapshot + event counters (P12 reporting). */
+  private report(taskId: string): Response {
+    const task = this.state.tasks.find((t) => t.id === taskId);
+    if (!task) return json({ error: 'task not found' }, 404);
+    const history = this.events(taskId);
+    return json({
+      snapshot: {
+        userTaskId: task.id,
+        profileId: task.profile_id,
+        status: task.status,
+        stage: task.stage,
+        generation: task.generation,
+        revision: task.revision,
+        deliveryState: task.delivery_state,
+        awaitingInputId: task.awaiting_input_id,
+        result: task.result_json ? JSON.parse(task.result_json) : null,
+        artifactRefs: task.artifact_refs,
+        conversationId: task.conversation_id,
+        updatedAt: task.updated_at,
+      },
+      latestEventSequence: history.length ? history[history.length - 1]!.id : 0,
+      eventCount: history.length,
+    });
+  }
+
+  /** Pages of events for report/history (C02 cursor semantics over fake state). */
+  private reportHistory(taskId: string, url: URL): Response {
+    const task = this.state.tasks.find((t) => t.id === taskId);
+    if (!task) return json({ error: 'task not found' }, 404);
+    const after = Number(url.searchParams.get('after') ?? '0');
+    const limit = Math.min(Math.max(1, Number(url.searchParams.get('limit') ?? '100')), 500);
+    const all = this.events(taskId).filter((e) => e.id > after);
+    const events = all.slice(0, limit);
+    return json({
+      snapshot: {
+        userTaskId: task.id,
+        profileId: task.profile_id,
+        status: task.status,
+        stage: task.stage,
+        generation: task.generation,
+        revision: task.revision,
+        deliveryState: task.delivery_state,
+        awaitingInputId: task.awaiting_input_id,
+        result: task.result_json ? JSON.parse(task.result_json) : null,
+        artifactRefs: task.artifact_refs,
+        conversationId: task.conversation_id,
+        updatedAt: task.updated_at,
+      },
+      events: events.map((row) => c02Envelope(row)),
+      cursor: events.length ? events[events.length - 1]!.id : after,
+      hasMore: all.length > events.length,
+    });
   }
 
   // ----------------------------------------------------------------- журнал

@@ -363,7 +363,27 @@ export class ControlPlaneClient {
     };
   }
 
-  /** Живая ли контр plane: дешёвая проверка аутентификации и конфигурации. */
+  /** Stop — primitive routing operation (не LLM, не запуск). */
+  async cancel(userTaskId: string, reason = 'user_stop'): Promise<Record<string, unknown>> {
+    const { value } = await this.request<Record<string, unknown>>('POST', '/cancel', {
+      body: { taskId: userTaskId, reason },
+    });
+    return value;
+  }
+
+  /** Read model report: snapshot + event counters (P12 reporting). */
+  async report(userTaskId: string): Promise<{
+    snapshot: Record<string, unknown>;
+    latestEventSequence: number;
+    eventCount: number;
+  }> {
+    const { value } = await this.request<Record<string, unknown>>('GET', '/report', {
+      query: { taskId: userTaskId },
+    });
+    return value as never;
+  }
+
+  /** Живая ли контрол plane: дешёвая проверка аутентификации и конфигурации. */
   async health(): Promise<Record<string, unknown>> {
     const { value } = await this.request<Record<string, unknown>>('GET', '/');
     return value;
