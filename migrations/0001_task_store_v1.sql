@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS durable_tasks (
     delivery_state            TEXT NOT NULL DEFAULT 'not_required'
         CHECK (delivery_state IN ('not_required','pending','accepted','delivered','failed','unknown')),
     generation                INTEGER NOT NULL DEFAULT 1,
+    -- result_json: аддитивное расширение §6. В TASK-STORE-SCHEMA-V1 result_json
+    -- есть только у task_items/ executions, но M1.1 и issue #90 требуют, чтобы
+    -- терминальный результат задачи жил в строке задачи и не перезаписывался
+    -- поздним событием. Заявлено отдельной issue в arch-репо (см. README M1.1).
+    result_json               TEXT,
     created_at                INTEGER NOT NULL,
     updated_at                INTEGER NOT NULL,
     revision                  INTEGER NOT NULL DEFAULT 0,
