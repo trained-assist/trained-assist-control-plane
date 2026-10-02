@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test",
     "dev": "wrangler dev",
-    "db:migrate:local": "wrangler d1 migrations apply task-store --local"
+    "db:migrate:local": "wrangler d1 migrations apply control-plane-task-store --local",
+    "db:query:local": "wrangler d1 execute control-plane-task-store --local --command"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
