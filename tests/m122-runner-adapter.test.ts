@@ -132,7 +132,7 @@ const makeFakeRunner = (opts: { failSubmit?: boolean; connectionLost?: boolean; 
 describe('Runner adapter: стабильный ключ и идемпотентность', () => {
   it('ключ попытки вычисляется ДО отправки; повтор с тем же ключом = тот же Run', async () => {
     const { adapter, receipts } = makeFakeRunner();
-    const key = stableAttemptKey('ut-1', 1);
+    const key = await stableAttemptKey('ut-1', 1);
 
     const first = await adapter.submit({ userTaskId: 'ut-1', idempotencyKey: key });
     const second = await adapter.submit({ userTaskId: 'ut-1', idempotencyKey: key });
@@ -144,8 +144,8 @@ describe('Runner adapter: стабильный ключ и идемпотент�
   });
 
   it('другой generation = другой ключ = новая попытка', async () => {
-    const key1 = stableAttemptKey('ut-1', 1);
-    const key2 = stableAttemptKey('ut-1', 2);
+    const key1 = await stableAttemptKey('ut-1', 1);
+    const key2 = await stableAttemptKey('ut-1', 2);
     expect(key1).not.toBe(key2);
   });
 });
@@ -156,7 +156,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'сделай работу' });
     const { adapter } = makeFakeRunner();
-    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: stableAttemptKey(taskId, 1) });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
 
     const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
@@ -187,7 +187,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'потеряем связь' });
     const { adapter } = makeFakeRunner({ connectionLost: true });
-    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: stableAttemptKey(taskId, 1) });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
 
     const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
@@ -211,7 +211,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'runner лежит' });
     const { adapter: down } = makeFakeRunner({ failSubmit: true });
-    const key = stableAttemptKey(taskId, 1);
+    const key = await stableAttemptKey(taskId, 1);
 
     await expect(down.submit({ userTaskId: taskId, idempotencyKey: key })).rejects.toBeInstanceOf(RunnerUnavailableError);
 
@@ -234,7 +234,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     const taskId = nextId('ut');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'export упадёт' });
     const { adapter } = makeFakeRunner({ persistence: 'failed' });
-    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: stableAttemptKey(taskId, 1) });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
 
     const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });

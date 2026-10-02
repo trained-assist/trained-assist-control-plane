@@ -19,7 +19,7 @@ import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import { RunnerApiAdapter, stableAttemptKey } from './runner-adapter';
-import { RunnerUnavailableError } from './runner-adapter/errors';
+import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 
@@ -337,14 +337,16 @@ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body)
         const adapter = runnerAdapterOf(env);
         if (!adapter) return json({ configured: false });
         try {
-          const status = await adapter.status(stableAttemptKey(taskId ?? '', 1));
+          const status = await adapter.status('probe-run');
           return json({ configured: true, reachable: true, state: status.state });
         } catch (e) {
+          // 404 = Runner ответил (доступен); сеть/5xx = недоступен.
+          const reachable = e instanceof RunnerNotFoundError;
           return json({
             configured: true,
-            reachable: false,
-            error: e instanceof RunnerUnavailableError ? 'unavailable' : 'error',
-            message: String((e as Error)?.message ?? e),
+            reachable,
+            error: reachable ? null : e instanceof RunnerUnavailableError ? 'unavailable' : 'error',
+            message: reachable ? null : String((e as Error)?.message ?? e),
           });
         }
       }
