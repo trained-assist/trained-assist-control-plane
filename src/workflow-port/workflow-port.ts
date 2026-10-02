@@ -11,6 +11,7 @@ import type {
   SignalSource,
   TaskStore,
 } from '../taskstore';
+import type { RunnerApiAdapter } from '../runner-adapter';
 import { logStructured } from '../logging/structured-log';
 import type { PlanParams } from './conversation-plan';
 
@@ -44,6 +45,11 @@ export interface SubmitInput extends AdmitTaskInput {
   awaitingOptions?: { id: string; label: string }[] | null;
   /** Период durable-опроса ответа в ожидании. */
   waitPollSec?: number;
+  /** Настоящий Runner (issue #122). Без него — stub-путь. */
+  adapter?: RunnerApiAdapter | null;
+  instructions?: string | null;
+  runnerPollSec?: number;
+  runnerTimeoutSec?: number;
 }
 
 export interface SubmitResult {

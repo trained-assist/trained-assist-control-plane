@@ -11,15 +11,17 @@ import { logStructured } from '../logging/structured-log';
 import { readPilotConfig, decideRoute, validatePilotConfig, type PilotConfig, type PilotRoute } from './pilot-config';
 
 export interface PilotRouterOptions {
-  /** Переопределение конфига (для тестов). По умолчанию — read из env. */
+  /** Переопределение конфига (для тестов). */
   config?: PilotConfig;
+  /** env рантайма Workers; по умолчанию — пустой (пилот выключен). */
+  env?: Record<string, string | undefined>;
 }
 
 export class PilotRouter {
   private config: PilotConfig;
 
   constructor(options: PilotRouterOptions = {}) {
-    this.config = options.config ?? readPilotConfig();
+    this.config = options.config ?? readPilotConfig(options.env ?? {});
   }
 
   /** Текущий конфиг (для инспекции в тестах и runbook). */
