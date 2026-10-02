@@ -22,6 +22,7 @@ import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
+import { reportSnapshot, reportHistory, reportView } from './reporting';
 
 export interface Env {
   DB: D1Database;
@@ -145,9 +146,14 @@ const store = new TaskStore(env.DB);
 
       // Приём задачи (P04/C01): квитанция выдаётся только после durable
       // сохранения; повтор с тем же requestId возвращает прежнюю квитанцию.
-      if (url.pathname === '/intake') {
-        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body);
+       if (url.pathname === '/intake') {
+         if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, {
+           ...body,
+           projectId: (body.projectId as string | undefined) ?? null,
+           audienceId: (body.audienceId as string | undefined) ?? null,
+           destinationId: (body.destinationId as string | undefined) ?? null,
+         });
          return json(
            {
              receiptId: result.receipt.receiptId,
@@ -355,6 +361,20 @@ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body)
         const receipt = await store.acceptReceipt(taskId);
         if (!receipt) return json({ error: 'receipt not found' }, 404);
         return json({ ...receipt, durable: true });
+      }
+      if (url.pathname === '/report') {
+        if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+        const view = await reportView(store, taskId);
+        return json(view);
+      }
+      if (url.pathname === '/report/history') {
+        if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+        const after = url.searchParams.get('after');
+        const limit = Number(url.searchParams.get('limit') ?? '100');
+        const history = await reportHistory(store, taskId, after ? Number(after) : null, Number.isFinite(limit) ? limit : 100);
+        return json(history);
       }
 
       if (!taskId) return json({ error: 'taskId is required' }, 400);
