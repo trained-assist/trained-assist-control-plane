@@ -23,7 +23,7 @@ post() {
   curl -sS -X POST "$BASE$1" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "$2"
 }
 
-get() { curl -sS "$BASE$1"; }
+get() { curl -sS -H "X-Principal: $PRINCIPAL" "$BASE$1"; }
 
 task_status() {
   post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])'
@@ -179,5 +179,45 @@ assert types["task_accepted"] == "accepted" and types["awaiting_opened"] == "wai
 print(f"OK: {len(seen)} событий через курсор без потерь/дублей; типы C02: accepted/waiting/started")
 PYEOF
 
+echo "== 10. доставка: один владелец, свой статус, retry не трогает execution =="
+DEL="$(post /deliveries "{\"taskId\":\"$TASK\",\"logicalMessageId\":\"smoke-result-$TASK\",\"channel\":\"telegram\",\"message\":{\"text\":\"отчёт по задаче\"}}")"
+echo "$DEL" | py 'import json,sys; d=json.load(sys.stdin); assert d["queued"] is True, d' || exit 1
+DUP_DEL="$(post /deliveries "{\"taskId\":\"$TASK\",\"logicalMessageId\":\"smoke-result-$TASK\",\"channel\":\"telegram\",\"message\":{\"text\":\"отчёт по задаче\"}}")"
+echo "$DUP_DEL" | py 'import json,sys; d=json.load(sys.stdin); assert d["queued"] is False, d' || exit 1
+echo "OK: повтор того же logicalMessageId — no-op (одна доставка)"
+
+REVISION_BEFORE="$(post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; t=json.load(sys.stdin)["taskStore"]; print(t["status"], t["generation"], json.dumps(t["result"]))')"
+SENT="$(post /deliveries/deliver "{\"taskId\":\"$TASK\",\"owner\":\"local-worker\"}")"
+echo "$SENT" | py 'import json,sys; d=json.load(sys.stdin); assert d["outcome"]=="delivered" and d["attempt"]==1, d' || exit 1
+REVISION_AFTER="$(post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; t=json.load(sys.stdin)["taskStore"]; print(t["status"], t["generation"], json.dumps(t["result"]))')"
+[ "$REVISION_BEFORE" = "$REVISION_AFTER" ] || { echo "FAIL: доставка изменила состояние задачи: $REVISION_BEFORE -> $REVISION_AFTER" >&2; exit 1; }
+post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; d=json.load(sys.stdin); assert d["taskStore"]["delivery_state"]=="delivered", d["taskStore"]["delivery_state"]' || exit 1
+echo "OK: доставка own-статус delivered, задача/поколение/результат не тронуты"
+
+echo "== 11. артефакты переживают отмену =="
+REQ3="req-smoke-$(date +%s)"
+INTAKE3="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$REQ3\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"артефакты и отмена\"}]}")"
+TASK3="$(echo "$INTAKE3" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+post /start "{\"taskId\":\"$TASK3\",\"profileId\":\"$PROFILE\",\"goal\":\"артефакты и отмена\"}" >/dev/null
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$TASK3\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "awaiting_input" ] && break
+  sleep 0.5
+done
+ART="$(post /artifacts "{\"taskId\":\"$TASK3\",\"kind\":\"report\",\"artifactRef\":\"r2://control-plane/$TASK3/report.md\",\"sizeBytes\":2048,\"checksum\":\"sha256:local-smoke\"}")"
+echo "$ART" | py 'import json,sys; d=json.load(sys.stdin); assert d["created"] is True, d' || exit 1
+post /deliveries "{\"taskId\":\"$TASK3\",\"logicalMessageId\":\"pending-$TASK3\",\"channel\":\"telegram\",\"message\":{\"text\":\"отчёт\"}}" >/dev/null
+CANCEL3="$(post /cancel "{\"taskId\":\"$TASK3\",\"reason\":\"user pressed stop\"}")"
+echo "$CANCEL3" | py 'import json,sys; d=json.load(sys.stdin); assert d["cancelled"] is True and d["stopConfirmed"] is True, d' || exit 1
+get "/artifacts?taskId=$TASK3" | py 'import json,sys; d=json.load(sys.stdin); assert len(d["artifacts"])==1, d' || exit 1
+post /status "{\"taskId\":\"$TASK3\"}" | py '
+import json,sys
+d = json.load(sys.stdin)
+assert d["taskStore"]["status"] == "cancelled", d["taskStore"]["status"]
+assert len(d["artifacts"]) == 1, d["artifacts"]
+assert d["deliveries"][0]["status"] == "failed" and d["deliveries"][0]["last_error"] == "suppressed_by_cancel", d["deliveries"]
+' || exit 1
+echo "OK: cancelled; артефакт на месте; retry доставки подавлен (suppressed_by_cancel)"
+
 echo
-echo "PASS: прогон $REQUEST_ID (task $TASK) и $REQ2 (task $TASK2) завершён"
+echo "PASS: прогон $REQUEST_ID (task $TASK), $REQ2 (task $TASK2), $REQ3 (task $TASK3) завершён"

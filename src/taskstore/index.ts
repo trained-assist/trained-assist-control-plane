@@ -8,4 +8,4 @@ export {
   type CommitOptions,
   type OpenAwaitingInput,
 } from './task-store';
-export type { RunAttemptRow, RunOutcome } from './types';
+export type { ArtifactRow, DeliveryRow, RunAttemptRow, RunOutcome } from './types';

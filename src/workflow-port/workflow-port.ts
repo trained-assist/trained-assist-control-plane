@@ -2,7 +2,7 @@
 // Контрольная сторона: submit / signal / cancel / status / recover.
 // Исполнительная сторона (step/sleep/waitFor) — step-ctx.ts; код плана не видит
 // API движка. Логика перенесена из пилота pilots/p-db/cf-workflows/src/port.ts.
-import type { AdmitTaskInput, RunAttemptRow, SignalSource, TaskStore } from '../taskstore';
+import type { AdmitTaskInput, ArtifactRow, DeliveryRow, RunAttemptRow, SignalSource, TaskStore } from '../taskstore';
 import type { PlanParams } from './conversation-plan';
 
 export interface SubmitInput extends AdmitTaskInput {
@@ -42,6 +42,8 @@ export interface PortStatusResult {
   taskStore: Awaited<ReturnType<TaskStore['statusRow']>>;
   engine: unknown;
   runs: RunAttemptRow[];
+  deliveries: DeliveryRow[];
+  artifacts: ArtifactRow[];
 }
 
 export interface WorkflowPortApi {
@@ -224,7 +226,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
     // Только чтение: status не запускает агента и не меняет состояние (P05).
     const runs = await this.store.listRuns(taskId);
-    return { taskStore, engine, runs };
+    const deliveries = await this.store.listDeliveries(taskId);
+    const artifacts = await this.store.listArtifacts(taskId);
+    return { taskStore, engine, runs, deliveries, artifacts };
   }
 
   /**

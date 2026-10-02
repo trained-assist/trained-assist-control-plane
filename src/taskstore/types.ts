@@ -92,6 +92,8 @@ export interface TaskRow {
   awaiting_input_id: string | null;
   delivery_state: string;
   generation: number;
+  /** Структурированный терминальный результат задачи (аддитивная колонка §6). */
+  result_json: string | null;
   created_at: number;
   updated_at: number;
   revision: number;
@@ -216,3 +218,35 @@ export interface RunAttemptRow {
 }
 
 export type RunOutcome = 'success' | 'failed' | 'interrupted' | 'cancelled';
+
+/** Доставка (outbox): свой статус, отдельный от исполнения (C02, A2 §5.5). */
+export interface DeliveryRow {
+  id: string;
+  user_task_id: string;
+  event_id: number | null;
+  logical_message_id: string;
+  conversation_id: string | null;
+  audience_id: string | null;
+  destination_id: string | null;
+  channel: string;
+  message_json: string;
+  status: string;
+  attempt: number;
+  next_attempt_at: number | null;
+  last_error: string | null;
+  provider_message_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Ссылка на артефакт: байты в Artifact Storage (ARCHITECTURE §4.1). */
+export interface ArtifactRow {
+  artifact_id: string;
+  user_task_id: string;
+  kind: string;
+  artifact_ref: string;
+  size_bytes: number | null;
+  checksum: string | null;
+  run_id: string | null;
+  created_at: number;
+}
