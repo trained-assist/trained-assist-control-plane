@@ -2,7 +2,15 @@
 // Контрольная сторона: submit / signal / cancel / status / recover.
 // Исполнительная сторона (step/sleep/waitFor) — step-ctx.ts; код плана не видит
 // API движка. Логика перенесена из пилота pilots/p-db/cf-workflows/src/port.ts.
-import type { AdmitTaskInput, ArtifactRow, DeliveryRow, RunAttemptRow, SignalSource, TaskStore } from '../taskstore';
+import type {
+  AdmitTaskInput,
+  ArtifactRow,
+  AwaitingPurpose,
+  DeliveryRow,
+  RunAttemptRow,
+  SignalSource,
+  TaskStore,
+} from '../taskstore';
 import type { PlanParams } from './conversation-plan';
 
 export interface SubmitInput extends AdmitTaskInput {
@@ -11,6 +19,12 @@ export interface SubmitInput extends AdmitTaskInput {
   question?: string;
   waitTimeoutSec?: number;
   crashRunOnce?: boolean;
+  /** Зачем спрашиваем человека: preference | missing_fact | credential | approval. */
+  awaitingPurpose?: AwaitingPurpose | null;
+  /** Варианты ответа (purpose=preference) со стабильными option ID (#115). */
+  awaitingOptions?: { id: string; label: string }[] | null;
+  /** Период durable-опроса ответа в ожидании. */
+  waitPollSec?: number;
 }
 
 export interface SubmitResult {
@@ -80,6 +94,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
       question: input.question,
       waitTimeoutSec: input.waitTimeoutSec,
       crashRunOnce: input.crashRunOnce,
+      awaitingPurpose: input.awaitingPurpose ?? null,
+      awaitingOptions: input.awaitingOptions ?? null,
+      waitPollSec: input.waitPollSec,
     };
 
     // Экземпляр создаём, если задача новая или события старта попытки ещё не было.
@@ -249,7 +266,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
    */
   async resume(
     taskId: string,
-    opts: { reason?: string; instructions?: string } = {},
+    opts: { reason?: string; instructions?: string; previousRunId?: string | null; awaitingPurpose?: AwaitingPurpose | null; awaitingOptions?: { id: string; label: string }[] | null } = {},
   ): Promise<{ runId: string; generation: number }> {
     // Сначала Task Store: новый runId + подъём поколения (старая попытка лишена
     // прав), затем остановка прежнего экземпляра и запуск нового с новым
@@ -273,6 +290,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
 
     const task = await this.store.requireTask(taskId);
+    // Продолжение получает адрес последнего ожидания: если ответ уже durable —
+    // план идёт сразу к результату, если ожидание открыто — продолжает ждать.
+    const available = await this.store.availableContinuationData(taskId);
     await this.wf.create({
       id: taskId,
       params: {
@@ -280,6 +300,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
         generation,
         profileId: task.profile_id,
         runId: run.id,
+        awaitingInputId: available.lastAwaitingInputId,
+        awaitingPurpose: opts.awaitingPurpose ?? available.awaitingPurpose ?? null,
+        awaitingOptions: opts.awaitingOptions ?? null,
         question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
       },
     });
