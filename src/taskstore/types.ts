@@ -44,6 +44,7 @@ export type TaskStage = (typeof TASK_STAGES)[number];
 export const TASK_EVENT_KINDS = [
   'task_accepted',
   'task_status_changed',
+  'progress',
   'step_claimed',
   'step_started',
   'step_parked',
