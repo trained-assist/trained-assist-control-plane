@@ -170,7 +170,7 @@ node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против �
 - **Деплой и замеры на реальном аккаунте Cloudflare** — только по явной команде владельца (там же: настоящий `database_id`, latency пробуждения после `wrangler deploy` = [#91](https://github.com/trained-assist/trained-agent-architecture/issues/91), поведение под старым кодом = [#92](https://github.com/trained-assist/trained-agent-architecture/issues/92)). Токены — GCP Secret Manager / GitHub Secrets, в репо их нет и не будет.
 - **M1.3** — подключение настоящего Runner (ai-agent-runner): idempotent submit, события, cancellation, финализация артефактов.
 - **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter). **Web adapter и сквозная приёмка — в PR `feat/m1-web-slice`** (страница разговора, клиент к API, сквозной прогон с рестартом); `deliveries` как таблица и единственный delivery owner — остаются на шаг 8.
-- **M1.5** — пилот и rollback: compatibility-сценарии, разрешённый cohort только для новых задач.
+- **M1.5** — пилот и rollback: реализован в `src/pilot/`. Конфиг-гейт (feature flag `PILOT_ENABLED` + cohort `PILOT_COHORT_PROFILE_IDS`), маршрутизация новых задач на новый control plane, rollback мгновенно возвращает на legacy, durable Task Store сохраняет состояние задач, начатых на новом plane. Runbook: `docs/M1-PILOT-ROLLBACK-RUNBOOK.md`.
 - Схема дальше: таблицы вне скоупа M1.1 (`task_items`, `executions`, `deliveries`, legacy cron/hook) — отдельными аддитивными миграциями; outbox доставки (`deliveries`) и его проекция `delivery_state`.
 
 ## Связи
