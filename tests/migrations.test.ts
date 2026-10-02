@@ -36,6 +36,7 @@ describe('migration 0001_task_store_v1', () => {
     expect(ddl?.sql).toContain("'done','failed','cancelled'");
     expect(ddl?.sql).toContain('generation');
     expect(ddl?.sql).toContain('conversation_id');
+    expect(ddl?.sql).toContain('result_json');
   });
 
   it('keeps signal identity UNIQUE (user_task_id, step_key, idempotency_key)', async () => {
