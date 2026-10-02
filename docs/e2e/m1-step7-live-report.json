@@ -1,0 +1,71 @@
+{
+  "conversationId": "m1-step7-1790940481991",
+  "restartMode": "process",
+  "messages": [
+    {
+      "seq": 1,
+      "kind": "new",
+      "text": "собери сводку по песочнице",
+      "userTaskId": "ut-be62a9615265069ebaef",
+      "requestId": "web:m1-step7-1790940481991:m1",
+      "status": "awaiting_input",
+      "runId": "ac831c8c-5edb-431b-a49c-db50cb3c98f0"
+    },
+    {
+      "seq": 2,
+      "kind": "answer",
+      "text": "только за вчера",
+      "userTaskId": "ut-be62a9615265069ebaef",
+      "requestId": "web:m1-step7-1790940481991:m2",
+      "status": "done",
+      "runId": "ac831c8c-5edb-431b-a49c-db50cb3c98f0",
+      "answersUsed": 1,
+      "awaitingAnsweredEvents": 1
+    },
+    {
+      "seq": 3,
+      "kind": "new",
+      "text": "выгрузи результат в файл",
+      "userTaskId": "ut-35f0506ca4376dc81a04",
+      "requestId": "web:m1-step7-1790940481991:m3",
+      "status": "awaiting_input",
+      "runId": "095486e8-0b2d-4fe9-8d26-0784be9e3124"
+    },
+    {
+      "seq": 4,
+      "kind": "answer",
+      "text": "да, выгружай",
+      "userTaskId": "ut-35f0506ca4376dc81a04",
+      "requestId": "web:m1-step7-1790940481991:m4",
+      "status": "done",
+      "runId": "095486e8-0b2d-4fe9-8d26-0784be9e3124",
+      "answersUsed": 1
+    },
+    {
+      "seq": 5,
+      "kind": "new",
+      "text": "итоговая сводка",
+      "userTaskId": "ut-c10c96e8abbcaf4f27bf",
+      "requestId": "web:m1-step7-1790940481991:m5",
+      "status": "awaiting_input",
+      "artifactRefs": []
+    }
+  ],
+  "runStartedByTask": {
+    "ut-35f0506ca4376dc81a04": 1
+  },
+  "checks": {
+    "awaitingConsumedExactlyOnce": true,
+    "noRerunAfterRestart": true,
+    "terminalResultAvailable": true,
+    "artifactRefsVisible": 0,
+    "lastMessageStatus": "awaiting_input",
+    "cursorReplayComplete": true,
+    "runStartedOnceInJournal": true,
+    "transport": "events-endpoint",
+    "fiveMessages": true
+  },
+  "runIdNote": "runId доступен через /status (executions)",
+  "ok": true,
+  "secretsInReport": false
+}

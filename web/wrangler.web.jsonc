@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trained-assist-web-slice",
+  "main": "index.ts",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": false,
+  "observability": { "enabled": false },
+  "kv_namespaces": [
+    {
+      "binding": "WEB_CONVERSATIONS",
+      "id": "00000000000000000000000000000001"
+    }
+  ]
+}
