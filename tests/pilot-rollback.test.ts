@@ -186,17 +186,30 @@ describe('Pilot routing integration with intake', () => {
     expect(userValue.pilotRoute).toBe('legacy');
   });
 
-  it('task created before pilot activation gets legacy even when pilot enabled', async () => {
-    const past = Date.now() - 86_400_000;
-    const config: PilotConfig = { enabled: true, activatedAt: Date.now(), cohortProfileIds: null, legacyProfileIds: null };
-    const router = new PilotRouter({ config });
+  it('task admitted before pilot activation keeps legacy after flag flip (no re-routing)', async () => {
+    // Пилот выключен → задача принята как legacy.
+    const router = new PilotRouter({
+      config: { enabled: false, activatedAt: null, cohortProfileIds: null, legacyProfileIds: null },
+    });
     const { store, intake } = setupIntake(router);
     await ensurePrincipal(store);
 
     const requestId = nextId('req-old');
-    const result = await intake.admit({ principalId: 'sandbox-pilot' }, envelope({ requestId }));
-    expect(result.pilotRoute).toBe('legacy');
-    expect(result.pilotReason).toBe('task_created_before_pilot_activation');
+    const beforeFlip = await intake.admit({ principalId: 'sandbox-pilot' }, envelope({ requestId }));
+    expect(beforeFlip.pilotRoute).toBe('legacy');
+
+    // Пилот включают — НО эта задача уже создана, её маршрут заморожен.
+    router.updateConfig({
+      enabled: true,
+      activatedAt: Date.now(),
+      cohortProfileIds: null,
+      legacyProfileIds: null,
+    });
+
+    const afterFlip = await intake.admit({ principalId: 'sandbox-pilot' }, envelope({ requestId }));
+    expect(afterFlip.duplicate).toBe(true);
+    expect(afterFlip.pilotRoute).toBe('legacy');
+    expect(afterFlip.userTaskId).toBe(beforeFlip.userTaskId);
   });
 
   it('duplicate requestId returns same pilotRoute (no re-routing)', async () => {

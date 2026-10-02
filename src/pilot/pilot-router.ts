@@ -8,7 +8,7 @@
  * сохраняется в durable Task Store и не пересчитывается.
  */
 import { logStructured } from '../logging/structured-log';
-import { readPilotConfig, decideRoute, type PilotConfig, type PilotRoute } from './pilot-config';
+import { readPilotConfig, decideRoute, validatePilotConfig, type PilotConfig, type PilotRoute } from './pilot-config';
 
 export interface PilotRouterOptions {
   /** Переопределение конфига (для тестов). По умолчанию — read из env. */
@@ -16,7 +16,7 @@ export interface PilotRouterOptions {
 }
 
 export class PilotRouter {
-  private readonly config: PilotConfig;
+  private config: PilotConfig;
 
   constructor(options: PilotRouterOptions = {}) {
     this.config = options.config ?? readPilotConfig();

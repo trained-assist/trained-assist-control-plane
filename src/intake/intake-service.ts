@@ -140,8 +140,19 @@ export class IntakeService {
         receiptId: receipt.receiptId,
         reason: 'same_request_id_same_payload',
       });
-return { receipt, duplicate: true, userTaskId, conversationId: envelope.conversationRef ?? null, pilotRoute: null, pilotReason: null };
-     }
+// Повтор: маршрут НЕ пересчитывается — берём сохранённый в user_value задачи.
+      // Перероутивание опасно: задача могла уже выполняться на старом plane.
+      const storedTask = await this.store.getTask(userTaskId);
+      const stored = readStoredPilotRoute(storedTask?.user_value ?? null);
+      return {
+        receipt,
+        duplicate: true,
+        userTaskId,
+        conversationId: envelope.conversationRef ?? null,
+        pilotRoute: stored.route,
+        pilotReason: stored.reason,
+      };
+    }
 
      logStructured({
        event: 'intake.accepted',
@@ -159,6 +170,25 @@ function readDeclaredProfile(raw: unknown): string | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const v = (raw as Record<string, unknown>).profileId;
   return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+/**
+ * Маршрут, сохранённый при первой приёме задачи. Читается на повторе
+ * (duplicate), чтобы маршрут не пересчитывался: решение принимается ОДИН раз.
+ */
+function readStoredPilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
+  if (!userValue) return { route: 'legacy', reason: 'no_stored_route' };
+  try {
+    const parsed = JSON.parse(userValue) as Record<string, unknown>;
+    const route = parsed.pilotRoute;
+    if (route === 'new-plane' || route === 'legacy') {
+      const reason = parsed.pilotReason;
+      return { route, reason: typeof reason === 'string' ? reason : 'stored' };
+    }
+  } catch {
+    return { route: 'legacy', reason: 'unparseable_user_value' };
+  }
+  return { route: 'legacy', reason: 'no_stored_route' };
 }
 
 export type { IntakeEnvelope };
