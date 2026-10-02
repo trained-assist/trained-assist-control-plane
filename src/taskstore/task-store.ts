@@ -266,6 +266,15 @@ export class TaskStore {
     return res.results;
   }
 
+  /** Есть ли событие такого типа (идемпотентность внешних операций, например run_started). */
+  async hasEvent(taskId: string, kind: TaskEventKind): Promise<boolean> {
+    const row = await this.db
+      .prepare(`SELECT 1 AS present FROM task_events WHERE user_task_id = ? AND kind = ? LIMIT 1`)
+      .bind(taskId, kind)
+      .first<{ present: number }>();
+    return row !== null;
+  }
+
   // ----------------------------------------------------------- переходы
 
   /**
@@ -294,7 +303,25 @@ export class TaskStore {
       if (opts.status !== undefined) patch.status = opts.status;
       if (opts.stage !== undefined) patch.stage = opts.stage;
       if (opts.result !== undefined) patch.result = opts.result;
-      return this.runTransition(taskId, generation, patch, event);
+
+      const extra: D1PreparedStatement[] = [];
+      if (patch.status !== undefined && isTerminalStatus(patch.status)) {
+        // Терминальный статус закрывает открытое ожидание и снимает его проекцию
+        // той же транзакцией: на терминальной задаче открытого awaiting быть не
+        // может (§5.0.2), а stage выходит из waiting_input.
+        if (patch.awaitingInputId === undefined) patch.awaitingInputId = null;
+        if (patch.stage === undefined) patch.stage = 'finished';
+        extra.push(
+          this.db
+            .prepare(
+              `UPDATE awaiting_inputs SET status = 'cancelled'
+               WHERE user_task_id = ? AND status = 'open'
+                 AND EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL})`,
+            )
+            .bind(taskId, taskId, generation),
+        );
+      }
+      return this.runTransition(taskId, generation, patch, event, extra);
     }
 
     // Чистое событие: терминальная задача его принимает (доказательство),
@@ -664,6 +691,18 @@ export class TaskStore {
     return consumed;
   }
 
+  /** Первый неизрасходованный сигнал без потребления (буфер раннего ответа). */
+  async peekSignal(taskId: string, eventType: string): Promise<TaskSignalRow | null> {
+    return this.db
+      .prepare(
+        `SELECT * FROM task_signals
+         WHERE user_task_id = ? AND event_type = ? AND consumed_at IS NULL
+         ORDER BY id LIMIT 1`,
+      )
+      .bind(taskId, eventType)
+      .first<TaskSignalRow>();
+  }
+
   async pendingSignals(taskId: string): Promise<TaskSignalRow[]> {
     const res = await this.db
       .prepare(`SELECT * FROM task_signals WHERE user_task_id = ? AND consumed_at IS NULL ORDER BY id`)
@@ -816,10 +855,13 @@ export class TaskStore {
       )
       .bind(now, open.awaiting_input_id, input.taskId, input.taskId, generation);
 
+    const patch: StatePatch = { status: input.nextStatus, awaitingInputId: null };
+    if (isTerminalStatus(input.nextStatus)) patch.stage = 'finished';
+
     await this.runTransition(
       input.taskId,
       generation,
-      { status: input.nextStatus, awaitingInputId: null },
+      patch,
       {
         kind: 'awaiting_expired',
         step: input.step ?? null,

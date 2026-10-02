@@ -132,6 +132,23 @@ describe('Guard терминальных состояний (issue #90)', () => 
     expect((await store.requireTask(task.id)).generation).toBe(task.generation);
   });
 
+  it('терминальный commit закрывает открытое ожидание и снимает проекцию одной транзакцией', async () => {
+    const store = new TaskStore(env.DB);
+    const id = nextId('auto-close');
+    const { task } = await store.createTask({ id, profileId: 'p', goal: 'g' });
+    await store.openAwaiting({ taskId: id, kind: 'data', question: '?', respondentScope: 'p' });
+
+    await store.commit(id, task.generation, { status: 'done', stage: 'finished', result: { ok: true } });
+
+    const rows = await store.listAwaiting(id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('cancelled');
+    expect(await store.getOpenAwaiting(id)).toBeNull();
+    const after = await store.requireTask(id);
+    expect(after.awaiting_input_id).toBeNull();
+    expect(after.stage).toBe('finished');
+  });
+
   it('открытие awaiting на терминальной задаче отклоняется, строк не появляется', async () => {
     const store = new TaskStore(env.DB);
     const task = await doneTask(store);

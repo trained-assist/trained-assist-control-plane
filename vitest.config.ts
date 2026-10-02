@@ -13,6 +13,9 @@ export default defineConfig(async () => {
     ],
     test: {
       setupFiles: ['./tests/setup.ts'],
+      // Файлы делят один miniflare-рантайм (D1, Workflows): abortAllDurableObjects
+      // в одном файле убил бы экземпляры соседнего. Последовательно — намеренно.
+      fileParallelism: false,
       testTimeout: 60_000,
       hookTimeout: 60_000,
       include: ['tests/**/*.test.ts'],
