@@ -202,6 +202,8 @@ export class TaskStore {
     const taskInsertIndex = stmts.length - 1;
     const receiptPayload: Record<string, unknown> = {
       ...(input.envelope ?? {}),
+      // C01: квитанция подтверждает durable acceptance, а не запуск/результат.
+      durable: true,
       receiptId: input.receiptId ?? null,
       requestId: input.requestId ?? null,
       envelopeHash: input.envelopeHash ?? null,
