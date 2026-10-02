@@ -184,17 +184,21 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     await instance.waitForStatus('errored');
     await instance.dispose();
 
+    // Ответ человека при этом сохранён: host применяет его по АКТУАЛЬНОМУ
+    // поколению (ответ не блокируется «протухшим» исполнителем), поэтому
+    // ожидание закрыто и задача вернулась в active. Продолжение — новой попыткой.
     const row = await store.requireTask(taskId);
-    expect(row.status).toBe('awaiting_input');
+    expect(row.status).toBe('active');
     expect(row.generation).toBe(newGeneration);
+    expect(await store.getOpenAwaiting(taskId)).toBeNull();
 
     const events = await store.history(taskId);
     const fenced = events.find((e) => e.kind === 'fenced');
     expect(fenced).toBeDefined();
     expect(fenced!.generation).toBe(submit.generation);
 
-    // Свежий владелец может довести задачу сам.
-    await store.answerAwaiting({ taskId, answer: { answer: 'да' }, generation: newGeneration, step: 'wait' });
+    // Свежий владелец дводит задачу до конца: ответ уже durable, повторно его
+    // применять не нужно.
     await store.commit(taskId, newGeneration, {
       status: 'done',
       stage: 'finished',

@@ -77,6 +77,12 @@ export const SIGNAL_SOURCES = ['telegram', 'web', 'api', 'cron', 'system'] as co
 export type SignalSource = (typeof SIGNAL_SOURCES)[number];
 
 export type AwaitingKind = 'data' | 'choice' | 'approval';
+
+/**
+ * Зачем спрашиваем человека (эпик #109 шаг 5). Форма ответа остаётся kind
+ * (A2 §5.4); маппинг purpose -> kind живёт в src/awaiting/purpose.ts.
+ */
+export type AwaitingPurpose = 'preference' | 'missing_fact' | 'credential' | 'approval';
 export type AwaitingStatus = 'open' | 'answered' | 'expired' | 'cancelled';
 
 export interface TaskRow {
@@ -166,6 +172,12 @@ export interface AwaitingInputRow {
   answer_json: string | null;
   generation: number;
   version: number;
+  /** Зачем спрашиваем; kind — форма ответа. */
+  purpose: AwaitingPurpose | null;
+  /** Ссылки движка (#115): корреляция, не идентичность. */
+  engine_session_ref: string | null;
+  engine_request_ref: string | null;
+  tool_call_ref: string | null;
 }
 
 export interface ConversationRow {
