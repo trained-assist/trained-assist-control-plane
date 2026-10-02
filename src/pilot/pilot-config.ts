@@ -31,14 +31,21 @@ export interface PilotRoute {
   decidedAt: number;
 }
 
-const envBool = (name: string, fallback: boolean): boolean => {
-  const raw = process.env[name];
+type EnvSource = Record<string, string | undefined>;
+
+/**
+ * Конфиг читается из env рантайма Workers (параметр), а НЕ из process.env:
+ * в Workers глобального process нет, и чтение на уровне модуля роняло весь
+ * worker при старте (Uncaught ReferenceError: process is not defined).
+ */
+const envBool = (env: EnvSource, name: string, fallback: boolean): boolean => {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   return raw.trim().toLowerCase() === 'true';
 };
 
-const envStringArray = (name: string): string[] | null => {
-  const raw = process.env[name];
+const envStringArray = (env: EnvSource, name: string): string[] | null => {
+  const raw = env[name];
   if (!raw || raw.trim() === '') return null;
   return raw
     .split(',')
@@ -46,19 +53,23 @@ const envStringArray = (name: string): string[] | null => {
     .filter(Boolean);
 };
 
-const envIsoTimestamp = (name: string): number | null => {
-  const raw = process.env[name];
+const envIsoTimestamp = (env: EnvSource, name: string): number | null => {
+  const raw = env[name];
   if (!raw || raw.trim() === '') return null;
   const ts = Date.parse(raw.trim());
   return Number.isFinite(ts) ? ts : null;
 };
 
-export function readPilotConfig(): PilotConfig {
+/**
+ * По умолчанию — process.env, но только если он существует (Node/тесты).
+ * В Workers глобального process нет: дефолт = пустой env, пилот выключен.
+ */
+export function readPilotConfig(env: EnvSource = typeof process !== 'undefined' ? process.env : {}): PilotConfig {
   return {
-    enabled: envBool('PILOT_ENABLED', false),
-    activatedAt: envIsoTimestamp('PILOT_ACTIVATED_AT'),
-    cohortProfileIds: envStringArray('PILOT_COHORT_PROFILE_IDS'),
-    legacyProfileIds: envStringArray('PILOT_LEGACY_PROFILE_IDS'),
+    enabled: envBool(env, 'PILOT_ENABLED', false),
+    activatedAt: envIsoTimestamp(env, 'PILOT_ACTIVATED_AT'),
+    cohortProfileIds: envStringArray(env, 'PILOT_COHORT_PROFILE_IDS'),
+    legacyProfileIds: envStringArray(env, 'PILOT_LEGACY_PROFILE_IDS'),
   };
 }
 

@@ -17,6 +17,9 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
+import { awaitRunnerResult } from '../runner-adapter/await-runner-result';
+import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
+import { RunnerUnavailableError } from '../runner-adapter/errors';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
@@ -42,6 +45,12 @@ export interface PlanParams {
   waitPollSec?: number;
   /** Тестовый хук: шаг падает на 1-й попытке, платформа должна продолжить сама. */
   crashRunOnce?: boolean;
+  /** Настоящий Runner (issue #122). Без него — прежний stub-путь. */
+  adapter?: RunnerApiAdapter | null;
+  goal?: string | null;
+  instructions?: string | null;
+  runnerPollSec?: number;
+  runnerTimeoutSec?: number;
 }
 
 export interface PlanOutcome {
@@ -174,6 +183,57 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
     }),
   );
 
+  // Настоящий Runner (issue #122): попытка отправляется в Serverless Agent API
+  // со СТАБИЛЬНЫМ ключом, вычисленным до отправки. Недоступность Runner'а не
+  // теряет задачу: попытка остаётся незапущенной, повтор с тем же ключом
+  // возвращает тот же receipt.
+  let runnerRunId: string | null = null;
+  let runnerOwnerGeneration: number | null = null;
+  if (p.adapter) {
+    const attemptKey = stableAttemptKey(taskId, generation);
+    try {
+      const receipt = await p.adapter.submit({
+        userTaskId: taskId,
+        conversationId: current?.conversation_id ?? null,
+        engineName: 'opencode',
+        inputText: p.goal ?? null,
+        inputRefs: [],
+        instructions: p.instructions ?? null,
+        idempotencyKey: attemptKey,
+        timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
+      });
+      runnerRunId = receipt.runId;
+      await store.startRun(taskId, { generation, engine: 'opencode', sessionId: receipt.runId });
+      await store.logEvent({
+        taskId,
+        kind: 'run_started',
+        generation,
+        source: 'executor',
+        payload: {
+          runId: receipt.runId,
+          requestId: receipt.requestId,
+          ownerGeneration: runnerOwnerGeneration,
+          attempt: 1,
+          deduplicated: receipt.deduplicated,
+          idempotencyKey: attemptKey,
+        },
+      });
+    } catch (e) {
+      if (e instanceof RunnerUnavailableError) {
+        // Задача не теряется: статус не меняется, событие видно, повтор безопасен.
+        await store.logEvent({
+          taskId,
+          kind: 'error',
+          generation,
+          source: 'executor',
+          payload: { class: 'runner_unavailable', message: e.message, idempotencyKey: attemptKey },
+        });
+        throw e; // платформа повторит шаг с тем же ключом
+      }
+      throw e;
+    }
+  }
+
   if (p.crashRunOnce) {
     await ctx.step(
       'guard-crash',
@@ -222,6 +282,50 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
     step: 'wait',
   });
   if (waited.answer === null) return handleWaitTimeout(store, p);
+
+  // Настоящий Runner: читаем результат и события по курсору, финализируем
+  // артефакты. connection_lost — неизвестный исход, не failed, без авто-rerun.
+  if (p.adapter && runnerRunId) {
+    const outcome = await ctx.step('await-runner', () =>
+      awaitRunnerResult(p.adapter!, store, {
+        runId: runnerRunId,
+        taskId,
+        generation,
+        pollSec: p.runnerPollSec ?? 1,
+        timeoutSec: p.runnerTimeoutSec ?? 120,
+      }),
+    );
+    if (!outcome.ok) {
+      if (outcome.reason === 'connection_lost') return { ok: false, reason: 'connection_lost' };
+      if (outcome.reason === 'runner_unavailable') return { ok: false, reason: 'runner_unavailable' };
+      return { ok: false, reason: outcome.reason };
+    }
+    const runnerResult = outcome.result;
+    const answer = answerText(waited.answer);
+    const ok = runnerResult.outcome === 'succeeded';
+    const result = {
+      answer,
+      ok,
+      version: PLAN_VERSION,
+      runId: runnerResult.runId,
+      ownerGeneration: runnerResult.ownerGeneration,
+      attempt: 1,
+      artifacts: runnerResult.outputRefs,
+      persistence: runnerResult.persistence,
+      exitReason: runnerResult.exitReason,
+    };
+    await ctx.step('finalize', () =>
+      store.commit(taskId, generation, {
+        status: ok ? 'done' : 'failed',
+        stage: ok ? 'finished' : undefined,
+        step: 'finalize',
+        result,
+        payload: { runId: runnerResult.runId, persistence: runnerResult.persistence, eventsRecorded: outcome.eventsRecorded },
+      }),
+    );
+    if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', { result });
+    return { ok, answer };
+  }
 
   return finishAfterAnswer(ctx, store, p, waited.answer);
 }

@@ -17,13 +17,18 @@ import {
 import { IntakeService } from './intake';
 import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
-import { AnswerConflictError, AnswerRejectedError } from './intake/../taskstore/errors';
+import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
+import { RunnerApiAdapter, stableAttemptKey } from './runner-adapter';
+import { RunnerUnavailableError } from './runner-adapter/errors';
 import { InvalidEnvelopeError } from './intake/envelope';
-import { defaultPilotRouter } from './pilot';
+import { PilotRouter } from './pilot';
 
 export interface Env {
   DB: D1Database;
   TASK_WORKFLOW: Workflow;
+  /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
+  RUNNER_API_URL?: string;
+  RUNNER_API_KEY?: string;
 }
 
 const isPermanent = (e: unknown): boolean =>
@@ -86,6 +91,10 @@ const authorizeTaskRoute = async (
 
 const principalOf = (req: Request): string | null => req.headers.get('x-principal');
 
+/** Adapter к настоящему Runner'у, если заданы RUNNER_API_URL/RUNNER_API_KEY. */
+const runnerAdapterOf = (env: Env): RunnerApiAdapter | null =>
+  env.RUNNER_API_URL && env.RUNNER_API_KEY ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY) : null;
+
 /**
  * Адаптер канала для локальной песочницы: доставка подтверждается без вызова
  * провайдера (сеть/Telegram вне зоны control plane). Настоящий канал подключает
@@ -106,7 +115,8 @@ export default {
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
      const port = new CfWorkflowPort(env.TASK_WORKFLOW, store);
-     const intake = new IntakeService(store, defaultPilotRouter);
+     // Конфиг пилота читается из env рантайма (process.env в Workers нет).
+     const intake = new IntakeService(store, new PilotRouter({ env: env as unknown as Record<string, string | undefined> }));
     const body: Record<string, unknown> =
       req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
@@ -323,6 +333,21 @@ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body)
         }
         return json({ error: 'method not allowed' }, 405);
       }
+      if (url.pathname === '/runner/health') {
+        const adapter = runnerAdapterOf(env);
+        if (!adapter) return json({ configured: false });
+        try {
+          const status = await adapter.status(stableAttemptKey(taskId ?? '', 1));
+          return json({ configured: true, reachable: true, state: status.state });
+        } catch (e) {
+          return json({
+            configured: true,
+            reachable: false,
+            error: e instanceof RunnerUnavailableError ? 'unavailable' : 'error',
+            message: String((e as Error)?.message ?? e),
+          });
+        }
+      }
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
         const receipt = await store.acceptReceipt(taskId);
@@ -336,6 +361,7 @@ const result = await intake.admit({ principalId: principalOf(req) ?? '' }, body)
         case '/start': {
           await authorizeTaskRoute(store, req, taskId, 'tasks:intake');
           const input: SubmitInput = {
+            adapter: runnerAdapterOf(env),
             id: taskId,
             profileId: (body.profileId as string | undefined) ?? 'default',
             goal: (body.goal as string | undefined) ?? taskId,
