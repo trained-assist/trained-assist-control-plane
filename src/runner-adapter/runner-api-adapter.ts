@@ -106,10 +106,18 @@ export class RunnerApiAdapter {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /**
+   * Вызов fetch с привязкой к globalThis: в Workers глобальный fetch требует
+   * правильного `this`, иначе `Illegal invocation` (поймано живым прогоном).
+   */
+  private doFetch(url: string, init: RequestInit): Promise<Response> {
+    return this.fetchImpl.call(globalThis, url, init) as Promise<Response>;
+  }
+
   private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
     let res: Response;
     try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      res = await this.doFetch(`${this.baseUrl}${path}`, {
         method,
         headers: {
           authorization: `Bearer ${this.apiKey}`,
