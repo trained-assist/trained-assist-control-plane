@@ -30,6 +30,8 @@ export interface PlanParams {
   profileId: string;
   /** runId попытки: план завершает её при терминальных переходах. */
   runId?: string;
+  /** Продолжение: адрес ожидания, от которого продолжаем (шаг 5). */
+  awaitingInputId?: string | null;
   /** Назначение ожидания: preference | missing_fact | credential | approval. */
   awaitingPurpose?: AwaitingPurpose | null;
   /** Варианты ответа для purpose=preference (choice) со стабильными option ID (#115). */
@@ -137,21 +139,29 @@ export async function conversationPlan(ctx: StepCtx, store: TaskStore, p: PlanPa
   }
 
   // ЯВНОЕ ПРОДОЛЖЕНИЕ (шаг 5): если движок умер во время ожидания человека,
-  // задача уже в awaiting_input с открытым ожиданием — продолжаем ОТ него.
-  // Шаги до ожидания не переигрываются: это не молчаливый повтор задачи.
-  const alreadyWaiting = current?.status === 'awaiting_input' ? await store.getOpenAwaiting(taskId) : null;
-  if (alreadyWaiting) {
-    const waited = await waitForAnswer({
-      store,
-      ctx,
-      taskId,
-      awaitingInputId: alreadyWaiting.awaiting_input_id,
-      pollSec: p.waitPollSec ?? 60,
-      timeoutSec: p.waitTimeoutSec ?? 24 * 3600,
-      step: 'wait',
-    });
-    if (waited.answer === null) return handleWaitTimeout(store, p);
-    return finishAfterAnswer(ctx, store, p, waited.answer);
+  // продолжение получает адрес того же ожидания и идёт ОТ него — шаги до
+  // ожидания не переигрываются (это не молчаливый повтор задачи).
+  //  - ожидание открыто   -> продолжаем ждать ответа;
+  //  - ответ уже durable  -> сразу к результату (ответ пережил смерть движка).
+  const resumeAwaitingId = p.awaitingInputId ?? (current?.status === 'awaiting_input' ? (await store.getOpenAwaiting(taskId))?.awaiting_input_id ?? null : null);
+  if (resumeAwaitingId) {
+    const row = await store.getAwaiting(resumeAwaitingId);
+    if (row?.status === 'answered' && row.answer_json !== null) {
+      return finishAfterAnswer(ctx, store, p, JSON.parse(row.answer_json));
+    }
+    if (row?.status === 'open') {
+      const waited = await waitForAnswer({
+        store,
+        ctx,
+        taskId,
+        awaitingInputId: resumeAwaitingId,
+        pollSec: p.waitPollSec ?? 60,
+        timeoutSec: p.waitTimeoutSec ?? 24 * 3600,
+        step: 'wait',
+      });
+      if (waited.answer === null) return handleWaitTimeout(store, p);
+      return finishAfterAnswer(ctx, store, p, waited.answer);
+    }
   }
 
   await ctx.step('prepare', () =>

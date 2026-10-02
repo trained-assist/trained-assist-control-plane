@@ -1721,13 +1721,14 @@ export class TaskStore {
       .bind(Date.now(), applied.awaitingInputId, signal.id)
       .run();
 
+    const stored = await this.getAwaiting(applied.awaitingInputId);
     return {
       applied: true,
       duplicate: false,
       awaitingInputId: applied.awaitingInputId,
       taskId: awaiting.user_task_id,
       answer: input.answer,
-      answeredAt: Date.now(),
+      answeredAt: stored?.answered_at ?? Date.now(),
       signalId: signal.id,
     };
   }
@@ -1759,9 +1760,13 @@ export class TaskStore {
    * сохранённые данные»).
    */
   async availableContinuationData(taskId: string): Promise<{
+    /** Открытое ожидание, если задача ждёт человека прямо сейчас. */
     awaitingInputId: string | null;
     awaitingStatus: string | null;
     awaitingPurpose: string | null;
+    /** Последнее ожидание задачи в любом статусе: на него продолжает работа. */
+    lastAwaitingInputId: string | null;
+    lastAwaitingStatus: string | null;
     artifacts: string[];
     resultJson: string | null;
     revision: number;
@@ -1769,10 +1774,16 @@ export class TaskStore {
     const task = await this.requireTask(taskId);
     const open = await this.getOpenAwaiting(taskId);
     const artifacts = await this.listArtifacts(taskId);
+    const last = await this.db
+      .prepare(`SELECT awaiting_input_id, status FROM awaiting_inputs WHERE user_task_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .bind(taskId)
+      .first<{ awaiting_input_id: string; status: string }>();
     return {
       awaitingInputId: open?.awaiting_input_id ?? null,
       awaitingStatus: open?.status ?? null,
       awaitingPurpose: open?.purpose ?? null,
+      lastAwaitingInputId: last?.awaiting_input_id ?? null,
+      lastAwaitingStatus: last?.status ?? null,
       artifacts: artifacts.map((a) => a.artifact_ref),
       resultJson: task.result_json,
       revision: task.revision,

@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { FencedError, TaskNotFoundError, TaskStore, TerminalStateError } from './taskstore';
-import type { AdmissionScope, TaskRow } from './taskstore';
+import type { AdmissionScope, AwaitingKind, AwaitingPurpose, TaskRow } from './taskstore';
 import { resolvePrincipal, requirePermission } from './intake/authorization';
 import { toC02Event } from './events';
 import {
@@ -15,7 +15,9 @@ import {
   type SubmitInput,
 } from './workflow-port';
 import { IntakeService } from './intake';
+import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
+import { AnswerConflictError, AnswerRejectedError } from './intake/../taskstore/errors';
 import { InvalidEnvelopeError } from './intake/envelope';
 
 export interface Env {
@@ -59,6 +61,7 @@ const errorStatus = (e: unknown): number => {
   if (e instanceof EnvelopeConflictError) return 409;
   if (e instanceof FencedError || e instanceof TerminalStateError) return 409;
   if (e instanceof TaskNotFoundError) return 404;
+  if (e instanceof AnswerConflictError || e instanceof AnswerRejectedError) return 409;
   return 500;
 };
 
@@ -202,6 +205,120 @@ export default {
           runId: (body.runId as string | undefined) ?? null,
         });
         return json({ artifactId: artifact.artifact_id, artifactRef: artifact.artifact_ref, created }, created ? 201 : 200);
+      }
+      // Host-owned interaction (шаг 5, гейт #115): durable ожидание и ответ по
+      // ЯВНОМУ адресу awaitingInputId. Это и есть поверхность, которую дёргает
+      // host-owned MCP tool исполнителя и канал пользователя.
+      if (url.pathname === '/awaiting' || url.pathname.startsWith('/awaiting/')) {
+        if (req.method === 'POST' && url.pathname === '/awaiting') {
+          if (!taskId) return json({ error: 'taskId is required' }, 400);
+          const task = await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+          const purpose = (body.purpose as AwaitingPurpose | undefined) ?? 'missing_fact';
+          const opened = await store.openAwaiting({
+            taskId,
+            purpose,
+            kind: body.kind as AwaitingKind | undefined,
+            question: (body.question as string | undefined) ?? 'Нужен ваш ответ.',
+            respondentScope: (body.respondentScope as string | undefined) ?? task.profile_id,
+            step: (body.step as string | undefined) ?? null,
+            runId: (body.runId as string | undefined) ?? null,
+            schema: body.options ? { options: body.options } : undefined,
+            deadlineAt: (body.deadlineAt as number | undefined) ?? undefined,
+            engineRefs: {
+              sessionRef: (body.engineSessionRef as string | undefined) ?? null,
+              requestRef: (body.engineRequestRef as string | undefined) ?? null,
+              toolCallRef: (body.toolCallRef as string | undefined) ?? null,
+            },
+          });
+          const row = await store.getAwaiting(opened.awaitingInputId);
+          logStructured({
+            event: 'awaiting.opened',
+            profileId: task.profile_id,
+            userTaskId: taskId,
+            runId: (body.runId as string | undefined) ?? null,
+            requestId: task.request_id,
+            awaitingInputId: opened.awaitingInputId,
+            reason: 'host_opened',
+            purpose,
+            kind: row?.kind,
+            deadlineAt: row?.deadline_at,
+          });
+          return json(
+            {
+              awaitingInputId: opened.awaitingInputId,
+              kind: row?.kind,
+              purpose: row?.purpose,
+              status: row?.status,
+              deadlineAt: row?.deadline_at,
+            },
+            201,
+          );
+        }
+
+        const parts = url.pathname.split('/').filter(Boolean); // ['awaiting', id?, 'answer'?]
+        const awaitingInputId = parts[1] ?? null;
+        if (!awaitingInputId) return json({ error: 'awaitingInputId is required' }, 400);
+
+        if (req.method === 'GET' && parts.length === 2) {
+          const row = await store.getAwaiting(awaitingInputId);
+          if (!row) return json({ error: 'awaiting not found' }, 404);
+          await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:read');
+          return json({ ...row, answer: row.answer_json ? JSON.parse(row.answer_json) : null });
+        }
+
+        if (req.method === 'POST' && parts[2] === 'answer') {
+          const row = await store.getAwaiting(awaitingInputId);
+          if (!row) return json({ error: 'awaiting not found' }, 404);
+          const task = await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:signal');
+          const idempotencyKey = (body.idempotencyKey as string | undefined) ?? `api:${crypto.randomUUID()}`;
+          try {
+            const applied = await store.answerAwaitingById({
+              awaitingInputId,
+              idempotencyKey,
+              answer: body.answer ?? null,
+              step: (body.step as string | undefined) ?? null,
+            });
+            logStructured({
+              event: applied.duplicate ? 'awaiting.answer_duplicate' : 'awaiting.answered',
+              profileId: task.profile_id,
+              userTaskId: row.user_task_id,
+              runId: row.run_id,
+              requestId: task.request_id,
+              awaitingInputId,
+              reason: applied.duplicate ? 'duplicate_request_id' : 'answer_applied',
+              idempotencyKey,
+              generation: task.generation,
+            });
+            return json({
+              applied: applied.applied,
+              duplicate: applied.duplicate,
+              awaitingInputId: applied.awaitingInputId,
+              answer: applied.answer,
+              answeredAt: applied.answeredAt,
+            });
+          } catch (e) {
+            const reason =
+              e instanceof AnswerConflictError
+                ? 'answered_with_other_key'
+                : e instanceof AnswerRejectedError
+                  ? `awaiting_${e.awaitingStatus}`
+                  : 'answer_failed';
+            logStructured({
+              event: 'awaiting.answer_rejected',
+              level: 'warn',
+              profileId: task.profile_id,
+              userTaskId: row.user_task_id,
+              runId: row.run_id,
+              requestId: task.request_id,
+              awaitingInputId,
+              reason,
+              idempotencyKey,
+              generation: task.generation,
+            });
+            throw e;
+          }
+        }
+        return json({ error: 'method not allowed' }, 405);
       }
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
