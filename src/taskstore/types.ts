@@ -92,6 +92,8 @@ export interface TaskRow {
   awaiting_input_id: string | null;
   delivery_state: string;
   generation: number;
+  /** Структурированный терминальный результат задачи (аддитивная колонка §6). */
+  result_json: string | null;
   created_at: number;
   updated_at: number;
   revision: number;
