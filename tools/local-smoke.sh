@@ -17,13 +17,19 @@ PRINCIPAL="${PRINCIPAL:-sandbox-local}"
 PROFILE="${PROFILE:-profile-1}"
 REQUEST_ID="${REQUEST_ID:-req-smoke-$(date +%s)}"
 
+# Проверяющая аутентификация: секрет только из SM/env, в репозиторий не попадает.
+export PRINCIPAL_SECRET="${PRINCIPAL_SECRET:-$(gcloud secrets versions access latest --secret=PRINCIPAL_SECRET 2>/dev/null)}"
+[ -n "$PRINCIPAL_SECRET" ] || { echo "FAIL: PRINCIPAL_SECRET не прочитан из Secret Manager" >&2; exit 1; }
+principal_sig="$(./tools/principal-sig.sh "$PRINCIPAL")"
+
+
 py() { python3 -c "$1"; }
 
 post() {
-  curl -sS -X POST "$BASE$1" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "$2"
+  curl -sS -X POST "$BASE$1" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d "$2"
 }
 
-get() { curl -sS -H "X-Principal: $PRINCIPAL" "$BASE$1"; }
+get() { curl -sS -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" "$BASE$1"; }
 
 task_status() {
   post /status "{\"taskId\":\"$TASK\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])'
@@ -62,7 +68,7 @@ echo "$DUP_INTAKE" | py 'import json,sys; d=json.load(sys.stdin); assert d["dupl
 echo "OK: 200, прежняя квитанция"
 
 echo "== 0.2 другой payload с тем же ключом = conflict =="
-CONFLICT="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/intake" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"contractVersion\":1,\"requestId\":\"$REQUEST_ID\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"другой текст\"}]}")"
+CONFLICT="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/intake" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d "{\"contractVersion\":1,\"requestId\":\"$REQUEST_ID\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"другой текст\"}]}")"
 [ "$CONFLICT" = "409" ] || { echo "FAIL: ждали 409, получили $CONFLICT" >&2; exit 1; }
 echo "OK: 409 conflict"
 
@@ -156,11 +162,12 @@ echo "OK: после resume задача 2 дошла до done"
 
 echo "== 9. поток событий с курсором (P05/C02) =="
 python3 - "$TASK" "$BASE" "$PRINCIPAL" <<'PYEOF'
-import json, sys, urllib.request
+import json, sys, urllib.request, os, hmac, hashlib
 task_id, base = sys.argv[1], sys.argv[2]
 principal = sys.argv[3] if len(sys.argv) > 3 else "sandbox-local"
+sig = hmac.new(os.environ["PRINCIPAL_SECRET"].encode(), principal.encode(), hashlib.sha256).hexdigest()
 def fetch(url):
-    req = urllib.request.Request(url, headers={"X-Principal": principal})
+    req = urllib.request.Request(url, headers={"X-Principal": principal, "x-principal-sig": sig})
     with urllib.request.urlopen(req) as r:
         return json.load(r)
 seen, cursor = [], None
@@ -233,7 +240,7 @@ echo "$ANSWERED" | py 'import json,sys; d=json.load(sys.stdin); assert d["applie
 DUP_ANSWER="$(post "/awaiting/$AID/answer" "{\"idempotencyKey\":\"web:smoke-1\",\"answer\":{\"optionId\":\"opt-a\"}}")"
 echo "$DUP_ANSWER" | py 'import json,sys; d=json.load(sys.stdin); assert d["applied"] is False and d["duplicate"] is True and d["answeredAt"]=='"$(echo "$ANSWERED" | py 'import json,sys; print(json.load(sys.stdin)["answeredAt"])')"', d' || exit 1
 echo "OK: повтор ответа = no-op с прежним результатом"
-CONFLICT="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/awaiting/$AID/answer" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d '{"idempotencyKey":"web:smoke-2","answer":{"optionId":"opt-b"}}')"
+CONFLICT="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/awaiting/$AID/answer" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d '{"idempotencyKey":"web:smoke-2","answer":{"optionId":"opt-b"}}')"
 [ "$CONFLICT" = "409" ] || { echo "FAIL: ждали 409 (другой ключ), получили $CONFLICT" >&2; exit 1; }
 echo "OK: другой ключ на отвеченном ожидании -> 409 conflict"
 
@@ -537,14 +544,14 @@ assert r["stoppedBy"] == "gtd" and r["stopReason"] == "attempt_cap_exhausted", r
 assert len(d["runs"]) == 2, d["runs"]
 print("OK: attempt cap -> blocked (stopReason =", r["stopReason"], "), попыток:", len(d["runs"]))
 ' || exit 1
-DUP_REG="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/gtd" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"requestId\":\"reg-$CAPS_REQ-again\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$CAPS_TASK\",\"reason\":\"начать заново\",\"criteria\":[{\"id\":\"release-ok\",\"description\":\"релиз проверен\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":5}")"
+DUP_REG="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/gtd" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d "{\"requestId\":\"reg-$CAPS_REQ-again\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$CAPS_TASK\",\"reason\":\"начать заново\",\"criteria\":[{\"id\":\"release-ok\",\"description\":\"релиз проверен\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":5}")"
 [ "$DUP_REG" = "409" ] || { echo "FAIL: ждали 409 на повторную регистрацию, получили $DUP_REG" >&2; exit 1; }
 echo "OK: обойти caps новой записью контроля нельзя (409)"
 
 echo "== 15.6 неизвестный gtdId у managed outcome: карантин, не тихий fallback =="
-GHOST="$(curl -sS -X POST "$BASE/gtd/outcomes" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"gtdId\":\"gtd-ffffffffffffffffffff\",\"userTaskId\":\"$CAPS_TASK\",\"stepId\":\"step-9\",\"outcome\":\"failed\",\"idempotencyKey\":\"ghost:smoke\"}")"
+GHOST="$(curl -sS -X POST "$BASE/gtd/outcomes" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d "{\"gtdId\":\"gtd-ffffffffffffffffffff\",\"userTaskId\":\"$CAPS_TASK\",\"stepId\":\"step-9\",\"outcome\":\"failed\",\"idempotencyKey\":\"ghost:smoke\"}")"
 echo "$GHOST" | py 'import json,sys; d=json.load(sys.stdin); assert d["state"]=="quarantined" and d["reason"]=="unknown_control_record", d' || exit 1
-GHOST_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/gtd/outcomes" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"gtdId\":\"gtd-ffffffffffffffffffff\",\"userTaskId\":\"$CAPS_TASK\",\"stepId\":\"step-9\",\"outcome\":\"failed\",\"idempotencyKey\":\"ghost:smoke\"}")"
+GHOST_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/gtd/outcomes" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d "{\"gtdId\":\"gtd-ffffffffffffffffffff\",\"userTaskId\":\"$CAPS_TASK\",\"stepId\":\"step-9\",\"outcome\":\"failed\",\"idempotencyKey\":\"ghost:smoke\"}")"
 [ "$GHOST_CODE" = "409" ] || { echo "FAIL: ждали 409 на неизвестный gtdId, получили $GHOST_CODE" >&2; exit 1; }
 post /status "{\"taskId\":\"$CAPS_TASK\"}" | py 'import json,sys; d=json.load(sys.stdin); assert len(d["runs"])==2, d["runs"]' || exit 1
 echo "OK: исход без записи контроля — quarantined (409), попыток не добавилось"

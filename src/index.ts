@@ -21,6 +21,7 @@ import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
+import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -40,6 +41,11 @@ export interface Env {
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  /**
+   * Секрет проверки личности принципала (HMAC). Только из binding
+   * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
+   */
+  PRINCIPAL_SECRET?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
    * виртуальных часах. В проде не задаётся: время берёт системный clock.
@@ -107,15 +113,24 @@ const authorizeTaskRoute = async (
   req: Request,
   taskId: string,
   scope: AdmissionScope,
+  auth: PrincipalAuth,
 ): Promise<TaskRow> => {
   const task = await store.getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
-  const principal = await resolvePrincipal(store, { principalId: principalOf(req) ?? '' });
+  const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
   requirePermission(principal, task.profile_id, scope);
   return task;
 };
 
-const principalOf = (req: Request): string | null => req.headers.get('x-principal');
+/**
+ * Проверенная личность: подпись HMAC по binding `PRINCIPAL_SECRET`, а не доверие
+ * заголовку клиента. Без секрета доступ закрыт (fail closed) — см.
+ * `src/auth/principal-auth.ts`.
+ */
+const principalOf = async (req: Request, auth: PrincipalAuth): Promise<string> => {
+  const principalId = await verifyPrincipal(req, auth);
+  return principalId ?? '';
+};
 
 /** Часы расписания: прод — системные, песочница/тесты — виртуальные. */
 const scheduleClockOf = (env: Env): Clock =>
@@ -152,11 +167,12 @@ async function handleGtdRoute(
   env: Env,
   store: TaskStore,
   body: Record<string, unknown>,
+  auth: PrincipalAuth,
 ): Promise<Response> {
   const parts = url.pathname.split('/').filter(Boolean); // ['gtd', ...]
   const action = parts[1] ?? '';
   const service = gtdServiceOf(env, store);
-  const identity = { principalId: principalOf(req) ?? '' };
+  const identity = { principalId: await principalOf(req, auth) };
 
   // Явная регистрация на контроль (opt-in). Запись durable ДО запуска работы.
   if (action === '' && req.method === 'POST') {
@@ -325,10 +341,11 @@ async function handleScheduleRoute(
   store: TaskStore,
   port: CfWorkflowPort,
   body: Record<string, unknown>,
+  auth: PrincipalAuth,
 ): Promise<Response> {
   const path = url.pathname.slice('/schedules'.length).replace(/\/$/, '') || '/';
   const service = scheduleServiceOf(env, store, port);
-  const identity = { principalId: principalOf(req) ?? '' };
+  const identity = { principalId: await principalOf(req, auth) };
 
   if (path === '/' && req.method === 'POST') {
     const profileId = String(body.profileId ?? '');
@@ -411,6 +428,8 @@ export default {
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
      const port = new CfWorkflowPort(env.TASK_WORKFLOW, store);
+    // Проверяющая аутентификация: секрет только в binding, в запросе его нет.
+    const auth = principalAuthOf(env as unknown as Record<string, string | undefined>);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
      const intake = new IntakeService(store, new PilotRouter({ env: env as unknown as Record<string, string | undefined> }));
     const body: Record<string, unknown> =
@@ -462,7 +481,7 @@ const store = new TaskStore(env.DB);
       // сохранения; повтор с тем же requestId возвращает прежнюю квитанцию.
        if (url.pathname === '/intake') {
          if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
- const result = await intake.admit({ principalId: principalOf(req) ?? '' }, {
+ const result = await intake.admit({ principalId: await principalOf(req, auth) }, {
            ...body,
            projectId: (body.projectId as string | undefined) ?? null,
            audienceId: (body.audienceId as string | undefined) ?? null,
@@ -485,7 +504,7 @@ const store = new TaskStore(env.DB);
        }
       if (url.pathname === '/events') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
-        await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
         const after = url.searchParams.get('after');
         const limit = Number(url.searchParams.get('limit') ?? '100');
         const page = await store.eventsAfter(taskId, after ? Number(after) : null, Number.isFinite(limit) ? limit : 100);
@@ -501,7 +520,7 @@ const store = new TaskStore(env.DB);
       if (url.pathname === '/deliveries') {
         if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
         if (!taskId) return json({ error: 'taskId is required' }, 400);
-        await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+        await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
         const { delivery, queued } = await store.queueDelivery({
           taskId,
           logicalMessageId: (body.logicalMessageId as string | undefined) ?? `msg-${crypto.randomUUID()}`,
@@ -524,11 +543,11 @@ const store = new TaskStore(env.DB);
       if (url.pathname === '/artifacts') {
         if (req.method !== 'POST') {
           if (!taskId) return json({ error: 'taskId is required' }, 400);
-          await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
           return json({ artifacts: await store.listArtifacts(taskId) });
         }
         if (!taskId) return json({ error: 'taskId is required' }, 400);
-        await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+        await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
         const { artifact, created } = await store.recordArtifact({
           taskId,
           kind: (body.kind as string | undefined) ?? 'file',
@@ -545,7 +564,7 @@ const store = new TaskStore(env.DB);
       if (url.pathname === '/awaiting' || url.pathname.startsWith('/awaiting/')) {
         if (req.method === 'POST' && url.pathname === '/awaiting') {
           if (!taskId) return json({ error: 'taskId is required' }, 400);
-          const task = await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+          const task = await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
           const purpose = (body.purpose as AwaitingPurpose | undefined) ?? 'missing_fact';
           const opened = await store.openAwaiting({
             taskId,
@@ -595,14 +614,14 @@ const store = new TaskStore(env.DB);
         if (req.method === 'GET' && parts.length === 2) {
           const row = await store.getAwaiting(awaitingInputId);
           if (!row) return json({ error: 'awaiting not found' }, 404);
-          await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:read');
+          await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:read', auth);
           return json({ ...row, answer: row.answer_json ? JSON.parse(row.answer_json) : null });
         }
 
         if (req.method === 'POST' && parts[2] === 'answer') {
           const row = await store.getAwaiting(awaitingInputId);
           if (!row) return json({ error: 'awaiting not found' }, 404);
-          const task = await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:signal');
+          const task = await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:signal', auth);
           const idempotencyKey = (body.idempotencyKey as string | undefined) ?? `api:${crypto.randomUUID()}`;
           try {
             const applied = await store.answerAwaitingById({
@@ -675,13 +694,13 @@ const store = new TaskStore(env.DB);
       // маршрут здесь не отменяет уже принятые задачи: disable меняет только
       // разрешение будущих срабатываний (AC-140).
       if (url.pathname.startsWith('/schedules')) {
-        return await handleScheduleRoute(req, url, env, store, port, body);
+        return await handleScheduleRoute(req, url, env, store, port, body, auth);
       }
       // ── GTD: opt-in регистрация и bounded control (P23, этап I07) ───────
       // Контроль появляется только здесь и только по явному вызову: обычная
       // задача и occurrence расписания остаются без записи контроля.
       if (url.pathname === '/gtd' || url.pathname.startsWith('/gtd/')) {
-        return await handleGtdRoute(req, url, env, store, body);
+        return await handleGtdRoute(req, url, env, store, body, auth);
       }
 
       if (url.pathname === '/receipt') {
@@ -692,13 +711,13 @@ const store = new TaskStore(env.DB);
       }
       if (url.pathname === '/report') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
-        await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
         const view = await reportView(store, taskId);
         return json(view);
       }
       if (url.pathname === '/report/history') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
-        await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
         const after = url.searchParams.get('after');
         const limit = Number(url.searchParams.get('limit') ?? '100');
         const history = await reportHistory(store, taskId, after ? Number(after) : null, Number.isFinite(limit) ? limit : 100);
@@ -709,7 +728,7 @@ const store = new TaskStore(env.DB);
 
       switch (url.pathname) {
         case '/start': {
-          await authorizeTaskRoute(store, req, taskId, 'tasks:intake');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:intake', auth);
           // Управляемая работа (P23): gtdId обязателен и проверяется хостом
           // (запись контроля принадлежит этой задаче и ещё открыта). Без gtdId
           // запуск остаётся обычной работой: gtdId=null, владелец продолжения
@@ -747,7 +766,7 @@ const startResult = await port.submit(input);
            });
          }
         case '/signal':
-          await authorizeTaskRoute(store, req, taskId, 'tasks:signal');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:signal', auth);
           return json(
             await port.signal(taskId, (body.type as string | undefined) ?? 'user_reply', body.payload ?? {}, {
               idempotencyKey: body.idempotencyKey as string | undefined,
@@ -755,16 +774,16 @@ const startResult = await port.submit(input);
             }),
           );
         case '/cancel':
-          await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
           return json(await port.cancel(taskId, { reason: body.reason as string | undefined }));
         case '/status':
-          await authorizeTaskRoute(store, req, taskId, 'tasks:read');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
           return json(await port.status(taskId));
         case '/replay':
-          await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
           return json(await port.replay(taskId, { fromStep: body.fromStep as string | undefined }));
         case '/resume':
-          await authorizeTaskRoute(store, req, taskId, 'tasks:control');
+          await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
           return json(
             await port.resume(taskId, {
               reason: body.reason as string | undefined,

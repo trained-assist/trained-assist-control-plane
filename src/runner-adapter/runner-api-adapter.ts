@@ -13,6 +13,7 @@
  */
 import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from './errors';
 import type { RunSpec } from '../run-spec/run-spec';
+import { toSubmitRequest } from '../run-spec/run-spec';
 
 export interface RunnerSubmitInput {
   userTaskId: string;
@@ -176,9 +177,11 @@ export class RunnerApiAdapter {
    */
   async submit(input: RunnerSubmitInput): Promise<RunnerReceipt> {
     if (input.runSpec) {
+      // Тело — проекция RunSpec на ключи, которые принимает POST /v1/runs.
+      // Полный RunSpec туда не уходит: checkKeys отклоняет неизвестные поля.
       return this.request<RunnerReceipt>('POST', '/v1/runs', {
         idempotencyKey: input.idempotencyKey,
-        body: input.runSpec,
+        body: toSubmitRequest(input.runSpec),
       });
     }
     const prompt = input.inputText?.trim();

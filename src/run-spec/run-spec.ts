@@ -108,6 +108,78 @@ export interface RunSpec {
   traceId?: string;
 }
 
+export interface RegionConstraints {
+  allowedRegions?: string[];
+  dataResidency?: string;
+}
+
+export interface BudgetSpec {
+  correlationRef: string;
+  approved: boolean;
+  reason?: string;
+}
+
+/**
+ * Тело `POST /v1/runs` — ровно те ключи, которые принимает Runner
+ * (`SUBMIT_KEYS` в `ai-agent-runner/src/api/contracts.ts`). Полный RunSpec туда
+ * не уходит: `checkKeys` отклоняет неизвестные поля, а
+ * `contractVersion/jobId/runId/operationId/profileId/ownerGeneration/cwd` Runner
+ * выводит сам. Проекция явная — иначе рассинхронизация ловится только сетевым
+ * отказом.
+ */
+export interface SubmitRequest {
+  userTaskId?: string;
+  conversationId?: string;
+  engine: EngineSpec;
+  input?: { refs?: InputRef[]; inlinePrompt?: string };
+  envAllowlist: string[];
+  limits: RunLimits;
+  deadline?: string;
+  regionConstraints?: RegionConstraints;
+  credentialBindings?: CredentialBinding[];
+  budget?: BudgetSpec;
+  result?: ResultPolicy;
+  outputs?: OutputSpec[];
+  traceId?: string;
+  instructions?: string;
+  repository?: RepositorySpec;
+}
+
+/**
+ * Проекция RunSpec → тело `POST /v1/runs`.
+ *
+ * `mcp` объявляется в mapping'е (хостовая политика, версионирована), но
+ * контракт submit его не переносит: отправка была бы отклонена как
+ * «unknown field». Поэтому MCP честно НЕ передаётся, а факт виден в логе
+ * (`run_spec.mcp_not_transmitted`) — молчаливое выбрасывание хуже.
+ */
+export function toSubmitRequest(spec: RunSpec): SubmitRequest {
+  const body: SubmitRequest = {
+    engine: spec.engine,
+    envAllowlist: spec.envAllowlist,
+    limits: spec.limits,
+  };
+  if (spec.userTaskId) body.userTaskId = spec.userTaskId;
+  if (spec.conversationId) body.conversationId = spec.conversationId;
+  if (spec.input) body.input = spec.input;
+  if (spec.outputs) body.outputs = spec.outputs;
+  if (spec.repository) body.repository = spec.repository;
+  if (spec.result) body.result = spec.result;
+  if (spec.traceId) body.traceId = spec.traceId;
+  if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
+  return body;
+}
+
+/** Поля RunSpec, которые контракт submit не переносит (для лога и отчёта). */
+export function untransmittedRunSpecFields(spec: RunSpec): string[] {
+  const fields: string[] = [];
+  if (spec.mcp) fields.push('mcp');
+  for (const key of ['contractVersion', 'jobId', 'runId', 'operationId', 'profileId', 'ownerGeneration', 'cwd'] as const) {
+    fields.push(key);
+  }
+  return fields;
+}
+
 // ── Вход и политика ────────────────────────────────────────────────────────
 
 /** Клиентская часть входа: только сообщение и разрешённые вложения. */
@@ -531,6 +603,10 @@ export function logRunSpecBuilt(fields: {
   refs: number;
   outputs: number;
   mcpServers: number;
+  /** true, если MCP объявлен, но контракт submit его не переносит. */
+  mcpNotTransmitted?: boolean;
+  /** Поля RunSpec, которые Runner выводит сам и в submit не передаются. */
+  untransmitted?: string[];
   reason?: string;
 }): void {
   logStructured({
@@ -544,5 +620,7 @@ export function logRunSpecBuilt(fields: {
     refs: fields.refs,
     outputs: fields.outputs,
     mcpServers: fields.mcpServers,
+    ...(fields.mcpNotTransmitted === undefined ? {} : { mcpNotTransmitted: fields.mcpNotTransmitted }),
+    ...(fields.untransmitted ? { untransmitted: fields.untransmitted } : {}),
   });
 }

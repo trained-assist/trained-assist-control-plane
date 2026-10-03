@@ -31,8 +31,8 @@ TUNNEL_PID_FILE="$RUNTIME_DIR/tunnel.pid"
 mkdir -p "$RUNTIME_DIR"
 
 py() { python3 -c "$1"; }
-post() { curl -sS -X POST "$BASE$1" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "$2"; }
-get() { curl -sS -H "X-Principal: $PRINCIPAL" "$BASE$1"; }
+post() { curl -sS -X POST "$BASE$1" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" -d "$2"; }
+get() { curl -sS -H "X-Principal: $PRINCIPAL" -H "x-principal-sig: $(principal_sig)" "$BASE$1"; }
 # task_id аргументом не задаётся — берётся первая задача смоука; фазы 2-3
 # (обрыв туннеля, восстановление) ждут СВОЮ задачу, иначе ждали бы уже
 # закрытую задачу первой фазы и ждали бы вечно.
@@ -93,6 +93,11 @@ tunnel_pid() { lsof -ti ":$RUNNER_LOCAL_PORT" 2>/dev/null | head -1; }
 # --- ключ Runner: только в env, ни в вывод, ни в репозиторий ---
 export RUNNER_API_KEY="$(gcloud secrets versions access latest --secret=RUNNER_API_KEY 2>/dev/null)"
 [ -n "$RUNNER_API_KEY" ] || { echo "FAIL: RUNNER_API_KEY не прочитан из Secret Manager" >&2; exit 1; }
+
+# Проверяющая аутентификация control plane: секрет только из SM/env.
+export PRINCIPAL_SECRET="${PRINCIPAL_SECRET:-$(gcloud secrets versions access latest --secret=PRINCIPAL_SECRET 2>/dev/null)}"
+[ -n "$PRINCIPAL_SECRET" ] || { echo "FAIL: PRINCIPAL_SECRET не прочитан из Secret Manager" >&2; exit 1; }
+principal_sig="$(./tools/principal-sig.sh "$PRINCIPAL")"
 
 # --- .dev.vars для `wrangler dev` (gitignored): URL и ключ, chmod 600 ---
 # Пилот (M1.5) включён для профиля приёмки: без него задачи уходят на legacy и
