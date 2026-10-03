@@ -1,0 +1,645 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": "1.0.0",
+  "repomixVersion": "1.18.1",
+  "repository": "trained-assist/trained-assist-control-plane",
+  "sourceSha": "c04348fa087529d25a48e376fd9f7bffa0e11f5f",
+  "dirty": false,
+  "mapByteLimit": 8192,
+  "mapBytes": 4761,
+  "indexed": [
+    ".github/workflows/ci-fix-cleanup.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/pr-autofix.yml",
+    ".github/workflows/repo-context.yml",
+    ".gitignore",
+    ".repo-context/.gitignore",
+    ".repo-context/repomix.config.json",
+    "AGENTS.md",
+    "README.md",
+    "docs/M1-PILOT-ROLLBACK-RUNBOOK.md",
+    "docs/M1-STEP7-WEB-SLICE.md",
+    "docs/P22-SCHEDULE-VIRTUAL-CLOCK-TRANSCRIPT.md",
+    "docs/P23-GTD-OPTIN-BOUNDED-CONTROL-TRANSCRIPT.md",
+    "docs/e2e/m1-step7-live-report.json",
+    "migrations/0001_task_store_v1.sql",
+    "migrations/0002_task_admission.sql",
+    "migrations/0003_run_executions.sql",
+    "migrations/0004_delivery_and_artifacts.sql",
+    "migrations/0005_awaiting_purpose_and_engine_refs.sql",
+    "migrations/0006_schedule_v1.sql",
+    "migrations/0007_gtd_v1.sql",
+    "package.json",
+    "src/awaiting/index.ts",
+    "src/awaiting/purpose.ts",
+    "src/awaiting/wait-for-answer.ts",
+    "src/events/c02-event-envelope.ts",
+    "src/events/index.ts",
+    "src/gtd/errors.ts",
+    "src/gtd/gtd-service.ts",
+    "src/gtd/gtd-store.ts",
+    "src/gtd/index.ts",
+    "src/gtd/types.ts",
+    "src/index.ts",
+    "src/intake/authorization.ts",
+    "src/intake/envelope.ts",
+    "src/intake/errors.ts",
+    "src/intake/index.ts",
+    "src/intake/intake-service.ts",
+    "src/logging/structured-log.ts",
+    "src/pilot/index.ts",
+    "src/pilot/pilot-config.ts",
+    "src/pilot/pilot-router.ts",
+    "src/reporting/index.ts",
+    "src/run-spec/run-spec.ts",
+    "src/runner-adapter/await-runner-result.ts",
+    "src/runner-adapter/engine-text.ts",
+    "src/runner-adapter/errors.ts",
+    "src/runner-adapter/index.ts",
+    "src/runner-adapter/runner-api-adapter.ts",
+    "src/schedule/cron.ts",
+    "src/schedule/index.ts",
+    "src/schedule/schedule-service.ts",
+    "src/schedule/schedule-store.ts",
+    "src/schedule/types.ts",
+    "src/schedule/virtual-clock.ts",
+    "src/taskstore/errors.ts",
+    "src/taskstore/index.ts",
+    "src/taskstore/task-store.ts",
+    "src/taskstore/types.ts",
+    "src/workflow-port/conversation-plan.ts",
+    "src/workflow-port/delivery-worker.ts",
+    "src/workflow-port/index.ts",
+    "src/workflow-port/step-ctx.ts",
+    "src/workflow-port/workflow-port.ts",
+    "tests/env.ts",
+    "tests/intake-receipt.test.ts",
+    "tests/m06-cancel-delivery.test.ts",
+    "tests/m1-step5-awaiting-input.test.ts",
+    "tests/m122-runner-adapter.test.ts",
+    "tests/migrations.test.ts",
+    "tests/own-api-one-shot.test.ts",
+    "tests/own-api-reporting.test.ts",
+    "tests/own-api-run-spec.test.ts",
+    "tests/p05-p06-status-recovery.test.ts",
+    "tests/p12-primitive-io.test.ts",
+    "tests/p22-schedule.test.ts",
+    "tests/p23-gtd.test.ts",
+    "tests/pilot-rollback.test.ts",
+    "tests/scaffold.test.ts",
+    "tests/setup.ts",
+    "tests/taskstore-fencing.test.ts",
+    "tests/taskstore-signals.test.ts",
+    "tests/taskstore-terminal-guard.test.ts",
+    "tests/taskstore-transitions.test.ts",
+    "tests/web-conversation.test.ts",
+    "tests/web-e2e-controlled-failure.test.ts",
+    "tests/workflow-port.test.ts",
+    "tools/local-smoke.sh",
+    "tools/repo-context/.gitignore",
+    "tools/repo-context/map.py",
+    "tools/repo-context/package.json",
+    "tools/runner-live-smoke.sh",
+    "tsconfig.json",
+    "vitest.config.ts",
+    "web/app.ts",
+    "web/config.ts",
+    "web/contract.ts",
+    "web/control-plane-client.ts",
+    "web/conversation.ts",
+    "web/e2e/run-m1-web-slice-e2e.mjs",
+    "web/fake-control-plane.ts",
+    "web/index.ts",
+    "web/log.ts",
+    "web/page.ts",
+    "web/wrangler.web.jsonc",
+    "wrangler.jsonc"
+  ],
+  "omittedFromMap": [],
+  "inventory": [
+    {
+      "path": ".github/workflows/ci-fix-cleanup.yml",
+      "bytes": 533
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "bytes": 525
+    },
+    {
+      "path": ".github/workflows/pr-autofix.yml",
+      "bytes": 1285
+    },
+    {
+      "path": ".github/workflows/repo-context.yml",
+      "bytes": 2886
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 90
+    },
+    {
+      "path": ".repo-context/.gitignore",
+      "bytes": 8
+    },
+    {
+      "path": ".repo-context/repomix.config.json",
+      "bytes": 901
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 475
+    },
+    {
+      "path": "README.md",
+      "bytes": 37705
+    },
+    {
+      "path": "docs/M1-PILOT-ROLLBACK-RUNBOOK.md",
+      "bytes": 9025
+    },
+    {
+      "path": "docs/M1-STEP7-WEB-SLICE.md",
+      "bytes": 11175
+    },
+    {
+      "path": "docs/P22-SCHEDULE-VIRTUAL-CLOCK-TRANSCRIPT.md",
+      "bytes": 16672
+    },
+    {
+      "path": "docs/P23-GTD-OPTIN-BOUNDED-CONTROL-TRANSCRIPT.md",
+      "bytes": 22145
+    },
+    {
+      "path": "docs/e2e/m1-step7-live-report.json",
+      "bytes": 2096
+    },
+    {
+      "path": "migrations/0001_task_store_v1.sql",
+      "bytes": 6420
+    },
+    {
+      "path": "migrations/0002_task_admission.sql",
+      "bytes": 1613
+    },
+    {
+      "path": "migrations/0003_run_executions.sql",
+      "bytes": 1919
+    },
+    {
+      "path": "migrations/0004_delivery_and_artifacts.sql",
+      "bytes": 3393
+    },
+    {
+      "path": "migrations/0005_awaiting_purpose_and_engine_refs.sql",
+      "bytes": 1199
+    },
+    {
+      "path": "migrations/0006_schedule_v1.sql",
+      "bytes": 4686
+    },
+    {
+      "path": "migrations/0007_gtd_v1.sql",
+      "bytes": 8224
+    },
+    {
+      "path": "package.json",
+      "bytes": 939
+    },
+    {
+      "path": "src/awaiting/index.ts",
+      "bytes": 62
+    },
+    {
+      "path": "src/awaiting/purpose.ts",
+      "bytes": 2299
+    },
+    {
+      "path": "src/awaiting/wait-for-answer.ts",
+      "bytes": 6151
+    },
+    {
+      "path": "src/events/c02-event-envelope.ts",
+      "bytes": 2714
+    },
+    {
+      "path": "src/events/index.ts",
+      "bytes": 38
+    },
+    {
+      "path": "src/gtd/errors.ts",
+      "bytes": 2454
+    },
+    {
+      "path": "src/gtd/gtd-service.ts",
+      "bytes": 44739
+    },
+    {
+      "path": "src/gtd/gtd-store.ts",
+      "bytes": 10468
+    },
+    {
+      "path": "src/gtd/index.ts",
+      "bytes": 111
+    },
+    {
+      "path": "src/gtd/types.ts",
+      "bytes": 8995
+    },
+    {
+      "path": "src/index.ts",
+      "bytes": 37955
+    },
+    {
+      "path": "src/intake/authorization.ts",
+      "bytes": 2197
+    },
+    {
+      "path": "src/intake/envelope.ts",
+      "bytes": 8252
+    },
+    {
+      "path": "src/intake/errors.ts",
+      "bytes": 1383
+    },
+    {
+      "path": "src/intake/index.ts",
+      "bytes": 121
+    },
+    {
+      "path": "src/intake/intake-service.ts",
+      "bytes": 8056
+    },
+    {
+      "path": "src/logging/structured-log.ts",
+      "bytes": 1311
+    },
+    {
+      "path": "src/pilot/index.ts",
+      "bytes": 270
+    },
+    {
+      "path": "src/pilot/pilot-config.ts",
+      "bytes": 5234
+    },
+    {
+      "path": "src/pilot/pilot-router.ts",
+      "bytes": 3066
+    },
+    {
+      "path": "src/reporting/index.ts",
+      "bytes": 6074
+    },
+    {
+      "path": "src/run-spec/run-spec.ts",
+      "bytes": 25096
+    },
+    {
+      "path": "src/runner-adapter/await-runner-result.ts",
+      "bytes": 8860
+    },
+    {
+      "path": "src/runner-adapter/engine-text.ts",
+      "bytes": 2932
+    },
+    {
+      "path": "src/runner-adapter/errors.ts",
+      "bytes": 1070
+    },
+    {
+      "path": "src/runner-adapter/index.ts",
+      "bytes": 187
+    },
+    {
+      "path": "src/runner-adapter/runner-api-adapter.ts",
+      "bytes": 9955
+    },
+    {
+      "path": "src/schedule/cron.ts",
+      "bytes": 10651
+    },
+    {
+      "path": "src/schedule/index.ts",
+      "bytes": 152
+    },
+    {
+      "path": "src/schedule/schedule-service.ts",
+      "bytes": 24085
+    },
+    {
+      "path": "src/schedule/schedule-store.ts",
+      "bytes": 9708
+    },
+    {
+      "path": "src/schedule/types.ts",
+      "bytes": 5340
+    },
+    {
+      "path": "src/schedule/virtual-clock.ts",
+      "bytes": 1381
+    },
+    {
+      "path": "src/taskstore/errors.ts",
+      "bytes": 2926
+    },
+    {
+      "path": "src/taskstore/index.ts",
+      "bytes": 301
+    },
+    {
+      "path": "src/taskstore/task-store.ts",
+      "bytes": 77791
+    },
+    {
+      "path": "src/taskstore/types.ts",
+      "bytes": 8270
+    },
+    {
+      "path": "src/workflow-port/conversation-plan.ts",
+      "bytes": 28385
+    },
+    {
+      "path": "src/workflow-port/delivery-worker.ts",
+      "bytes": 3756
+    },
+    {
+      "path": "src/workflow-port/index.ts",
+      "bytes": 171
+    },
+    {
+      "path": "src/workflow-port/step-ctx.ts",
+      "bytes": 2573
+    },
+    {
+      "path": "src/workflow-port/workflow-port.ts",
+      "bytes": 22912
+    },
+    {
+      "path": "tests/env.ts",
+      "bytes": 290
+    },
+    {
+      "path": "tests/intake-receipt.test.ts",
+      "bytes": 10112
+    },
+    {
+      "path": "tests/m06-cancel-delivery.test.ts",
+      "bytes": 12365
+    },
+    {
+      "path": "tests/m1-step5-awaiting-input.test.ts",
+      "bytes": 14481
+    },
+    {
+      "path": "tests/m122-runner-adapter.test.ts",
+      "bytes": 31785
+    },
+    {
+      "path": "tests/migrations.test.ts",
+      "bytes": 2983
+    },
+    {
+      "path": "tests/own-api-one-shot.test.ts",
+      "bytes": 12504
+    },
+    {
+      "path": "tests/own-api-reporting.test.ts",
+      "bytes": 8753
+    },
+    {
+      "path": "tests/own-api-run-spec.test.ts",
+      "bytes": 8581
+    },
+    {
+      "path": "tests/p05-p06-status-recovery.test.ts",
+      "bytes": 18766
+    },
+    {
+      "path": "tests/p12-primitive-io.test.ts",
+      "bytes": 17340
+    },
+    {
+      "path": "tests/p22-schedule.test.ts",
+      "bytes": 23556
+    },
+    {
+      "path": "tests/p23-gtd.test.ts",
+      "bytes": 34968
+    },
+    {
+      "path": "tests/pilot-rollback.test.ts",
+      "bytes": 14339
+    },
+    {
+      "path": "tests/scaffold.test.ts",
+      "bytes": 527
+    },
+    {
+      "path": "tests/setup.ts",
+      "bytes": 274
+    },
+    {
+      "path": "tests/taskstore-fencing.test.ts",
+      "bytes": 4079
+    },
+    {
+      "path": "tests/taskstore-signals.test.ts",
+      "bytes": 4119
+    },
+    {
+      "path": "tests/taskstore-terminal-guard.test.ts",
+      "bytes": 7532
+    },
+    {
+      "path": "tests/taskstore-transitions.test.ts",
+      "bytes": 9052
+    },
+    {
+      "path": "tests/web-conversation.test.ts",
+      "bytes": 20317
+    },
+    {
+      "path": "tests/web-e2e-controlled-failure.test.ts",
+      "bytes": 16924
+    },
+    {
+      "path": "tests/workflow-port.test.ts",
+      "bytes": 17393
+    },
+    {
+      "path": "tools/local-smoke.sh",
+      "bytes": 41948
+    },
+    {
+      "path": "tools/repo-context/.gitignore",
+      "bytes": 14
+    },
+    {
+      "path": "tools/repo-context/map.py",
+      "bytes": 4513
+    },
+    {
+      "path": "tools/repo-context/package.json",
+      "bytes": 198
+    },
+    {
+      "path": "tools/runner-live-smoke.sh",
+      "bytes": 14688
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 556
+    },
+    {
+      "path": "vitest.config.ts",
+      "bytes": 923
+    },
+    {
+      "path": "web/app.ts",
+      "bytes": 10153
+    },
+    {
+      "path": "web/config.ts",
+      "bytes": 5185
+    },
+    {
+      "path": "web/contract.ts",
+      "bytes": 5593
+    },
+    {
+      "path": "web/control-plane-client.ts",
+      "bytes": 21384
+    },
+    {
+      "path": "web/conversation.ts",
+      "bytes": 24921
+    },
+    {
+      "path": "web/e2e/run-m1-web-slice-e2e.mjs",
+      "bytes": 21832
+    },
+    {
+      "path": "web/fake-control-plane.ts",
+      "bytes": 47534
+    },
+    {
+      "path": "web/index.ts",
+      "bytes": 1601
+    },
+    {
+      "path": "web/log.ts",
+      "bytes": 2152
+    },
+    {
+      "path": "web/page.ts",
+      "bytes": 7922
+    },
+    {
+      "path": "web/wrangler.web.jsonc",
+      "bytes": 346
+    },
+    {
+      "path": "wrangler.jsonc",
+      "bytes": 574
+    }
+  ],
+  "configSha256": "c8bb3adc42afdf7e2efbfbc7a65e07f11086e3e72204527a365b7f671c75db68",
+  "packedPaths": [
+    ".github/workflows/ci-fix-cleanup.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/pr-autofix.yml",
+    ".github/workflows/repo-context.yml",
+    ".repo-context/repomix.config.json",
+    "src/awaiting/index.ts",
+    "src/awaiting/purpose.ts",
+    "src/awaiting/wait-for-answer.ts",
+    "src/events/c02-event-envelope.ts",
+    "src/events/index.ts",
+    "src/gtd/errors.ts",
+    "src/gtd/gtd-service.ts",
+    "src/gtd/gtd-store.ts",
+    "src/gtd/index.ts",
+    "src/gtd/types.ts",
+    "src/intake/authorization.ts",
+    "src/intake/envelope.ts",
+    "src/intake/errors.ts",
+    "src/intake/index.ts",
+    "src/intake/intake-service.ts",
+    "src/logging/structured-log.ts",
+    "src/pilot/index.ts",
+    "src/pilot/pilot-config.ts",
+    "src/pilot/pilot-router.ts",
+    "src/reporting/index.ts",
+    "src/run-spec/run-spec.ts",
+    "src/runner-adapter/await-runner-result.ts",
+    "src/runner-adapter/engine-text.ts",
+    "src/runner-adapter/errors.ts",
+    "src/runner-adapter/index.ts",
+    "src/runner-adapter/runner-api-adapter.ts",
+    "src/schedule/cron.ts",
+    "src/schedule/index.ts",
+    "src/schedule/schedule-service.ts",
+    "src/schedule/schedule-store.ts",
+    "src/schedule/virtual-clock.ts",
+    "src/taskstore/errors.ts",
+    "src/taskstore/index.ts",
+    "src/taskstore/task-store.ts",
+    "src/taskstore/types.ts",
+    "src/workflow-port/conversation-plan.ts",
+    "src/workflow-port/delivery-worker.ts",
+    "src/workflow-port/index.ts",
+    "src/workflow-port/step-ctx.ts",
+    "src/workflow-port/workflow-port.ts",
+    "src/index.ts",
+    "tests/env.ts",
+    "tests/intake-receipt.test.ts",
+    "tests/m06-cancel-delivery.test.ts",
+    "tests/m1-step5-awaiting-input.test.ts",
+    "tests/m122-runner-adapter.test.ts",
+    "tests/migrations.test.ts",
+    "tests/own-api-one-shot.test.ts",
+    "tests/own-api-reporting.test.ts",
+    "tests/own-api-run-spec.test.ts",
+    "tests/p05-p06-status-recovery.test.ts",
+    "tests/p12-primitive-io.test.ts",
+    "tests/p22-schedule.test.ts",
+    "tests/p23-gtd.test.ts",
+    "tests/pilot-rollback.test.ts",
+    "tests/scaffold.test.ts",
+    "tests/setup.ts",
+    "tests/taskstore-fencing.test.ts",
+    "tests/taskstore-signals.test.ts",
+    "tests/taskstore-terminal-guard.test.ts",
+    "tests/taskstore-transitions.test.ts",
+    "tests/web-conversation.test.ts",
+    "tests/web-e2e-controlled-failure.test.ts",
+    "tests/workflow-port.test.ts",
+    "tools/repo-context/map.py",
+    "tools/repo-context/package.json",
+    "tools/local-smoke.sh",
+    "tools/runner-live-smoke.sh",
+    "web/e2e/run-m1-web-slice-e2e.mjs",
+    "web/app.ts",
+    "web/config.ts",
+    "web/contract.ts",
+    "web/control-plane-client.ts",
+    "web/conversation.ts",
+    "web/fake-control-plane.ts",
+    "web/index.ts",
+    "web/log.ts",
+    "web/page.ts",
+    "package.json",
+    "README.md",
+    "vitest.config.ts"
+  ],
+  "packScope": "repomix.config.json allowlist; Markdown is not AST-compressed",
+  "files": {
+    "REPO-MAP.md": {
+      "bytes": 4761,
+      "sha256": "22a15b03a40511ef902c9c1af18b0980433628b59568342b640d1b3990f2b893"
+    },
+    "repo-compressed.xml": {
+      "bytes": 428844,
+      "sha256": "908860aa8f04663ded7026b031d7be541ef8ab7c7d7fd1c1fb432c5c17021ac6"
+    }
+  }
+}
