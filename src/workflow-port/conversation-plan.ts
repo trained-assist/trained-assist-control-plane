@@ -23,6 +23,7 @@ import { RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
 import type { ManagedGtdContext } from '../gtd/types';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
+import { buildRunSpec, defaultRunSpecPolicy, logRunSpecBuilt, type RunSpecPolicy } from '../run-spec/run-spec';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
 export const PLAN_VERSION = 'm1-conversation-v2';
@@ -83,6 +84,11 @@ export interface PlanDeps {
   adapter?: RunnerApiAdapter | null;
   /** GTD Manager (P23): отчёт об исходе шага и проверка записи контроля. */
   gtd?: GtdService | null;
+  /**
+   * Хостовая политика исполнения для versioned mapping'а (Task input → RunSpec).
+   * Приходит из bindings окружения воркера, от клиента — никогда.
+   */
+  runSpecPolicy?: RunSpecPolicy | null;
 }
 
 export interface PlanOutcome {
@@ -100,6 +106,22 @@ const answerText = (raw: unknown): string | null => {
   }
   return null;
 };
+
+/**
+ * Разрешённые вложения задачи: `artifactRefs` из envelope приёма, сохранённые
+ * в `durable_tasks.user_value` хостом. Клиент не может добавить ссылку сюда
+ * после приёма — набор фиксируется в момент приёма.
+ */
+function attachmentRefsOf(userValue: string | null): { ref: string; version?: string }[] {
+  if (!userValue) return [];
+  try {
+    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown };
+    const refs = Array.isArray(parsed?.artifactRefs) ? parsed.artifactRefs : [];
+    return refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0).map((ref) => ({ ref }));
+  } catch {
+    return [];
+  }
+}
 
 async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
   const { taskId, generation } = p;
@@ -427,19 +449,43 @@ export async function conversationPlan(
   let runnerRunId: string | null = null;
   if (adapter) {
     const attemptKey = await stableAttemptKey(taskId, generation);
+    // Versioned mapping Task input → RunSpec: единственная точка сборки тела
+    // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
+    // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
+    const taskProfileId = current?.profile_id ?? p.profileId;
+    const runSpec = buildRunSpec(
+      {
+        userTaskId: taskId,
+        profileId: taskProfileId,
+        conversationId: current?.conversation_id ?? null,
+        ownerGeneration: generation,
+        engineName: p.runnerEngine ?? 'opencode',
+        prompt: p.goal ?? current?.goal ?? '',
+        refs: attachmentRefsOf(current?.user_value ?? null),
+        instructions: p.instructions ?? null,
+        attemptRunId: p.runId ?? null,
+        timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
+      },
+      deps.runSpecPolicy ?? defaultRunSpecPolicy(),
+    );
+    logRunSpecBuilt({
+      profileId: taskProfileId,
+      userTaskId: taskId,
+      runId: runSpec.runId,
+      version: runSpec.version,
+      promptNormalized: runSpec.promptNormalized,
+      refs: runSpec.spec.input?.refs?.length ?? 0,
+      outputs: runSpec.spec.outputs?.length ?? 0,
+      mcpServers: runSpec.spec.mcp?.servers.length ?? 0,
+    });
     const receipt = await ctx.step(
       'submit-runner',
       async () => {
         try {
           return await adapter.submit({
             userTaskId: taskId,
-            conversationId: current?.conversation_id ?? null,
-            engineName: p.runnerEngine ?? 'opencode',
-            inputText: p.goal ?? current?.goal ?? null,
-            inputRefs: [],
-            instructions: p.instructions ?? null,
             idempotencyKey: attemptKey,
-            timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
+            runSpec: runSpec.spec,
           });
         } catch (e) {
           if (e instanceof RunnerUnavailableError) {

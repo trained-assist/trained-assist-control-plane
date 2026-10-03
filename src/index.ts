@@ -20,6 +20,7 @@ import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedEr
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
+import { runSpecPolicyOf } from './run-spec/run-spec';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -60,11 +61,13 @@ export class TaskWorkflow extends WorkflowEntrypoint<Env, PlanParams> {
           `invalid plan params: ${JSON.stringify({ taskId: event.payload?.taskId, generation: event.payload?.generation })}`,
         );
       }
-      // adapter и GTD Manager строятся из env (bindings), не из params: ключ
-      // Runner'а не попадает в durable params экземпляра.
+      // adapter, GTD Manager и хостовая политика RunSpec строятся из env
+      // (bindings), не из params: ключ Runner'а и политика исполнения не должны
+      // сериализоваться в durable params экземпляра.
       return await conversationPlan(cfStepCtx(step), store, event.payload, {
         adapter: runnerAdapterOf(this.env),
         gtd: gtdServiceOf(this.env, store),
+        runSpecPolicy: runSpecPolicyOf(this.env as unknown as Record<string, string | undefined>),
       });
     } catch (e) {
       // Повтор не исправит fencing и терминальный статус — валить экземпляр.

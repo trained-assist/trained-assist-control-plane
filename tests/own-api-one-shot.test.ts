@@ -200,6 +200,50 @@ describe('one-shot с движком: результат = текст движк
   });
 });
 
+describe('one-shot: RunSpec доходит до Runner целиком', () => {
+  it('adapter получает runSpec с хостовым cwd/env и клиентским prompt/refs', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-run-spec');
+    await store.admitTask({
+      id: taskId,
+      profileId: 'profile-from-task-row',
+      goal: 'сделай работу',
+      userValue: { artifactRefs: ['artifact://input.md'] },
+    });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter } = makeFakeRunner({ stdout: ['готово'] });
+
+    const seen: Array<Record<string, unknown>> = [];
+    const capturing = {
+      ...adapter,
+      submit: async (input: { userTaskId: string; idempotencyKey: string; runSpec?: Record<string, unknown> }) => {
+        seen.push(input.runSpec ?? {});
+        return adapter.submit(input);
+      },
+    };
+
+    await conversationPlan(
+      ctx,
+      store,
+      { taskId, generation: 1, profileId: 'profile-from-params', runId: attempt.id, goal: 'сделай работу', runnerPollSec: 1, runnerTimeoutSec: 30 },
+      { adapter: capturing as unknown as RunnerApiAdapter },
+    );
+
+    expect(seen).toHaveLength(1);
+    const spec = seen[0]!;
+    // Хостовое: из политики и записи в Task Store.
+    expect(spec['cwd']).toBe('/workspace');
+    expect(spec['envAllowlist']).toEqual([]);
+    expect(spec['profileId']).toBe('profile-from-task-row');
+    expect(spec['userTaskId']).toBe(taskId);
+    expect(spec['ownerGeneration']).toBe(1);
+    expect(spec['traceId']).toBe(attempt.id);
+    // Клиентское: полное сообщение и разрешённые вложения.
+    expect(spec['input']).toEqual({ inlinePrompt: 'сделай работу', refs: [{ ref: 'artifact://input.md' }] });
+    expect((spec['runId'] as string).startsWith('run_')).toBe(true);
+  });
+});
+
 describe('awaitRunnerResult: текст движка возвращается вместе с результатом', () => {
   it('engineText собирается из событий и не зависит от ответа человека', async () => {
     const store = new TaskStore(env.DB);

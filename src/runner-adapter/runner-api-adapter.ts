@@ -12,6 +12,7 @@
  * receipt (deduplicated: true), второй Run не создаётся.
  */
 import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from './errors';
+import type { RunSpec } from '../run-spec/run-spec';
 
 export interface RunnerSubmitInput {
   userTaskId: string;
@@ -22,6 +23,12 @@ export interface RunnerSubmitInput {
   instructions?: string | null;
   idempotencyKey: string;
   timeoutMs?: number;
+  /**
+   * Готовый RunSpec от versioned mapping'а хоста (`src/run-spec`). Если задан —
+   * тело submit собирается из него, а поля выше игнорируются: единственный
+   * источник формы запроса — mapping, а не несколько мест в коде.
+   */
+  runSpec?: RunSpec | null;
 }
 
 export interface RunnerReceipt {
@@ -163,8 +170,17 @@ export class RunnerApiAdapter {
    * INVALID_REQUEST: expected non-empty string). Текст задачи едет в
    * `input.inlinePrompt` (поля `text` в контракте нет: секреты в контракт не
    * попадают), ссылки — объектами `{ref}`.
+   *
+   * Если передан `runSpec` (versioned mapping хста), тело — он: форма запроса
+   * определяется одним местом, а не набором полей адаптера.
    */
   async submit(input: RunnerSubmitInput): Promise<RunnerReceipt> {
+    if (input.runSpec) {
+      return this.request<RunnerReceipt>('POST', '/v1/runs', {
+        idempotencyKey: input.idempotencyKey,
+        body: input.runSpec,
+      });
+    }
     const prompt = input.inputText?.trim();
     const refs = (input.inputRefs ?? []).map((ref) => ({ ref }));
     const instructions = input.instructions?.trim();
