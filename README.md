@@ -2,7 +2,7 @@
 
 Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workflows), поверх них — Input/Router/Output/GTD/Journal/Reporting.
 
-**Статус (02.10.2026): M1.1, M1.2, P04 (приём+квитанция) и P05/P06 (поток событий, replay, восстановление) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
+**Статус (03.10.2026): M1.1, M1.2, P04 (приём+квитанция), P05/P06 (поток событий, replay, восстановление), P22 (расписание) и P23 (GTD opt-in и bounded control) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
 
 ## Что здесь лежит
 
@@ -18,7 +18,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `web/` | Web-срез (M1, шаг 7): тонкий клиент к API control plane, страница одной conversation, сквозной прогон с рестартом посередине. Подключение — только из env |
 | `src/awaiting/` | Ожидание человека: маппинг purpose→kind, durable-ожидание (истина в Task Store, движок только будит) |
 | `migrations/0006_schedule_v1.sql` + `src/schedule/` | Расписание (P22, этап I07): `schedules`/`schedule_occurrences`, cron в IANA-зоне расписания, дедуп occurrence в БД, политики overlap/catch-up, виртуальные часы. Occurrence — обычная задача; `gtd_id` всегда `NULL` |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 162 теста (в т.ч. `tests/p22-schedule.test.ts`) |
+| `migrations/0007_gtd_v1.sql` + `src/gtd/` | GTD (P23, этап I07): запись контроля одной User Task (opt-in), durable inbox Output→GTD, решения прогрессии, внешние условия (synthetic CI). `gtdId` — тот же идентификатор, что в `schedule_occurrences.gtd_id` |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 170 тестов (в т.ч. `tests/p22-schedule.test.ts`, `tests/p23-gtd.test.ts`) |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -171,6 +172,48 @@ node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против �
 - **HTTP**: `POST /schedules` (`tasks:intake`), `GET /schedules`, `POST /schedules/enable|disable` (`tasks:control`), `POST /schedules/tick` (проход планировщика; `now` — только для песочницы на виртуальных часах), `GET /schedules/occurrences` (`tasks:read`). Авторизация — по профилю расписания; `/schedules/tick` ограничен профилем принципала.
 - **Логи**: `schedule.created / .duplicate / .enabled / .disabled / .tick.started / .tick.finished / .occurrence.admitted / .occurrence.deduplicated / .occurrence.skipped / .occurrence.failed`, `schedule.misfire.coalesced / .skipped` — с `profileId`, `scheduleId`, `occurrenceId`, `occurrenceKey`, `userTaskId`, `runId`, `gtdId` и причиной перехода.
 
+## GTD opt-in и bounded control (P23, этап I07)
+
+Карточка [trained-agent-architecture#62](https://github.com/trained-assist/trained-agent-architecture/issues/62),
+границы — [PLAYBOOKS-VS-GETTING-THINGS-DONE-BOUNDARIES §5a/§9](https://github.com/trained-assist/trained-agent-architecture/blob/main/PLAYBOOKS-VS-GETTING-THINGS-DONE-BOUNDARIES.md).
+Transcript и разбор приёмки — [`docs/P23-GTD-OPTIN-BOUNDED-CONTROL-TRANSCRIPT.md`](docs/P23-GTD-OPTIN-BOUNDED-CONTROL-TRANSCRIPT.md).
+
+- **Контроль только opt-in.** Запись контроля создаётся лишь явной регистрацией `POST /gtd`
+  (причина, критерии завершения, дедлайн, лимит попыток). Обычная задача, occurrence
+  расписания и продолжения GTD остаются без `gtdId` (AC-141 P22 не меняется): у такой работы
+  `continuationOwner = output`.
+- **Одна запись на задачу.** `UNIQUE(user_task_id)` + детерминированный `gtdId` от
+  `(profileId, userTaskId)`: вторая запись невозможна, поэтому исчерпание caps нельзя обойти
+  «новой записью контроля» — повторная регистрация возвращает ту же (уже `stopped`) строку.
+  Самоконтроль запрещён и сервисом, и CHECK в схеме.
+- **Один владелец продолжения.** `continuationOwner = gtd` у managed work: решение о следующем
+  шаге принимает только GTD (`gtd_progressions`, `UNIQUE(gtd_id, step_id, attempt)`), Output
+  собственный follow-up не создаёт. Продолжение — явное: новый `runId`, тот же `userTaskId`,
+  подъём поколения.
+- **Wait не держит токены.** Ожидание — строка `gtd_records` (`state` + `next_trigger`) и, для
+  человека, уже существующая строка `awaiting_inputs`; попытка паркуется (`executions.status =
+  waiting`), живого процесса нет. Следующая попытка создаётся только после события: ответ
+  человека, внешнее условие (`POST /gtd/condition`, synthetic CI песочницы I07) или таймер.
+- **Решения детерминированы.** Критерии проверяются по структурированному свидетельству исхода
+  (`{criterionId: true}`), без LLM в цикле контроля. Исход шага сохраняется в durable inbox
+  **до** решения GTD; повтор по ключу идемпотентности — no-op.
+- **Caps завершают прогрессию.** Исчерпание попыток или дедлайна даёт `stopped`/`blocked` с
+  причиной (`attempt_cap_exhausted`, `deadline_exceeded`), а не новый контроль и не бесконечный
+  retry. Неизвестный `gtdId` у managed outcome — contract error: карантин с явной причиной и
+  `reconciliationRequired`, а не тихий переход к output-owned recovery.
+- **Managed-шаг в плане** (`prepare → execute → report-outcome → park`): план исполняет шаг,
+  отчитывается структурированным исходом и **не закрывает задачу** — терминальный статус ставит
+  только GTD (`complete`/`stop`). В песочнице исход шага приходит от synthetic provider'а
+  (`syntheticSteps` при регистрации, `stepOutcome` в `/start`); в проде его отдаст Runner (M1.3).
+- **HTTP**: `POST /gtd` (`tasks:control`), `GET /gtd`, `GET /gtd/{gtdId}`, `POST /gtd/tick`
+  (проход контроля; `now` — только для песочницы на виртуальных часах), `POST /gtd/ack`
+  (durable ACK), `POST /gtd/outcomes` (`tasks:signal`), `POST /gtd/condition` (synthetic CI),
+  `POST /gtd/cancel`. `/start` принимает `gtdId` с host-проверкой принадлежности и открытости
+  записи. Логи: `gtd.registered / .registration.rejected / .outcome.received / .outcome.duplicate /
+  .outcome.deferred / .outcome.rejected / .outcome.quarantined / .decision / .wait / .stopped /
+  .cancelled / .condition.reported / .tick.started / .tick.finished` — с `profileId`, `userTaskId`,
+  `runId`, `gtdId`, `stepId`, ключом идемпотентности и причиной перехода.
+
 ## Контрактные решения
 
 - **Терминальные статусы неизменяемы** (`done/failed/cancelled`): статусный апдейт идёт с `AND status NOT IN ('done','failed','cancelled')`; поздняя запись даёт `TerminalStateError` и событие в `task_events` с `status_after = NULL, payload.rejected = terminal_state`. Закрывает суть [issue #90](https://github.com/trained-assist/trained-agent-architecture/issues/90) на двух уровнях: guard в репозитории (тест `taskstore-terminal-guard`) + «catch» в плане (тест `workflow-port`, «поздний wait_timeout»).
@@ -186,7 +229,7 @@ node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против �
 - **M1.3** — подключение настоящего Runner (ai-agent-runner): idempotent submit, события, cancellation, финализация артефактов.
 - **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter). **Web adapter и сквозная приёмка — в PR `feat/m1-web-slice`** (страница разговора, клиент к API, сквозной прогон с рестартом); `deliveries` как таблица и единственный delivery owner — остаются на шаг 8.
 - **M1.5** — пилот и rollback: реализован в `src/pilot/`. Конфиг-гейт (feature flag `PILOT_ENABLED` + cohort `PILOT_COHORT_PROFILE_IDS`), маршрутизация новых задач на новый control plane, rollback мгновенно возвращает на legacy, durable Task Store сохраняет состояние задач, начатых на новом plane. Runbook: `docs/M1-PILOT-ROLLBACK-RUNBOOK.md`.
-- **Расписание (P22) — следующие шаги, не в этой карточке**: GTD opt-in и bounded control (P23), подключение настоящего Runner'а к задачам расписания (M1.3/#122), решение владельца о том, кто вызывает `tick` по часам в проде (Cloudflare Cron Trigger и т.п.), когорта расписаний при пилоте/rollback (M1, шаг 8).
+- **GTD (P23) — следующие шаги, не в этой карточке**: планы/плейбуки и step gates (P24), подключение настоящего Runner'а к managed-шагам (M1.3/#122), решение владельца о том, кто вызывает `tick` по часам в проде (Cloudflare Cron Trigger и т.п.), когорта записей контроля при пилоте/rollback (M1, шаг 8).
 - Схема дальше: таблицы вне скоупа M1.1 (`task_items`, `executions`, `deliveries`, legacy cron/hook) — отдельными аддитивными миграциями; outbox доставки (`deliveries`) и его проекция `delivery_state`.
 
 ## Связи

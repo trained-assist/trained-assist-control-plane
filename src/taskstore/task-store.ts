@@ -95,6 +95,8 @@ export interface CommitOptions {
   /** Структурированный результат (§5.7) — JSON.stringify в result_json. */
   result?: unknown;
   payload?: unknown;
+  /** Причина блокировки задачи (P23: bounded stop контроля). */
+  blockerReason?: string | null;
 }
 
 export interface OpenAwaitingInput {
@@ -132,6 +134,8 @@ interface StatePatch {
   stage?: TaskStage;
   result?: unknown;
   awaitingInputId?: string | null;
+  /** Почему задача заблокирована (P23: bounded stop контроля). */
+  blockerReason?: string | null;
 }
 
 interface EventSpec {
@@ -518,6 +522,37 @@ export class TaskStore {
       generation: run.generation,
       source: 'executor',
       payload: { runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null },
+    });
+    return run;
+  }
+
+  /**
+   * Парковка попытки (P23, BOUNDARIES §9.4): шаг завершён корректным исходом
+   * `waiting` — работа ждёт события (ответ человека, внешнее условие, таймер),
+   * а не держит живой процесс. Живого движка и расхода токенов нет: следующая
+   * попытка создаётся только после события (GTD/continuation adapter).
+   */
+  async parkRun(runId: string, opts: { reason: string; checkpointRef?: string | null } = { reason: 'waiting' }): Promise<RunAttemptRow> {
+    const now = Date.now();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE executions SET status = 'waiting', finished_at = ?, error_class = ?, error_text = ?
+           WHERE id = ? AND status = 'running'`,
+        )
+        .bind(now, opts.reason, opts.checkpointRef ?? null, runId),
+    ]);
+    if (results[0]!.meta.changes !== 1) {
+      const run = await this.getRun(runId);
+      throw new TaskStoreError(`park rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
+    }
+    const run = await this.requireRun(runId);
+    await this.logEvent({
+      taskId: run.task_id,
+      kind: 'run_finished',
+      generation: run.generation,
+      source: 'executor',
+      payload: { runId, outcome: 'waiting', reason: opts.reason, checkpointRef: opts.checkpointRef ?? null },
     });
     return run;
   }
@@ -1007,6 +1042,7 @@ export class TaskStore {
       if (opts.status !== undefined) patch.status = opts.status;
       if (opts.stage !== undefined) patch.stage = opts.stage;
       if (opts.result !== undefined) patch.result = opts.result;
+      if (opts.blockerReason !== undefined) patch.blockerReason = opts.blockerReason;
 
       const extra: D1PreparedStatement[] = [];
       if (patch.status !== undefined && isTerminalStatus(patch.status)) {
@@ -1137,6 +1173,7 @@ export class TaskStore {
            stage = CASE WHEN ? THEN ? ELSE stage END,
            result_json = CASE WHEN ? THEN ? ELSE result_json END,
            awaiting_input_id = CASE WHEN ? THEN ? ELSE awaiting_input_id END,
+           blocker_reason = CASE WHEN ? THEN ? ELSE blocker_reason END,
            updated_at = ?,
            revision = revision + 1
          WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
@@ -1150,6 +1187,8 @@ export class TaskStore {
         patch.result === undefined ? null : JSON.stringify(patch.result),
         flag(patch.awaitingInputId),
         patch.awaitingInputId ?? null,
+        flag(patch.blockerReason),
+        patch.blockerReason ?? null,
         now,
         taskId,
         generation,
