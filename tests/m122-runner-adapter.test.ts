@@ -470,8 +470,9 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
 
     const engines: Array<string | undefined> = [];
     const fake: RunnerApiAdapter = {
-      submit: async (input: { engineName?: string }) => {
-        engines.push(input.engineName);
+      submit: async (input: { engineName?: string; runSpec?: { engine?: { name?: string } } }) => {
+        // Движок приходит из RunSpec (versioned mapping), а не из поля адаптера.
+        engines.push(input.runSpec?.engine?.name ?? input.engineName);
         return { requestId: 'req-1', userTaskId: taskId, runId: 'run-eng', deduplicated: false };
       },
       status: async () => ({ state: 'succeeded' }),

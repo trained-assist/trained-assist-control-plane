@@ -1,0 +1,548 @@
+/**
+ * Versioned mapping: задача control plane → RunSpec для Serverless Agent API.
+ *
+ * Зачем отдельный слой, а не «собрать body в adapter.submit»: контракт Runner'а
+ * (`RunSpec`, `ai-agent-runner/src/contracts/run-spec.ts`) закрыт и проверяется
+ * на приёме — `checkKeys` отклоняет неизвестные поля, `checkString` отклоняет
+ * управляющие символы, пути выходов обязаны быть относительными. Собирать его
+ * по месту нельзя: любая рассинхронизация ловится только сетевым отказом на
+ * другом конце. Здесь — единственная точка сборки с версией и локальной
+ * проверкой.
+ *
+ * Разделение владения (INV-19, C01):
+ *  - ХОСТ владеет: profileId, conversationId, ownerGeneration, cwd, envAllowlist,
+ *    outputs (выходной манифест), mcp (MCP bindings), repository (snapshot
+ *    binding), result destination, limits. Клиент их не передаёт и не может
+ *    поднять: поля отсутствуют во входном типе, а `buildRunSpec` дополнительно
+ *    отклоняет их появление.
+ *  - КЛИЕНТ владеет: полное сообщение (prompt) и разрешённые вложения
+ *    (refs из envelope `artifactRefs`).
+ *
+ * Идентичность и профиль выводятся хостом из записи в Task Store, а не из
+ * тела запроса: `profileId` приходит из `durable_tasks.profile_id`.
+ */
+import { logStructured } from '../logging/structured-log';
+
+/** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
+export const RUN_SPEC_VERSION = 'run-spec-v1';
+
+/** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
+export const RUN_SPEC_CONTRACT_VERSION = 1;
+
+// ── Типы контракта Runner'а (копия формы, без импорта чужого репозитория) ──
+
+export interface EngineSpec {
+  name: string;
+  adapterVersion: string;
+}
+
+export interface InputRef {
+  ref: string;
+  version?: string;
+}
+
+export interface OutputSpec {
+  path: string;
+  name?: string;
+  mime?: string;
+}
+
+export interface McpServerSpec {
+  serverId: string;
+  transport: 'stdio';
+  command: string;
+  args?: string[];
+  envAllowlist?: string[];
+  bindingRef?: string;
+  allowedTools: string[];
+  readinessTimeoutMs?: number;
+  toolTimeoutMs?: number;
+}
+
+export interface McpSpec {
+  servers: McpServerSpec[];
+}
+
+export interface CredentialBinding {
+  ref: string;
+  scope: string;
+  expiresAt?: string;
+  status?: 'active' | 'missing' | 'expired';
+}
+
+export interface RepositorySpec {
+  fullName: string;
+  token?: string;
+}
+
+export interface ResultPolicy {
+  destinationRef?: string;
+  retentionPolicy?: string;
+}
+
+export interface RunLimits {
+  timeoutMs: number;
+  maxOutputBytes?: number;
+  maxLogBytes?: number;
+}
+
+export interface RunSpec {
+  contractVersion: typeof RUN_SPEC_CONTRACT_VERSION;
+  jobId: string;
+  runId: string;
+  operationId: string;
+  userTaskId: string;
+  profileId: string;
+  conversationId: string;
+  ownerGeneration: number;
+  engine: EngineSpec;
+  cwd: string;
+  envAllowlist: string[];
+  limits: RunLimits;
+  input?: { refs?: InputRef[]; inlinePrompt?: string };
+  outputs?: OutputSpec[];
+  mcp?: McpSpec;
+  credentialBindings?: CredentialBinding[];
+  result?: ResultPolicy;
+  repository?: RepositorySpec;
+  traceId?: string;
+}
+
+// ── Вход и политика ────────────────────────────────────────────────────────
+
+/** Клиентская часть входа: только сообщение и разрешённые вложения. */
+export interface RunSpecInput {
+  userTaskId: string;
+  /** Профиль-владелец: из записи в Task Store, не из тела запроса. */
+  profileId: string;
+  conversationId: string | null;
+  /** Поколение попытки: fencing (INV-02). */
+  ownerGeneration: number;
+  engineName: string;
+  /** Полное сообщение задачи (goal control plane). */
+  prompt: string;
+  /** Разрешённые вложения: `artifactRefs` из envelope приёма. */
+  refs: InputRef[];
+  instructions: string | null;
+  /** Внутренний runId попытки control plane — корреляция (traceId). */
+  attemptRunId: string | null;
+  timeoutMs: number;
+}
+
+/**
+ * Хостовая политика исполнения. Клиенту не передаётся и не переопределяется:
+ * читается из bindings окружения воркера (секреты — только SM/GitHub Secrets).
+ */
+export interface RunSpecPolicy {
+  cwd: string;
+  envAllowlist: string[];
+  outputs: OutputSpec[];
+  mcp: McpSpec | null;
+  repository: RepositorySpec | null;
+  resultDestinationRef: string | null;
+  maxOutputBytes: number | null;
+}
+
+export interface BuiltRunSpec {
+  spec: RunSpec;
+  version: typeof RUN_SPEC_VERSION;
+  /** true, если управляющие символы в prompt пришлось нормализовать. */
+  promptNormalized: boolean;
+  runId: string;
+  jobId: string;
+  operationId: string;
+}
+
+export class RunSpecMappingError extends Error {
+  constructor(
+    message: string,
+    public readonly field: string,
+  ) {
+    super(message);
+    this.name = 'RunSpecMappingError';
+  }
+}
+
+// ── Политика по умолчанию из bindings окружения ────────────────────────────
+
+const DEFAULT_CWD = '/workspace';
+const DEFAULT_TIMEOUT_MS = 300_000;
+const MAX_TIMEOUT_MS = 3_600_000;
+
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const REPOSITORY_FULL_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+
+function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new RunSpecMappingError(`${field}: expected a JSON value`, field);
+  }
+}
+
+/**
+ * Политика из env рантайма. Значения по умолчанию — минимальные и
+ * непривилегированные: без envAllowlist, без MCP, без репозитория, без
+ * объявленных выходов. Расширение — только явным решением владельца в
+ * bindings, никогда со стороны клиента.
+ */
+/**
+ * Политика по умолчанию: минимальная и непривилегированная. Используется, когда
+ * хост не задал политнику в bindings (локальные прогоны, тесты).
+ */
+export function defaultRunSpecPolicy(): RunSpecPolicy {
+  return {
+    cwd: DEFAULT_CWD,
+    envAllowlist: [],
+    outputs: [],
+    mcp: null,
+    repository: null,
+    resultDestinationRef: null,
+    maxOutputBytes: null,
+  };
+}
+
+export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpecPolicy {
+  const cwd = env.RUN_SPEC_CWD?.trim() || DEFAULT_CWD;
+  if (!cwd.startsWith('/')) throw new RunSpecMappingError('RUN_SPEC_CWD: expected an absolute path', 'RUN_SPEC_CWD');
+
+  const envAllowlist = (env.RUN_SPEC_ENV_ALLOWLIST ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  for (const name of envAllowlist) {
+    if (!ENV_NAME.test(name)) throw new RunSpecMappingError(`RUN_SPEC_ENV_ALLOWLIST: "${name}" is not an env NAME`, 'RUN_SPEC_ENV_ALLOWLIST');
+  }
+
+  const outputs = readJson<OutputSpec[]>(env.RUN_SPEC_OUTPUTS, [], 'RUN_SPEC_OUTPUTS');
+  const mcp = readJson<McpSpec | null>(env.RUN_SPEC_MCP, null, 'RUN_SPEC_MCP');
+  const repository = readJson<RepositorySpec | null>(env.RUN_SPEC_REPOSITORY, null, 'RUN_SPEC_REPOSITORY');
+
+  const timeoutMs = Number(env.RUN_SPEC_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
+    throw new RunSpecMappingError(`RUN_SPEC_TIMEOUT_MS: expected 1..${MAX_TIMEOUT_MS}`, 'RUN_SPEC_TIMEOUT_MS');
+  }
+
+  const maxOutputBytes = env.RUN_SPEC_MAX_OUTPUT_BYTES ? Number(env.RUN_SPEC_MAX_OUTPUT_BYTES) : null;
+  if (maxOutputBytes !== null && (!Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0)) {
+    throw new RunSpecMappingError('RUN_SPEC_MAX_OUTPUT_BYTES: expected a positive integer', 'RUN_SPEC_MAX_OUTPUT_BYTES');
+  }
+
+  return {
+    cwd,
+    envAllowlist,
+    outputs,
+    mcp,
+    repository,
+    resultDestinationRef: env.RUN_SPEC_RESULT_DESTINATION_REF?.trim() || null,
+    maxOutputBytes,
+  };
+}
+
+// ── Сборка ─────────────────────────────────────────────────────────────────
+
+/**
+ * Собрать RunSpec из клиентского входа и хостовой политики.
+ *
+ * Хостовые поля, найденные во входе, — ошибка отображения, а не «клиент не
+ * прав»: так нельзя случайно расширить права при добавлении полей во
+ * входной тип.
+ */
+export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltRunSpec {
+  const errors: string[] = [];
+  const fail = (field: string, message: string): never => {
+    throw new RunSpecMappingError(message, field);
+  };
+
+  if (!SAFE_ID.test(input.userTaskId)) fail('userTaskId', 'userTaskId: expected a safe id');
+  if (input.profileId.length === 0 || input.profileId.length > 200) fail('profileId', 'profileId: expected 1..200 chars');
+  if (input.conversationId !== null && (input.conversationId.length === 0 || input.conversationId.length > 200)) {
+    fail('conversationId', 'conversationId: expected 1..200 chars or null');
+  }
+  // Контракт Runner'а требует непустой conversationId. У headless-задачи его
+  // нет — хост выводит стабильный scope из userTaskId (не из тела запроса).
+  const conversationId = input.conversationId ?? `task:${input.userTaskId}`;
+  if (!Number.isInteger(input.ownerGeneration) || input.ownerGeneration < 0) fail('ownerGeneration', 'ownerGeneration: expected a non-negative integer');
+  if (input.engineName.length === 0 || input.engineName.length > 100) fail('engineName', 'engineName: expected 1..100 chars');
+  const trimmedPrompt = input.prompt.trim();
+  if (trimmedPrompt.length === 0) fail('prompt', 'prompt: must not be empty');
+  if (trimmedPrompt.length > 100_000) fail('prompt', 'prompt: longer than 100000');
+  if (!Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) fail('timeoutMs', 'timeoutMs: expected a positive integer');
+
+  // Разрешённые вложения: только строковые ref'ы, без версионирования со стороны
+  // клиента — версию вправе назначить только хост (snapshot binding).
+  const refs: InputRef[] = [];
+  for (const [index, ref] of input.refs.entries()) {
+    if (typeof ref?.ref !== 'string' || ref.ref.length === 0 || ref.ref.length > 500) {
+      fail(`refs[${index}]`, `refs[${index}].ref: expected 1..500 chars`);
+    }
+    if (ref.version !== undefined && (typeof ref.version !== 'string' || ref.version.length > 200)) {
+      fail(`refs[${index}]`, `refs[${index}].version: expected 1..200 chars`);
+    }
+    refs.push(ref.version === undefined ? { ref: ref.ref } : { ref: ref.ref, version: ref.version });
+  }
+
+  // Контракт Runner'а не пропускает управляющие символы в inlinePrompt
+  // (checkString: CONTROL_CHARS). Сообщение приходит от пользователя и может
+  // быть многострочным — нормализуем явно и фиксируем факт в результате.
+  const promptNormalized = CONTROL_CHARS.test(trimmedPrompt);
+  const inlinePrompt = promptNormalized
+    ? trimmedPrompt.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/[ \t]+/g, ' ').trim()
+    : trimmedPrompt;
+
+  const runId = `run_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}_${input.ownerGeneration}`;
+  const jobId = `job_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}`;
+  const operationId = `op_${input.attemptRunId ?? runId}`;
+
+  const spec: RunSpec = {
+    contractVersion: RUN_SPEC_CONTRACT_VERSION,
+    jobId,
+    runId,
+    operationId,
+    userTaskId: input.userTaskId,
+    profileId: input.profileId,
+    conversationId,
+    ownerGeneration: input.ownerGeneration,
+    engine: { name: input.engineName, adapterVersion: '1' },
+    cwd: policy.cwd,
+    envAllowlist: [...policy.envAllowlist],
+    limits: {
+      timeoutMs: input.timeoutMs,
+      ...(policy.maxOutputBytes ? { maxOutputBytes: policy.maxOutputBytes } : {}),
+    },
+    input: {
+      ...(inlinePrompt ? { inlinePrompt } : {}),
+      ...(refs.length ? { refs } : {}),
+    },
+    ...(policy.outputs.length ? { outputs: policy.outputs } : {}),
+    ...(policy.mcp ? { mcp: policy.mcp } : {}),
+    ...(policy.repository ? { repository: policy.repository } : {}),
+    ...(policy.resultDestinationRef ? { result: { destinationRef: policy.resultDestinationRef } } : {}),
+    ...(input.attemptRunId ? { traceId: input.attemptRunId } : {}),
+  };
+
+  const validation = validateRunSpec(spec);
+  if (!validation.ok) fail('spec', `built RunSpec is rejected by the Runner contract: ${validation.errors.join('; ')}`);
+
+  return { spec, version: RUN_SPEC_VERSION, promptNormalized, runId, jobId, operationId };
+}
+
+// ── Локальная проверка по контракту Runner'а ───────────────────────────────
+//
+// Контракт опубликован (SERVERLESS-AGENT-API.md, RunSpec); импортировать чужой
+// репозиторий нельзя, поэтому проверка продублирована здесь в объёме полей,
+// которые производит этот mapping. Расхождение с валидатором Runner'а ловится
+// локально, а не сетевым отказом.
+
+export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  const safeId = (value: unknown, path: string): boolean =>
+    typeof value === 'string' && value.length > 0 && value.length <= 200 && SAFE_ID.test(value) ? true : (errors.push(`${path}: expected a safe id`), false);
+
+  for (const key of ['jobId', 'runId', 'operationId'] as const) safeId(spec[key], `spec.${key}`);
+  for (const key of ['userTaskId', 'profileId', 'conversationId'] as const) {
+    const value = spec[key];
+    if (typeof value !== 'string' || value.length === 0 || value.length > 200) errors.push(`spec.${key}: expected 1..200 chars`);
+  }
+  if (spec.contractVersion !== RUN_SPEC_CONTRACT_VERSION) errors.push(`spec.contractVersion: expected ${RUN_SPEC_CONTRACT_VERSION}`);
+  if (!Number.isInteger(spec.ownerGeneration) || spec.ownerGeneration < 0) errors.push('spec.ownerGeneration: expected a non-negative integer');
+
+  const engine = spec.engine;
+  if (typeof engine !== 'object' || engine === null) {
+    errors.push('spec.engine: expected an object');
+  } else {
+    if (typeof engine.name !== 'string' || engine.name.length === 0 || engine.name.length > 100) errors.push('spec.engine.name: expected 1..100 chars');
+    if (typeof engine.adapterVersion !== 'string' || engine.adapterVersion.length === 0 || engine.adapterVersion.length > 100) {
+      errors.push('spec.engine.adapterVersion: expected 1..100 chars');
+    }
+  }
+
+  if (typeof spec.cwd !== 'string' || spec.cwd.length === 0 || !spec.cwd.startsWith('/')) errors.push('spec.cwd: expected an absolute path');
+  if (!Array.isArray(spec.envAllowlist)) {
+    errors.push('spec.envAllowlist: expected an array');
+  } else {
+    spec.envAllowlist.forEach((name, i) => {
+      if (!ENV_NAME.test(name)) errors.push(`spec.envAllowlist[${i}]: expected an env NAME (no values)`);
+    });
+  }
+
+  const limits = spec.limits;
+  if (typeof limits !== 'object' || limits === null) {
+    errors.push('spec.limits: expected an object');
+  } else {
+    if (!Number.isInteger(limits.timeoutMs) || (limits.timeoutMs as number) <= 0) errors.push('spec.limits.timeoutMs: expected a positive integer');
+    for (const key of ['maxOutputBytes', 'maxLogBytes'] as const) {
+      const value = limits[key];
+      if (value !== undefined && (!Number.isInteger(value) || (value as number) <= 0)) errors.push(`spec.limits.${key}: expected a positive integer`);
+    }
+  }
+
+  const input = spec.input;
+  if (input !== undefined) {
+    if (typeof input !== 'object' || input === null) {
+      errors.push('spec.input: expected an object');
+    } else {
+      if (input.inlinePrompt !== undefined) {
+        if (typeof input.inlinePrompt !== 'string' || input.inlinePrompt.length === 0) errors.push('spec.input.inlinePrompt: expected a non-empty string');
+        else if (input.inlinePrompt.length > 100_000) errors.push('spec.input.inlinePrompt: longer than 100000');
+        else if (CONTROL_CHARS.test(input.inlinePrompt)) errors.push('spec.input.inlinePrompt: control characters are not allowed');
+      }
+      if (input.refs !== undefined) {
+        if (!Array.isArray(input.refs)) errors.push('spec.input.refs: expected an array');
+        else {
+          input.refs.forEach((ref, i) => {
+            if (typeof ref !== 'object' || ref === null) {
+              errors.push(`spec.input.refs[${i}]: expected an object`);
+              return;
+            }
+            if (typeof ref.ref !== 'string' || ref.ref.length === 0 || ref.ref.length > 500) errors.push(`spec.input.refs[${i}].ref: expected 1..500 chars`);
+            if (ref.version !== undefined && (typeof ref.version !== 'string' || ref.version.length > 200)) errors.push(`spec.input.refs[${i}].version: expected 1..200 chars`);
+          });
+        }
+      }
+    }
+  }
+
+  if (spec.outputs !== undefined) {
+    if (!Array.isArray(spec.outputs)) {
+      errors.push('spec.outputs: expected an array');
+    } else {
+      const seen = new Set<string>();
+      spec.outputs.forEach((output, i) => {
+        if (typeof output !== 'object' || output === null) {
+          errors.push(`spec.outputs[${i}]: expected an object`);
+          return;
+        }
+        if (typeof output.path !== 'string' || output.path.length === 0) {
+          errors.push(`spec.outputs[${i}].path: expected a non-empty string`);
+        } else if (output.path.startsWith('/') || output.path === '.' || output.path === '..' || output.path.split('/').includes('..')) {
+          errors.push(`spec.outputs[${i}].path: expected a relative path inside the run workspace`);
+        } else if (seen.has(output.path)) {
+          errors.push(`spec.outputs[${i}].path: duplicate output path "${output.path}"`);
+        }
+        seen.add(output.path);
+        if (output.name !== undefined && (typeof output.name !== 'string' || output.name.length === 0 || output.name.length > 200)) {
+          errors.push(`spec.outputs[${i}].name: expected 1..200 chars`);
+        }
+        if (output.mime !== undefined && (typeof output.mime !== 'string' || output.mime.length === 0 || output.mime.length > 100)) {
+          errors.push(`spec.outputs[${i}].mime: expected 1..100 chars`);
+        }
+      });
+    }
+  }
+
+  if (spec.mcp !== undefined) {
+    if (typeof spec.mcp !== 'object' || spec.mcp === null || !Array.isArray(spec.mcp.servers) || spec.mcp.servers.length === 0) {
+      errors.push('spec.mcp.servers: expected a non-empty array');
+    } else {
+      const toolOwner = new Map<string, string>();
+      spec.mcp.servers.forEach((server, i) => {
+        const path = `spec.mcp.servers[${i}]`;
+        if (typeof server !== 'object' || server === null) {
+          errors.push(`${path}: expected an object`);
+          return;
+        }
+        if (!SAFE_ID.test(server.serverId)) errors.push(`${path}.serverId: expected a safe id`);
+        if (server.transport !== 'stdio') errors.push(`${path}.transport: expected "stdio"`);
+        if (typeof server.command !== 'string' || server.command.length === 0 || server.command.length > 512) errors.push(`${path}.command: expected 1..512 chars`);
+        if (!Array.isArray(server.allowedTools) || server.allowedTools.length === 0) {
+          errors.push(`${path}.allowedTools: at least one tool is required`);
+        } else {
+          server.allowedTools.forEach((tool, j) => {
+            if (typeof tool !== 'string' || !TOOL_NAME.test(tool)) {
+              errors.push(`${path}.allowedTools[${j}]: expected a tool name`);
+              return;
+            }
+            const owner = toolOwner.get(tool);
+            if (owner !== undefined) errors.push(`${path}.allowedTools[${j}]: tool "${tool}" is already declared by server "${owner}"`);
+            else toolOwner.set(tool, server.serverId);
+          });
+        }
+        if (server.envAllowlist !== undefined) {
+          if (!Array.isArray(server.envAllowlist)) errors.push(`${path}.envAllowlist: expected an array`);
+          else server.envAllowlist.forEach((name, j) => {
+            if (!ENV_NAME.test(name)) errors.push(`${path}.envAllowlist[${j}]: expected an env NAME`);
+          });
+        }
+      });
+    }
+  }
+
+  if (spec.credentialBindings !== undefined) {
+    if (!Array.isArray(spec.credentialBindings)) {
+      errors.push('spec.credentialBindings: expected an array');
+    } else {
+      spec.credentialBindings.forEach((binding, i) => {
+        const path = `spec.credentialBindings[${i}]`;
+        if (typeof binding !== 'object' || binding === null) {
+          errors.push(`${path}: expected an object`);
+          return;
+        }
+        if (typeof binding.ref !== 'string' || binding.ref.length === 0 || binding.ref.length > 300) errors.push(`${path}.ref: expected 1..300 chars`);
+        if (typeof binding.scope !== 'string' || binding.scope.length === 0 || binding.scope.length > 300) errors.push(`${path}.scope: expected 1..300 chars`);
+      });
+    }
+  }
+
+  if (spec.repository !== undefined) {
+    const repo = spec.repository;
+    if (typeof repo !== 'object' || repo === null) {
+      errors.push('spec.repository: expected an object');
+    } else {
+      if (typeof repo.fullName !== 'string' || !REPOSITORY_FULL_NAME.test(repo.fullName)) errors.push('spec.repository.fullName: expected "owner/name"');
+      if (repo.token !== undefined && (typeof repo.token !== 'string' || repo.token.length === 0 || repo.token.length > 500)) {
+        errors.push('spec.repository.token: expected 1..500 chars');
+      }
+    }
+  }
+
+  if (spec.result !== undefined) {
+    const result = spec.result;
+    if (typeof result !== 'object' || result === null) {
+      errors.push('spec.result: expected an object');
+    } else {
+      if (result.destinationRef !== undefined && (typeof result.destinationRef !== 'string' || result.destinationRef.length === 0 || result.destinationRef.length > 300)) {
+        errors.push('spec.result.destinationRef: expected 1..300 chars');
+      }
+      if (result.retentionPolicy !== undefined && (typeof result.retentionPolicy !== 'string' || result.retentionPolicy.length === 0 || result.retentionPolicy.length > 100)) {
+        errors.push('spec.result.retentionPolicy: expected 1..100 chars');
+      }
+    }
+  }
+
+  if (spec.traceId !== undefined && (typeof spec.traceId !== 'string' || spec.traceId.length === 0 || spec.traceId.length > 200)) {
+    errors.push('spec.traceId: expected 1..200 chars');
+  }
+
+  return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
+/** Событие о нормализации prompt: факт виден, а не молчалив. */
+export function logRunSpecBuilt(fields: {
+  profileId: string;
+  userTaskId: string;
+  runId: string;
+  version: string;
+  promptNormalized: boolean;
+  refs: number;
+  outputs: number;
+  mcpServers: number;
+  reason?: string;
+}): void {
+  logStructured({
+    event: 'run_spec.built',
+    profileId: fields.profileId,
+    userTaskId: fields.userTaskId,
+    runId: fields.runId,
+    reason: fields.reason ?? 'mapped',
+    version: fields.version,
+    promptNormalized: fields.promptNormalized,
+    refs: fields.refs,
+    outputs: fields.outputs,
+    mcpServers: fields.mcpServers,
+  });
+}
