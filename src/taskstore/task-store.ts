@@ -1038,11 +1038,11 @@ export class TaskStore {
     };
 
     if (wantsState) {
-    const patch: StatePatch = {};
-    if (opts.status !== undefined) patch.status = opts.status;
-    if (opts.stage !== undefined) patch.stage = opts.stage;
-    if (opts.result !== undefined) patch.result = opts.result;
-    if (opts.blockerReason !== undefined) patch.blockerReason = opts.blockerReason;
+      const patch: StatePatch = {};
+      if (opts.status !== undefined) patch.status = opts.status;
+      if (opts.stage !== undefined) patch.stage = opts.stage;
+      if (opts.result !== undefined) patch.result = opts.result;
+      if (opts.blockerReason !== undefined) patch.blockerReason = opts.blockerReason;
 
       const extra: D1PreparedStatement[] = [];
       if (patch.status !== undefined && isTerminalStatus(patch.status)) {
@@ -1171,12 +1171,12 @@ export class TaskStore {
         `UPDATE durable_tasks SET
            status = CASE WHEN ? THEN ? ELSE status END,
            stage = CASE WHEN ? THEN ? ELSE stage END,
-            result_json = CASE WHEN ? THEN ? ELSE result_json END,
-            awaiting_input_id = CASE WHEN ? THEN ? ELSE awaiting_input_id END,
-            blocker_reason = CASE WHEN ? THEN ? ELSE blocker_reason END,
-            updated_at = ?,
-            revision = revision + 1
-          WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+           result_json = CASE WHEN ? THEN ? ELSE result_json END,
+           awaiting_input_id = CASE WHEN ? THEN ? ELSE awaiting_input_id END,
+           blocker_reason = CASE WHEN ? THEN ? ELSE blocker_reason END,
+           updated_at = ?,
+           revision = revision + 1
+         WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
       )
       .bind(
         flag(patch.status),
