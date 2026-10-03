@@ -50,6 +50,11 @@ export interface SubmitInput extends AdmitTaskInput {
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
   runnerEngine?: string;
+  /**
+   * Простая задача без уточнений (P22: occurrence расписания). План не открывает
+   * ожидание человека: работа + terminal result, без control loop и без gtdId.
+   */
+  autoRun?: boolean;
 }
 
 export interface SubmitResult {
@@ -150,6 +155,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       awaitingPurpose: input.awaitingPurpose ?? null,
       awaitingOptions: input.awaitingOptions ?? null,
       waitPollSec: input.waitPollSec,
+      autoRun: input.autoRun,
       // adapter в params НЕ кладём: секрет не должен сериализоваться в движок;
       // план строит его из env (deps) в TaskWorkflow.
       goal: task.goal,

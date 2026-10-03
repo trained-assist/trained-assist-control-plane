@@ -23,7 +23,7 @@ import { RunnerUnavailableError } from '../runner-adapter/errors';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
-export const PLAN_VERSION = 'm1-conversation-v1';
+export const PLAN_VERSION = 'm1-conversation-v2';
 
 export interface PlanParams {
   taskId: string;
@@ -41,8 +41,14 @@ export interface PlanParams {
   awaitingOptions?: { id: string; label: string }[] | null;
   question?: string;
   waitTimeoutSec?: number;
-  /** Период durable-опроса ответа: сколько ждём подсказку движка до перечитывания БД. */
+  /** Период durable-опроса ответа в ожидании: сколько ждём подсказку движка до перечитывания БД. */
   waitPollSec?: number;
+  /**
+   * Простая задача без уточнений (P22: occurrence расписания, обычный hourly
+   * task). План не открывает ожидание человека и не входит в control loop:
+   * работа + terminal result в Output. Уточнять нечего — спрашивать некого.
+   */
+  autoRun?: boolean;
   /** Тестовый хук: шаг падает на 1-й попытке, платформа должна продолжить сама. */
   crashRunOnce?: boolean;
   goal?: string | null;
@@ -196,6 +202,35 @@ export async function conversationPlan(
       payload: { version: PLAN_VERSION },
     }),
   );
+
+  // Простая задача без уточнений (P22, обычный hourly task из расписания):
+  // результат терминальный сразу, ожидание человека не открывается, запись
+  // контроля (gtdId) не создаётся — control loop не начинается (AC-141).
+  // Идентичность шагов та же, что у обычного хода (prepare -> finalize), чтобы
+  // отчёт о шагах не расходился между видами задач.
+  if (p.autoRun) {
+    const result = { ok: true, mode: 'auto' as const, version: PLAN_VERSION, goal: p.goal ?? current?.goal ?? null };
+    await ctx.step('execute', () =>
+      store.commit(taskId, generation, {
+        kind: 'step_done',
+        status: 'active',
+        stage: 'running',
+        step: 'execute',
+        payload: { mode: 'auto', version: PLAN_VERSION },
+      }),
+    );
+    await ctx.step('finalize', () =>
+      store.commit(taskId, generation, {
+        status: 'done',
+        stage: 'finished',
+        step: 'finalize',
+        result,
+        payload: { mode: 'auto', version: PLAN_VERSION, gtdId: null, controlRegistration: 'not_requested' },
+      }),
+    );
+    if (p.runId) await store.finishRun(p.runId, 'success', { result });
+    return { ok: true, answer: null };
+  }
 
   // Настоящий Runner (issue #122): попытка отправляется в Serverless Agent API
   // со СТАБИЛЬНЫМ ключом, вычисленным до отправки. Отправка — ШАГ с явным
