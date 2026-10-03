@@ -17,7 +17,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `src/index.ts` | `TaskWorkflow` + HTTP-слой (`/start /signal /cancel /status /recover`) |
 | `web/` | Web-срез (M1, шаг 7): тонкий клиент к API control plane, страница одной conversation, сквозной прогон с рестартом посередине. Подключение — только из env |
 | `src/awaiting/` | Ожидание человека: маппинг purpose→kind, durable-ожидание (истина в Task Store, движок только будит) |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 79 тестов control plane + 22 теста web-среза |
+| `migrations/0006_schedule_v1.sql` + `src/schedule/` | Расписание (P22, этап I07): `schedules`/`schedule_occurrences`, cron в IANA-зоне расписания, дедуп occurrence в БД, политики overlap/catch-up, виртуальные часы. Occurrence — обычная задача; `gtd_id` всегда `NULL` |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 162 теста (в т.ч. `tests/p22-schedule.test.ts`) |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -27,7 +28,7 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 ```bash
 npm ci                 # в этом шелле NODE_ENV=production -> NODE_ENV=development npm ci
 npm run typecheck      # tsc --noEmit
-npm test               # 39 тестов в workerd (D1 + Workflows), ~15 с
+npm test               # 162 теста в workerd (D1 + Workflows), ~25 с
 npm run check          # typecheck + test
 ```
 
@@ -116,7 +117,7 @@ env** (`CONTROL_PLANE_URL`, `CONTROL_PLANE_PRINCIPAL`, `CONTROL_PLANE_PROFILE`,
 `CONTROL_PLANE_API_KEY`): в репозитории и логах секретов нет.
 
 ```bash
-npm test                       # 92 теста, из них 22 — web-срез и сквозной прогон
+npm test                       # 162 теста, из них 22 — web-срез и сквозной прогон
 node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против настоящего control plane
 ```
 
@@ -135,7 +136,7 @@ env** (`CONTROL_PLANE_URL`, `CONTROL_PLANE_PRINCIPAL`, `CONTROL_PLANE_PROFILE`,
 `CONTROL_PLANE_API_KEY`): в репозитории и логах секретов нет.
 
 ```bash
-npm test                       # 92 теста, из них 22 — web-срез и сквозной прогон
+npm test                       # 162 теста, из них 22 — web-срез и сквозной прогон
 node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против настоящего control plane
 ```
 
@@ -156,6 +157,20 @@ node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против �
 - **Ссылки движка** (`engine_session_ref`, `engine_request_ref`, `tool_call_ref`) хранятся как корреляция: engine ID **не заменяют** platform ID (`userTaskId`, `awaitingInputId`, `generation`).
 - **HTTP**: `POST /awaiting` (`tasks:control`), `GET /awaiting/{id}` (`tasks:read`), `POST /awaiting/{id}/answer` (`tasks:signal`; 200/409). Логи: `awaiting.opened / awaiting.answered / awaiting.answer_duplicate / awaiting.answer_rejected` с `profileId`, `userTaskId`, `runId`, `requestId`, `awaitingInputId`, `idempotencyKey`, `reason`.
 
+## Расписание без обязательного GTD (P22, этап I07)
+
+Карточка [trained-agent-architecture#61](https://github.com/trained-assist/trained-agent-architecture/issues/61),
+границы — [PLAYBOOKS-VS-GETTING-THINGS-DONE-BOUNDARIES §7](https://github.com/trained-assist/trained-agent-architecture/blob/main/PLAYBOOKS-VS-GETTING-THINGS-DONE-BOUNDARIES.md). Transcript и разбор приёмки — [`docs/P22-SCHEDULE-VIRTUAL-CLOCK-TRANSCRIPT.md`](docs/P22-SCHEDULE-VIRTUAL-CLOCK-TRANSCRIPT.md).
+
+- **Occurrence ≠ контроль.** Расписание создаёт **срабатывания**, срабатывание — обычную задачу со своим `userTaskId` через тот же Task Submission API. Запись контроля не создаётся: `schedule_occurrences.gtd_id = NULL`, в терминальном результате **нет** `gtdId`, control loop не начинается (простой cron → шаги `prepare → execute → finalize`, без ожидания человека).
+- **Дедуп в БД, а не в поведении платформы**: `UNIQUE(schedule_id, occurrence_key)` + детерминированный `userTaskId` от `(profileId, occurrenceId)`. Повторный tick, replay после краша и две гонки на одном моменте дают одно occurrence и одну задачу.
+- **Крэш не теряет и не дублирует**: occurrence в состоянии `due`/`failed` — обещание, а не мусор; следующий `tick` доставляет его с теми же ключами (`reason: recovered_after_crash`). Попытки приёма ограничены `max_admit_attempts` (1..10) — бесконечного retry нет.
+- **Disable ≠ cancel**: выключение меняет только `enabled`; уже принятые задачи доходят до результата (`acceptedTasksCancelled: 0` в логе). `enable` пересчитывает курсор на ближайшее **будущее** срабатывание — выключенное окно не отыгрывается.
+- **Политики явные**: `overlap_policy` = `allow|skip` (пропуск с причиной `overlap_policy_skip`, задача не создаётся), `catch_up_policy` = `coalesce|skip` (одно срабатывание на окно либо ничего; счётчик `misfires` в отчёте и логах).
+- **Время — вход модуля** (`Clock`): песочница гоняет hour/day waits на виртуальных часах; в рантайме — системное время. Cron (5 полей) считается **в зоне расписания**, несуществующее локальное время при переходе на летнее время срабатыванием не считается, обратный переход берёт первый момент.
+- **HTTP**: `POST /schedules` (`tasks:intake`), `GET /schedules`, `POST /schedules/enable|disable` (`tasks:control`), `POST /schedules/tick` (проход планировщика; `now` — только для песочницы на виртуальных часах), `GET /schedules/occurrences` (`tasks:read`). Авторизация — по профилю расписания; `/schedules/tick` ограничен профилем принципала.
+- **Логи**: `schedule.created / .duplicate / .enabled / .disabled / .tick.started / .tick.finished / .occurrence.admitted / .occurrence.deduplicated / .occurrence.skipped / .occurrence.failed`, `schedule.misfire.coalesced / .skipped` — с `profileId`, `scheduleId`, `occurrenceId`, `occurrenceKey`, `userTaskId`, `runId`, `gtdId` и причиной перехода.
+
 ## Контрактные решения
 
 - **Терминальные статусы неизменяемы** (`done/failed/cancelled`): статусный апдейт идёт с `AND status NOT IN ('done','failed','cancelled')`; поздняя запись даёт `TerminalStateError` и событие в `task_events` с `status_after = NULL, payload.rejected = terminal_state`. Закрывает суть [issue #90](https://github.com/trained-assist/trained-agent-architecture/issues/90) на двух уровнях: guard в репозитории (тест `taskstore-terminal-guard`) + «catch» в плане (тест `workflow-port`, «поздний wait_timeout»).
@@ -171,6 +186,7 @@ node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против �
 - **M1.3** — подключение настоящего Runner (ai-agent-runner): idempotent submit, события, cancellation, финализация артефактов.
 - **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter). **Web adapter и сквозная приёмка — в PR `feat/m1-web-slice`** (страница разговора, клиент к API, сквозной прогон с рестартом); `deliveries` как таблица и единственный delivery owner — остаются на шаг 8.
 - **M1.5** — пилот и rollback: реализован в `src/pilot/`. Конфиг-гейт (feature flag `PILOT_ENABLED` + cohort `PILOT_COHORT_PROFILE_IDS`), маршрутизация новых задач на новый control plane, rollback мгновенно возвращает на legacy, durable Task Store сохраняет состояние задач, начатых на новом plane. Runbook: `docs/M1-PILOT-ROLLBACK-RUNBOOK.md`.
+- **Расписание (P22) — следующие шаги, не в этой карточке**: GTD opt-in и bounded control (P23), подключение настоящего Runner'а к задачам расписания (M1.3/#122), решение владельца о том, кто вызывает `tick` по часам в проде (Cloudflare Cron Trigger и т.п.), когорта расписаний при пилоте/rollback (M1, шаг 8).
 - Схема дальше: таблицы вне скоупа M1.1 (`task_items`, `executions`, `deliveries`, legacy cron/hook) — отдельными аддитивными миграциями; outbox доставки (`deliveries`) и его проекция `delivery_state`.
 
 ## Связи

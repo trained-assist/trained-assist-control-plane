@@ -223,7 +223,20 @@ const store = new TaskStore(env.DB);
       if (url.pathname === '/') {
         return json({
           service: 'trained-assist-control-plane',
-          endpoints: ['/intake', '/receipt', '/start', '/signal', '/cancel', '/status', '/recover'],
+          endpoints: [
+            '/intake',
+            '/receipt',
+            '/start',
+            '/signal',
+            '/cancel',
+            '/status',
+            '/recover',
+            '/schedules',
+            '/schedules/enable',
+            '/schedules/disable',
+            '/schedules/tick',
+            '/schedules/occurrences',
+          ],
         });
       }
       if (url.pathname === '/recover') return json(await port.recover());

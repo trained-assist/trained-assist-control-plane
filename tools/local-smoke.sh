@@ -272,5 +272,83 @@ assert resumes, "нет явной отметки продолжения"
 print("OK: ответ пережил смерть движка; шаг prepare выполнен один раз; продолжение помечено resumed")
 '
 
+echo "== 14. расписание без обязательного GTD (P22, виртуальные часы) =="
+# Моменты срабатывания задаются явно (песочница I07): реальные часы и сон не нужны.
+# V — ближайшая граница часа UTC (создание расписания планирует её), V2 — следующая.
+V=$(( ( $(date +%s) / 3600 + 1 ) * 3600 * 1000 ))
+V2=$(( V + 3600000 ))
+VKEY="$(python3 -c 'import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])/1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:00:00Z"))' "$V")"
+
+# Локальная D1 живёт между прогонами: гасим расписания прошлых прогонов, чтобы их
+# просроченные срабатывания не попадали в этот тик.
+for sid in $(get "/schedules?profileId=$PROFILE" | py 'import json,sys; print(" ".join(s["schedule_id"] for s in json.load(sys.stdin)["schedules"] if s["enabled"]))'); do
+  post /schedules/disable "{\"scheduleId\":\"$sid\"}" >/dev/null
+done
+SCHED_REQ="sched-smoke-$(date +%s)-$$"
+SCHED="$(post /schedules "{\"requestId\":\"$SCHED_REQ\",\"profileId\":\"$PROFILE\",\"cron\":\"0 * * * *\",\"timezone\":\"Europe/Moscow\",\"goal\":\"local smoke hourly\"}")"
+echo "$SCHED" | py 'import json,sys; d=json.load(sys.stdin); assert d["created"] is True and d["gtdId"] is None, d' || exit 1
+SCHED_ID="$(echo "$SCHED" | py 'import json,sys; print(json.load(sys.stdin)["schedule"]["schedule_id"])')"
+NEXT="$(echo "$SCHED" | py 'import json,sys; print(json.load(sys.stdin)["schedule"]["next_due_at"])')"
+[ "$NEXT" = "$V" ] || { echo "FAIL: расписание не запланировало ближайший час ($NEXT != $V)" >&2; exit 1; }
+echo "OK: расписание создано, gtdId=null (контроль не регистрировался): $SCHED_ID"
+
+post /schedules/tick "{\"now\":$V}" | py 'import json,sys; d=json.load(sys.stdin); assert d["admitted"]==1 and d["failed"]==0, d' || exit 1
+OCC="$(get "/schedules/occurrences?scheduleId=$SCHED_ID")"
+echo "$OCC" | py 'import json,sys
+d = json.load(sys.stdin); occ = d["occurrences"]
+assert len(occ) == 1 and occ[0]["state"] == "admitted", occ
+assert occ[0]["gtd_id"] is None, occ[0]
+print("OK: occurrence принят на", occ[0]["occurrence_key"], "| gtd_id =", occ[0]["gtd_id"], "| task =", occ[0]["user_task_id"])
+' || exit 1
+OCC_TASK="$(echo "$OCC" | py 'import json,sys; print(json.load(sys.stdin)["occurrences"][0]["user_task_id"])')"
+
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$OCC_TASK\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "done" ] && break
+  sleep 0.5
+done
+[ "$st" = "done" ] || { echo "FAIL: задача occurrence не дошла до done ($st)" >&2; exit 1; }
+post /status "{\"taskId\":\"$OCC_TASK\"}" | py '
+import json,sys
+d = json.load(sys.stdin); t = d["taskStore"]; r = t["result"]
+assert r["ok"] is True and r["mode"] == "auto", r
+assert "gtdId" not in r, r
+kinds = [e["kind"] for e in t["history"]]
+assert "awaiting_opened" not in kinds, kinds
+print("OK: hourly task -> Output без gtdId; history =", " -> ".join(kinds))
+' || exit 1
+
+echo "== 14.1 повторный tick на том же моменте = нет второго срабатывания =="
+post /schedules/tick "{\"now\":$V}" | py 'import json,sys; d=json.load(sys.stdin); assert d["admitted"]==0, d' || exit 1
+get "/schedules/occurrences?scheduleId=$SCHED_ID" | py 'import json,sys; d=json.load(sys.stdin); assert len(d["occurrences"])==1, d' || exit 1
+echo "OK: occurrence по-прежнему один"
+
+echo "== 14.2 disable расписания != отмена принятой задачи =="
+post /schedules/disable "{\"scheduleId\":\"$SCHED_ID\"}" | py 'import json,sys; d=json.load(sys.stdin); assert d["schedule"]["enabled"]==0, d' || exit 1
+post /schedules/tick "{\"now\":$V2}" | py 'import json,sys; d=json.load(sys.stdin); assert d["admitted"]==0, d' || exit 1
+get "/schedules/occurrences?scheduleId=$SCHED_ID" | py 'import json,sys; d=json.load(sys.stdin); assert len(d["occurrences"])==1, d' || exit 1
+post /status "{\"taskId\":\"$OCC_TASK\"}" | py 'import json,sys
+d = json.load(sys.stdin); t = d["taskStore"]
+assert t["status"] == "done", t["status"]
+kinds = [e["kind"] for e in t["history"]]
+assert "task_cancelled" not in kinds and "cancel_requested" not in kinds, kinds
+print("OK: disable не отменил задачу (status=done); час, прошедший при выключенном расписании, не превратился в occurrence")
+' || exit 1
+
+echo "== 14.3 enable = ближайшее будущее срабатывание, окно не отыгрывается пачкой =="
+ENABLED="$(post /schedules/enable "{\"scheduleId\":\"$SCHED_ID\"}")"
+echo "$ENABLED" | py 'import json,sys
+d = json.load(sys.stdin)["schedule"]
+assert d["enabled"] == 1 and d["next_due_at"] >= '"$V"', d
+print("OK: включено, ближайшее срабатывание =", d["next_due_at"])
+' || exit 1
+post /schedules/tick "{\"now\":$V2}" | py 'import json,sys; d=json.load(sys.stdin); assert d["admitted"]==1 and d["misfires"]==1, d' || exit 1
+get "/schedules/occurrences?scheduleId=$SCHED_ID" | py 'import json,sys
+d = json.load(sys.stdin); occ = d["occurrences"]
+assert len(occ) == 2, occ
+assert occ[1]["gtd_id"] is None, occ[1]
+print("OK: после enable одно новое occurrence (coalesce), gtd_id =", occ[1]["gtd_id"], "| всего occurrence:", len(occ))
+' || exit 1
+
 echo
-echo "PASS: прогоны $REQUEST_ID/$REQ2/$REQ3/$REQ4/$REQ5 завершены"
+echo "PASS: прогоны $REQUEST_ID/$REQ2/$REQ3/$REQ4/$REQ5 и расписание $SCHED_ID завершены"
