@@ -20,6 +20,8 @@ import { waitForAnswer } from '../awaiting/wait-for-answer';
 import { awaitRunnerResult } from '../runner-adapter/await-runner-result';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
 import { RunnerUnavailableError } from '../runner-adapter/errors';
+import type { GtdService } from '../gtd/gtd-service';
+import type { ManagedGtdContext } from '../gtd/types';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
@@ -49,6 +51,20 @@ export interface PlanParams {
    * работа + terminal result в Output. Уточнять нечего — спрашивать некого.
    */
   autoRun?: boolean;
+  /**
+   * Управляемая работа (P23): задача под контролем GTD. План исполняет шаг,
+   * отчитывается структурированным исходом в GTD inbox и НЕ закрывает задачу:
+   * продолжение выдаёт только GTD (один владелец продолжения). Ожидание
+   * (input/condition) — durable строка, живой процесс не держится.
+   */
+  gtd?: ManagedGtdContext | null;
+  /**
+   * Свидетельство по критериям завершения ({criterionId: true}) — структурированный
+   * факт результата шага. Проверяет его GTD детерминированно, без LLM-суждения.
+   */
+  criteria?: Record<string, unknown> | null;
+  /** Ссылка на внешнее условие, если шаг ждёт гейт/CI (synthetic CI provider I07). */
+  conditionRef?: string | null;
   /** Тестовый хук: шаг падает на 1-й попытке, платформа должна продолжить сама. */
   crashRunOnce?: boolean;
   goal?: string | null;
@@ -65,6 +81,8 @@ export interface PlanParams {
  */
 export interface PlanDeps {
   adapter?: RunnerApiAdapter | null;
+  /** GTD Manager (P23): отчёт об исходе шага и проверка записи контроля. */
+  gtd?: GtdService | null;
 }
 
 export interface PlanOutcome {
@@ -113,6 +131,127 @@ async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanO
     throw e;
   }
   return { ok: false, reason: 'user_reply_timeout' };
+}
+
+/**
+ * Управляемый шаг (P23): работа под контролем GTD.
+ *
+ * План не принимает решений о продолжении: он исполняет шаг, отчитывается
+ * структурированным исходом в durable GTD inbox и завершает попытку. Дальше
+ * решение (continue/wait/complete/stop) принимает только GTD — один владелец
+ * продолжения. Ожидание человека — уже существующая durable строка
+ * awaiting_inputs; попытка паркуется (status='waiting'), живой процесс и токены
+ * не держатся.
+ */
+async function managedStep(ctx: StepCtx, store: TaskStore, p: PlanDeps, plan: PlanParams): Promise<PlanOutcome> {
+  const managed = plan.gtd;
+  const gtd = p.gtd;
+  if (!managed) return { ok: false, reason: 'gtd_context_missing' };
+  if (!gtd) return { ok: false, reason: 'gtd_service_missing' };
+  const { gtdId, stepId, attempt, stepOutcome } = managed;
+  const { taskId, generation } = plan;
+
+  // Host-проверка: gtdId не выбирается произвольно, запись контроля ещё открыта.
+  const record = await gtd.requireManagedTask(gtdId, taskId);
+
+  await ctx.step('prepare', () =>
+    store.commit(taskId, generation, {
+      kind: 'step_done',
+      step: 'prepare',
+      payload: { managed: true, gtdId, stepId, attempt, version: PLAN_VERSION },
+    }),
+  );
+
+  await ctx.step('execute', () =>
+    store.commit(taskId, generation, {
+      kind: 'step_done',
+      step: 'execute',
+      payload: { managed: true, gtdId, stepId, attempt, outcome: stepOutcome, version: PLAN_VERSION },
+    }),
+  );
+
+  // Ожидание человека: durable строка awaiting_inputs с дедлайном контроля.
+  // Истина ответа — в Task Store, движок только будит; сам план не ждёт.
+  let awaitingInputId: string | null = null;
+  if (stepOutcome === 'awaiting_user') {
+    awaitingInputId = await ctx.step('open-awaiting', async () => {
+      try {
+        const opened = await store.openAwaiting({
+          taskId,
+          purpose: 'missing_fact',
+          question: 'Нужен ваш ответ для продолжения контролируемой работы.',
+          respondentScope: plan.profileId,
+          step: 'wait',
+          generation,
+          deadlineAt: record.deadline_at,
+          engineRefs: plan.runId ? { sessionRef: `run:${plan.runId}` } : null,
+        });
+        return opened.awaitingInputId;
+      } catch (e) {
+        if (e instanceof AlreadyOpenAwaitingError) return e.awaitingInputId;
+        throw e;
+      }
+    });
+  }
+
+  const detail: Record<string, unknown> = {
+    criteria: plan.criteria ?? null,
+    checkpointRef: awaitingInputId ? `awaiting:${awaitingInputId}` : null,
+  };
+  if (stepOutcome === 'awaiting_user') detail.awaitingInputId = awaitingInputId;
+  if (stepOutcome === 'awaiting_condition') detail.conditionRef = plan.conditionRef ?? null;
+
+  // Output → GTD: структурированный исход сохраняется в durable inbox ДО решения
+  // GTD. Ключ идемпотентности стабилен между попытками повтора шага.
+  const reported = await ctx.step('report-outcome', async () => {
+    const res = await gtd.reportOutcome({
+      gtdId,
+      userTaskId: taskId,
+      runId: plan.runId ?? null,
+      stepId,
+      outcome: stepOutcome,
+      detail,
+      idempotencyKey: `gtd:${gtdId}:${stepId}:${attempt}`,
+    });
+    return res;
+  });
+
+  const result = {
+    ok: stepOutcome === 'succeeded',
+    gtdId,
+    continuationOwner: 'gtd' as const,
+    stepId,
+    attempt,
+    outcome: stepOutcome,
+    inboxState: reported.state,
+    version: PLAN_VERSION,
+  };
+
+  // Задачу закрывает только GTD (complete/stop). Здесь — промежуточное
+  // состояние: работа ждёт решения контроля, попытка паркуется.
+  const waiting = stepOutcome === 'awaiting_user' || stepOutcome === 'awaiting_condition';
+  await ctx.step('park', () =>
+    store.commit(taskId, generation, {
+      kind: 'step_done',
+      step: 'park',
+      status: stepOutcome === 'awaiting_user' ? 'awaiting_input' : 'active',
+      stage: stepOutcome === 'awaiting_user' ? 'waiting_input' : 'waiting_followup',
+      result,
+      payload: { managed: true, gtdId, stepId, attempt, outcome: stepOutcome, inboxState: reported.state, version: PLAN_VERSION },
+    }),
+  );
+
+  if (plan.runId) {
+    if (waiting) {
+      await store.parkRun(plan.runId, {
+        reason: stepOutcome === 'awaiting_user' ? 'awaiting_user_input' : 'awaiting_external_condition',
+        checkpointRef: typeof detail.checkpointRef === 'string' ? detail.checkpointRef : null,
+      });
+    } else {
+      await store.finishRun(plan.runId, stepOutcome === 'succeeded' ? 'success' : 'failed', { result });
+    }
+  }
+  return { ok: stepOutcome === 'succeeded', reason: stepOutcome };
 }
 
 /** apply + finalize: общий хвост для обычного хода и для явного продолжения. */
@@ -167,6 +306,11 @@ export async function conversationPlan(
     return { ok: current.status === 'done', reason: 'already_terminal' };
   }
 
+  // Управляемая работа (P23): ветка идёт ДО обычного хода и resume-ожидания —
+  // у managed work ожидание принадлежит контролю (GTD выдаёт продолжение), а не
+  // плану: план не ждёт человека и не закрывает задачу.
+  if (p.gtd?.gtdId) return managedStep(ctx, store, deps, p);
+
   // ЯВНОЕ ПРОДОЛЖЕНИЕ (шаг 5): если движок умер во время ожидания человека,
   // продолжение получает адрес того же ожидания и идёт ОТ него — шаги до
   // ожидания не переигрываются (это не молчаливый повтор задачи).
@@ -209,7 +353,14 @@ export async function conversationPlan(
   // Идентичность шагов та же, что у обычного хода (prepare -> finalize), чтобы
   // отчёт о шагах не расходился между видами задач.
   if (p.autoRun) {
-    const result = { ok: true, mode: 'auto' as const, version: PLAN_VERSION, goal: p.goal ?? current?.goal ?? null };
+    const result = {
+      ok: true,
+      mode: 'auto' as const,
+      version: PLAN_VERSION,
+      goal: p.goal ?? current?.goal ?? null,
+      // Явный владелец продолжения: у работы без контроля это output (§5a/§11).
+      continuationOwner: 'output' as const,
+    };
     await ctx.step('execute', () =>
       store.commit(taskId, generation, {
         kind: 'step_done',

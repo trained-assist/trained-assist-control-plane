@@ -24,6 +24,7 @@ import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
 import { ScheduleService, ScheduleStore, VirtualClock, portSubmitter, systemClock, type Clock } from './schedule';
+import { GtdError, GtdService, GtdStore, type GtdStepOutcome, type ManagedGtdContext } from './gtd';
 
 export interface Env {
   DB: D1Database;
@@ -52,10 +53,11 @@ export class TaskWorkflow extends WorkflowEntrypoint<Env, PlanParams> {
           `invalid plan params: ${JSON.stringify({ taskId: event.payload?.taskId, generation: event.payload?.generation })}`,
         );
       }
-      // adapter строится из env (bindings), не из params: ключ Runner'а не
-      // попадает в durable params экземпляра.
+      // adapter и GTD Manager строятся из env (bindings), не из params: ключ
+      // Runner'а не попадает в durable params экземпляра.
       return await conversationPlan(cfStepCtx(step), store, event.payload, {
         adapter: runnerAdapterOf(this.env),
+        gtd: gtdServiceOf(this.env, store),
       });
     } catch (e) {
       // Повтор не исправит fencing и терминальный статус — валить экземпляр.
@@ -79,6 +81,9 @@ const errorStatus = (e: unknown): number => {
   if (e instanceof FencedError || e instanceof TerminalStateError) return 409;
   if (e instanceof TaskNotFoundError) return 404;
   if (e instanceof AnswerConflictError || e instanceof AnswerRejectedError) return 409;
+  // Отказ контроля (P23) — с явным статусом: contract error не превращается в
+  // тихий переход к output-owned recovery (§5a).
+  if (e instanceof GtdError) return e.status;
   return 500;
 };
 
@@ -112,6 +117,163 @@ const scheduleServiceOf = (env: Env, store: TaskStore, port: CfWorkflowPort, clo
     submitter: portSubmitter(port),
     clock: clock ?? scheduleClockOf(env),
   });
+
+/** GTD Manager (P23): тот же порт и те же часы, что у расписания (единая песочница I07). */
+const gtdServiceOf = (env: Env, store: TaskStore, clock?: Clock): GtdService =>
+  new GtdService({
+    store: new GtdStore(env.DB),
+    tasks: store,
+    port: new CfWorkflowPort(env.TASK_WORKFLOW, store),
+    clock: clock ?? scheduleClockOf(env),
+  });
+
+/**
+ * Маршруты GTD (P23, #62).
+ *
+ * Контроль ВСЕГДА явный: запись создаётся только `POST /gtd` с причиной,
+ * критериями, дедлайном и лимитами попыток. Ни один другой маршрут записи
+ * контроля не создаёт — occurrence расписания и обычные задачи остаются без
+ * gtdId (AC-141 P22 не меняется). Авторизация — по профилю записи контроля,
+ * проход контроля — по профилю принципала.
+ */
+async function handleGtdRoute(
+  req: Request,
+  url: URL,
+  env: Env,
+  store: TaskStore,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const parts = url.pathname.split('/').filter(Boolean); // ['gtd', ...]
+  const action = parts[1] ?? '';
+  const service = gtdServiceOf(env, store);
+  const identity = { principalId: principalOf(req) ?? '' };
+
+  // Явная регистрация на контроль (opt-in). Запись durable ДО запуска работы.
+  if (action === '' && req.method === 'POST') {
+    const profileId = String(body.profileId ?? '');
+    await authorizeIntake(store, identity, profileId, 'tasks:control');
+    const criteria = (Array.isArray(body.criteria) ? body.criteria : []).map((raw) => {
+      const c = (raw ?? {}) as Record<string, unknown>;
+      return {
+        id: String(c.id ?? ''),
+        description: String(c.description ?? ''),
+        required: c.required === undefined ? true : Boolean(c.required),
+      };
+    });
+    const result = await service.register({
+      requestId: String(body.requestId ?? ''),
+      profileId,
+      userTaskId: String(body.userTaskId ?? ''),
+      reason: String(body.reason ?? ''),
+      criteria,
+      deadlineAt: Number(body.deadlineAt ?? 0),
+      maxAttempts: body.maxAttempts === undefined ? undefined : Number(body.maxAttempts),
+      nextCheckAt: body.nextCheckAt === undefined ? undefined : Number(body.nextCheckAt),
+      supervisedByGtdId: (body.supervisedByGtdId as string | undefined) ?? null,
+    });
+    return json(
+      { gtdId: result.record.gtd_id, state: result.record.state, created: result.created, continuationOwner: result.record.continuation_owner, record: result.record, criteria: result.record.criteria_json ? JSON.parse(result.record.criteria_json) : [] },
+      result.created ? 201 : 200,
+    );
+  }
+
+  if (action === '' && req.method === 'GET') {
+    const principal = await resolvePrincipal(store, identity);
+    const profileId = url.searchParams.get('profileId') ?? principal.profileId;
+    requirePermission(principal, profileId, 'tasks:read');
+    return json({ records: await service.list(profileId) });
+  }
+
+  // Проход контроля: решения GTD по событиям/таймерам. Явный «сейчас» — только
+  // для песочницы на виртуальных часах (как у /schedules/tick).
+  if (action === 'tick' && req.method === 'POST') {
+    const principal = await resolvePrincipal(store, identity);
+    requirePermission(principal, principal.profileId, 'tasks:control');
+    const now = body.now === undefined ? undefined : Number(body.now);
+    if (now !== undefined && !Number.isFinite(now)) return json({ error: 'now must be a number (epoch ms)' }, 400);
+    return json(await service.tick({ now, profileId: principal.profileId }));
+  }
+
+  // Durable ACK: обработать исходы записи (один владелец продолжения).
+  if (action === 'ack' && req.method === 'POST') {
+    const principal = await resolvePrincipal(store, identity);
+    const gtdId = String(body.gtdId ?? '');
+    const record = await service.get(gtdId);
+    if (!record) return json({ error: 'control record not found' }, 404);
+    requirePermission(principal, record.record.profile_id, 'tasks:control');
+    return json(await service.ack(gtdId));
+  }
+
+  // Output -> GTD: структурированный исход шага в durable inbox.
+  if (action === 'outcomes' && req.method === 'POST') {
+    const principal = await resolvePrincipal(store, identity);
+    const gtdId = String(body.gtdId ?? '');
+    const record = await service.get(gtdId);
+    if (!record) {
+      // Contract error: неизвестный gtdId — карантин и явный статус, НЕ тихий
+      // переход к output-owned recovery (§5a).
+      const result = await service.reportOutcome({
+        gtdId,
+        userTaskId: String(body.userTaskId ?? ''),
+        runId: (body.runId as string | undefined) ?? null,
+        stepId: String(body.stepId ?? ''),
+        outcome: String(body.outcome ?? 'failed') as GtdStepOutcome,
+        detail: (body.detail as Record<string, unknown> | undefined) ?? null,
+        idempotencyKey: String(body.idempotencyKey ?? `api:${crypto.randomUUID()}`),
+      });
+      return json(result);
+    }
+    requirePermission(principal, record.record.profile_id, 'tasks:signal');
+    const result = await service.reportOutcome({
+      gtdId,
+      userTaskId: String(body.userTaskId ?? record.record.user_task_id),
+      runId: (body.runId as string | undefined) ?? null,
+      stepId: String(body.stepId ?? record.record.current_step_id ?? 'step-1'),
+      outcome: String(body.outcome ?? 'failed') as GtdStepOutcome,
+      detail: (body.detail as Record<string, unknown> | undefined) ?? null,
+      eventId: (body.eventId as number | undefined) ?? null,
+      idempotencyKey: String(body.idempotencyKey ?? `api:${crypto.randomUUID()}`),
+    });
+    return json(result, result.accepted ? 201 : 200);
+  }
+
+  // Synthetic CI provider песочницы I07: внешний гейт закрылся отчётом.
+  if (action === 'condition' && req.method === 'POST') {
+    const principal = await resolvePrincipal(store, identity);
+    const gtdId = String(body.gtdId ?? '');
+    const record = await service.get(gtdId);
+    if (!record) return json({ error: 'control record not found' }, 404);
+    requirePermission(principal, record.record.profile_id, 'tasks:signal');
+    return json(
+      await service.reportCondition(String(body.conditionRef ?? ''), {
+        gtdId,
+        conclusion: String(body.conclusion ?? 'neutral') as 'success' | 'failure' | 'neutral',
+        reportRef: (body.reportRef as string | undefined) ?? null,
+        source: (body.source as string | undefined) ?? null,
+      }),
+    );
+  }
+
+  if (action === 'cancel' && req.method === 'POST') {
+    const principal = await resolvePrincipal(store, identity);
+    const gtdId = String(body.gtdId ?? '');
+    const record = await service.get(gtdId);
+    if (!record) return json({ error: 'control record not found' }, 404);
+    requirePermission(principal, record.record.profile_id, 'tasks:control');
+    return json({ record: await service.cancel(gtdId, { reason: (body.reason as string | undefined) ?? undefined }) });
+  }
+
+  const gtdId = action;
+  if (!gtdId) return json({ error: 'not found' }, 404);
+  const view = await service.get(gtdId);
+  if (!view) return json({ error: 'control record not found' }, 404);
+  if (req.method === 'GET') {
+    const principal = await resolvePrincipal(store, identity);
+    requirePermission(principal, view.record.profile_id, 'tasks:read');
+    return json(view);
+  }
+  return json({ error: 'method not allowed' }, 405);
+}
 
 /**
  * Маршруты расписания (P22, #61).
@@ -236,6 +398,12 @@ const store = new TaskStore(env.DB);
             '/schedules/disable',
             '/schedules/tick',
             '/schedules/occurrences',
+            '/gtd',
+            '/gtd/tick',
+            '/gtd/ack',
+            '/gtd/outcomes',
+            '/gtd/condition',
+            '/gtd/cancel',
           ],
         });
       }
@@ -473,6 +641,12 @@ const store = new TaskStore(env.DB);
       if (url.pathname.startsWith('/schedules')) {
         return await handleScheduleRoute(req, url, env, store, port, body);
       }
+      // ── GTD: opt-in регистрация и bounded control (P23, этап I07) ───────
+      // Контроль появляется только здесь и только по явному вызову: обычная
+      // задача и occurrence расписания остаются без записи контроля.
+      if (url.pathname === '/gtd' || url.pathname.startsWith('/gtd/')) {
+        return await handleGtdRoute(req, url, env, store, body);
+      }
 
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
@@ -500,6 +674,21 @@ const store = new TaskStore(env.DB);
       switch (url.pathname) {
         case '/start': {
           await authorizeTaskRoute(store, req, taskId, 'tasks:intake');
+          // Управляемая работа (P23): gtdId обязателен и проверяется хостом
+          // (запись контроля принадлежит этой задаче и ещё открыта). Без gtdId
+          // запуск остаётся обычной работой: gtdId=null, владелец продолжения
+          // output (AC-141 не меняется).
+          const gtdId = (body.gtdId as string | undefined) ?? null;
+          let managed: ManagedGtdContext | null = null;
+          if (gtdId) {
+            const record = await gtdServiceOf(env, store).requireManagedTask(gtdId, taskId);
+            managed = {
+              gtdId,
+              stepId: record.current_step_id ?? 'step-1',
+              attempt: record.attempts + 1,
+              stepOutcome: (body.stepOutcome as GtdStepOutcome | undefined) ?? 'succeeded',
+            };
+          }
           const input: SubmitInput = {
             id: taskId,
             profileId: (body.profileId as string | undefined) ?? 'default',
@@ -509,6 +698,9 @@ const store = new TaskStore(env.DB);
             waitTimeoutSec: body.waitTimeoutSec as number | undefined,
             crashRunOnce: body.crashRunOnce as boolean | undefined,
             runnerEngine: body.runnerEngine as string | undefined,
+            gtd: managed,
+            criteria: (body.criteria as Record<string, unknown> | undefined) ?? null,
+            conditionRef: (body.conditionRef as string | undefined) ?? null,
           };
 const startResult = await port.submit(input);
            return json({

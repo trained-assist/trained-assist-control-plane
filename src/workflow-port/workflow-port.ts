@@ -12,6 +12,7 @@ import type {
   TaskStore,
 } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
+import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
@@ -55,6 +56,17 @@ export interface SubmitInput extends AdmitTaskInput {
    * ожидание человека: работа + terminal result, без control loop и без gtdId.
    */
   autoRun?: boolean;
+  /**
+   * Управляемая работа (P23): задача под контролем GTD. Запись контроля уже
+   * durable (явная регистрация opt-in), gtdId обязателен в Input → executor →
+   * Output → GTD outcome. План задачу не закрывает: продолжение выдаёт только
+   * GTD — один владелец продолжения.
+   */
+  gtd?: ManagedGtdContext | null;
+  /** Свидетельство по критериям завершения управляемой работы ({criterionId: true}). */
+  criteria?: Record<string, unknown> | null;
+  /** Ссылка на внешнее условие (synthetic CI provider I07) для управляемой работы. */
+  conditionRef?: string | null;
 }
 
 export interface SubmitResult {
@@ -101,8 +113,26 @@ export interface WorkflowPortApi {
     payload: unknown,
     opts?: { idempotencyKey?: string; source?: SignalSource },
   ): Promise<SignalResult>;
-  cancel(taskId: string, opts?: { reason?: string }): Promise<CancelResult>;
+  cancel(taskId: string, opts?: { reason?: string }): Promise<CancelResult & { stopConfirmed: boolean }>;
   status(taskId: string): Promise<PortStatusResult>;
+  /**
+   * Явное продолжение: новый runId, тот же userTaskId, подъём поколения.
+   * Используется и восстановлением после потери связи (эпик M1 шаг 5), и
+   * GTD Manager'ом как единственным владельцем продолжения managed work (P23).
+   */
+  resume(
+    taskId: string,
+    opts?: {
+      reason?: string;
+      instructions?: string;
+      previousRunId?: string | null;
+      awaitingPurpose?: AwaitingPurpose | null;
+      awaitingOptions?: { id: string; label: string }[] | null;
+      runnerPollSec?: number;
+      runnerTimeoutSec?: number;
+      gtd?: ManagedGtdContext | null;
+    },
+  ): Promise<{ runId: string; generation: number }>;
 }
 
 export class CfWorkflowPort implements WorkflowPortApi {
@@ -156,6 +186,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
       awaitingOptions: input.awaitingOptions ?? null,
       waitPollSec: input.waitPollSec,
       autoRun: input.autoRun,
+      gtd: input.gtd ?? null,
+      criteria: input.criteria ?? null,
+      conditionRef: input.conditionRef ?? null,
       // adapter в params НЕ кладём: секрет не должен сериализоваться в движок;
       // план строит его из env (deps) в TaskWorkflow.
       goal: task.goal,
@@ -341,6 +374,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
       awaitingOptions?: { id: string; label: string }[] | null;
       runnerPollSec?: number;
       runnerTimeoutSec?: number;
+      /** Управляемая работа (P23): контекст контроля для продолжения. */
+      gtd?: ManagedGtdContext | null;
     } = {},
   ): Promise<{ runId: string; generation: number }> {
     // Сначала Task Store: новый runId + подъём поколения (старая попытка лишена
@@ -387,6 +422,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
         awaitingInputId: available.lastAwaitingInputId,
         awaitingPurpose: opts.awaitingPurpose ?? available.awaitingPurpose ?? null,
         awaitingOptions: opts.awaitingOptions ?? null,
+        gtd: opts.gtd ?? null,
         question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
         goal: task.goal,
         instructions: opts.instructions ?? null,
