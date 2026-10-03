@@ -8,6 +8,8 @@ import {
   buildRunSpec,
   defaultRunSpecPolicy,
   runSpecPolicyOf,
+  toSubmitRequest,
+  untransmittedRunSpecFields,
   validateRunSpec,
   type RunSpec,
   type RunSpecPolicy,
@@ -159,6 +161,50 @@ describe('run-spec: хостовая политика из bindings', () => {
   it('токен репозитория не попадает в собранный RunSpec без явной политики', () => {
     const built = buildRunSpec(baseInput, policy);
     expect(built.spec.repository).toBeUndefined();
+  });
+});
+
+describe('run-spec: проекция на тело POST /v1/runs', () => {
+  it('контракт submit принимает только свои ключи — полный RunSpec не уходит', () => {
+    const built = buildRunSpec(
+      { ...baseInput, refs: [{ ref: 'artifact://a.md' }] },
+      runSpecPolicyOf({
+        RUN_SPEC_OUTPUTS: JSON.stringify([{ path: 'report.md', mime: 'text/markdown' }]),
+        RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'owner/name' }),
+      }),
+    );
+
+    const body = toSubmitRequest(built.spec);
+    expect(Object.keys(body).sort()).toEqual(
+      ['conversationId', 'engine', 'envAllowlist', 'input', 'limits', 'outputs', 'repository', 'traceId', 'userTaskId'].sort(),
+    );
+    expect(body['userTaskId']).toBe('ut-abc123');
+    expect('profileId' in body).toBe(false);
+    expect('ownerGeneration' in body).toBe(false);
+    expect('cwd' in body).toBe(false);
+    expect('runId' in body).toBe(false);
+    expect('mcp' in body).toBe(false);
+    expect(body['input']).toEqual({ inlinePrompt: 'собери отчёт', refs: [{ ref: 'artifact://a.md' }] });
+  });
+
+  it('поля, которые Runner выводит сам, перечислены явно', () => {
+    const built = buildRunSpec(baseInput, defaultRunSpecPolicy());
+    // Без объявленного MCP его в списке нет — поле честно отсутствует.
+    expect(untransmittedRunSpecFields(built.spec)).toEqual(
+      ['contractVersion', 'jobId', 'runId', 'operationId', 'profileId', 'ownerGeneration', 'cwd'],
+    );
+  });
+
+  it('MCP объявляется в mapping, но в submit не переносится — факт виден', () => {
+    const built = buildRunSpec(
+      baseInput,
+      runSpecPolicyOf({
+        RUN_SPEC_MCP: JSON.stringify({ servers: [{ serverId: 'fs', transport: 'stdio', command: 'node', allowedTools: ['read_file'] }] }),
+      }),
+    );
+    expect(built.spec.mcp?.servers).toHaveLength(1);
+    expect('mcp' in toSubmitRequest(built.spec)).toBe(false);
+    expect(untransmittedRunSpecFields(built.spec)).toContain('mcp');
   });
 });
 

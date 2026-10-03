@@ -3,19 +3,28 @@
   "name": "trained-assist-control-plane",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
-  "workers_dev": false,
+  // Песочница на workers.dev: публичный URL нужен для прогона «Cloudflare → VM
+  // Runner». Доступ закрыт проверяющей аутентификацией (HMAC по binding
+  // PRINCIPAL_SECRET) — без подписи любой запрос получает 401.
+  "workers_dev": true,
   "observability": { "enabled": false },
+  // Изолированная песочница own-API dogfood (#23): отдельная база D1, отдельный
+  // воркер и отдельное имя workflow. Имя умышленно НЕ «task-workflow»: это имя
+  // занято пилотом p-db-a1-cloud-smoke, и wrangler при деплое перепривязывает
+  // workflow к последнему задеплоенному воркеру — то есть сломал бы чужой.
+  // Продакшн-контроллера в этом аккаунте нет — деплой создаёт новый воркер,
+  // живой сервис не переключается и не мигрирует.
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "control-plane-task-store",
-      "database_id": "00000000-0000-0000-0000-000000000001",
+      "database_name": "ta-cp23-sandbox-taskstore",
+      "database_id": "afea55d7-b186-4afb-a6d8-5ca71a58d947",
       "migrations_dir": "migrations"
     }
   ],
   "workflows": [
     {
-      "name": "task-workflow",
+      "name": "ta-cp23-task-workflow",
       "binding": "TASK_WORKFLOW",
       "class_name": "TaskWorkflow"
     }

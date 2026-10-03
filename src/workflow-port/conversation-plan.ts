@@ -24,7 +24,13 @@ import { RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
 import type { ManagedGtdContext } from '../gtd/types';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
-import { buildRunSpec, defaultRunSpecPolicy, logRunSpecBuilt, type RunSpecPolicy } from '../run-spec/run-spec';
+import {
+  buildRunSpec,
+  defaultRunSpecPolicy,
+  logRunSpecBuilt,
+  untransmittedRunSpecFields,
+  type RunSpecPolicy,
+} from '../run-spec/run-spec';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
 export const PLAN_VERSION = 'm1-conversation-v2';
@@ -487,6 +493,9 @@ export async function conversationPlan(
       refs: runSpec.spec.input?.refs?.length ?? 0,
       outputs: runSpec.spec.outputs?.length ?? 0,
       mcpServers: runSpec.spec.mcp?.servers.length ?? 0,
+      // Контракт submit не переносит часть полей RunSpec — факт виден, а не молчалив.
+      mcpNotTransmitted: runSpec.spec.mcp ? true : false,
+      untransmitted: untransmittedRunSpecFields(runSpec.spec),
     });
     const receipt = await ctx.step(
       'submit-runner',
@@ -498,20 +507,21 @@ export async function conversationPlan(
             runSpec: runSpec.spec,
           });
         } catch (e) {
-          if (e instanceof RunnerUnavailableError) {
-            // Задача не теряется: попытка -> unknown, статус задачи не меняется,
-            // повтор с тем же ключом безопасен.
-            if (p.runId) {
-              await store.markConnectionLost(p.runId, e.message, 'runner_unavailable').catch(() => null);
-            }
-            await store.logEvent({
-              taskId,
-              kind: 'error',
-              generation,
-              source: 'executor',
-              payload: { class: 'runner_unavailable', message: e.message, idempotencyKey: attemptKey },
-            });
+          // Любой отказ Runner на этапе submit — неизвестный исход попытки, а не
+          // «failed»: задача не теряется, авто-rerun нет, повтор с тем же ключом
+          // безопасен. Раньше сюда попадал только RunnerUnavailableError, и
+          // отказ контракта (403/400) оставлял попытку в running навсегда.
+          const errorClass = e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
+          if (p.runId) {
+            await store.markConnectionLost(p.runId, String((e as Error)?.message ?? e), errorClass).catch(() => null);
           }
+          await store.logEvent({
+            taskId,
+            kind: 'error',
+            generation,
+            source: 'executor',
+            payload: { class: errorClass, message: String((e as Error)?.message ?? e), idempotencyKey: attemptKey },
+          });
           throw e;
         }
       },
