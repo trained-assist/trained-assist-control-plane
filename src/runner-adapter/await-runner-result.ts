@@ -25,8 +25,26 @@ export interface AwaitRunnerResultOptions {
   timeoutSec?: number;
 }
 
+/**
+ * Манифест артефакта в терминах задачи: ссылка + размер + контрольная сумма.
+ *
+ * Раньше результат нёс только строку ссылки (`artifacts: string[]`), и по
+ * нему нельзя было ни проверить целостность скачанного файла, ни отличить
+ * существующий выход от потерянной ссылки. Теперь это тот же набор ссылок,
+ * но с полями манифеста Runner'а.
+ */
+export interface TaskArtifactManifest {
+  /** Ссылка на артефакт (storage key или outputRef). */
+  ref: string;
+  name: string | null;
+  mime: string | null;
+  sizeBytes: number | null;
+  /** SHA-256 в hex без префикса; null, если манифест недоступен. */
+  sha256: string | null;
+}
+
 export type AwaitRunnerResult =
-  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: string[]; engineText: EngineText | null }
+  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null }
   | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
@@ -114,8 +132,8 @@ async function finalize(
 
   const result = await adapter.result(opts.runId);
 
-  // Финализация артефактов: ссылки на сохранённые выходы Runner'а. Источников два,
-  // потому что Runner отдаёт их по-разному: `result.outputRefs` — то, что движок
+  // Финализация артефактов: ссылки на сохранённые выходы Runner'а. Источников
+  // два, потому что Runner отдаёт их по-разному: `result.outputRefs` — то, что движок
   // сам положил в результат, а `GET /v1/runs/{runId}/artifacts` — манифесты
   // зарегистрированных артефактов (живой прогон: регистрация вне контура, и
   // outputRefs пуст, а артефакт виден только здесь). Дедуп — на уровне ссылки.
@@ -124,14 +142,23 @@ async function finalize(
   const manifests = await adapter.artifacts(opts.runId);
   const byRef = new Map(manifests.map((m) => [m.storageKey || m.artifactId, m]));
   const artifactRefs = [...new Set([...result.outputRefs, ...byRef.keys()])];
-  for (const ref of artifactRefs) {
+  const artifacts: TaskArtifactManifest[] = artifactRefs.map((ref) => {
     const manifest = byRef.get(ref);
+    return {
+      ref,
+      name: manifest?.name ?? null,
+      mime: manifest?.mime ?? null,
+      sizeBytes: manifest?.size ?? null,
+      sha256: manifest?.sha256 ?? null,
+    };
+  });
+  for (const artifact of artifacts) {
     await store.recordArtifact({
       taskId: opts.taskId,
       kind: 'file',
-      artifactRef: ref,
-      sizeBytes: manifest?.size ?? null,
-      checksum: manifest?.sha256 ? `sha256:${manifest.sha256}` : null,
+      artifactRef: artifact.ref,
+      sizeBytes: artifact.sizeBytes,
+      checksum: artifact.sha256 ? `sha256:${artifact.sha256}` : null,
       runId: opts.runId,
       generation: opts.generation,
     });
@@ -175,5 +202,5 @@ async function finalize(
   // контракте Runner'а текста нет. Отсутствие текста не прячется за ok=true —
   // вызывающий видит `engineText: null` и решает сам.
   const engineText = extractEngineText(seenEvents);
-  return { ok: true, result, eventsRecorded, artifacts: artifactRefs, engineText };
+  return { ok: true, result, eventsRecorded, artifacts, engineText };
 }

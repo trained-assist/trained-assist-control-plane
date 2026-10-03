@@ -133,7 +133,7 @@ describe('one-shot с движком: результат = текст движк
     expect(result.answer).toBe('Отчёт готов: 42 строки.');
     expect(result.mode).toBe('engine');
     expect(result.runId).toMatch(/^run-/);
-    expect(result.artifacts).toEqual(['r2://control-plane/ut-x/answer.md']);
+    expect(result.artifacts).toEqual([{ ref: 'r2://control-plane/ut-x/answer.md', name: null, mime: null, sizeBytes: null, sha256: null }]);
   });
 
   it('с awaitingPurpose ожидание открывается, но ответ всё равно текст движка', async () => {

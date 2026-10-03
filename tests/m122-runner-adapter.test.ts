@@ -36,7 +36,7 @@ const makeFakeRunner = (
     connectionLost?: boolean;
     persistence?: 'persisted' | 'failed';
     outputRefs?: string[];
-    artifactManifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string }>;
+    artifactManifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string; mime: string }>;
   } = {},
 ) => {
   const runs = new Map<string, FakeRun>();
@@ -316,7 +316,7 @@ describe('Runner adapter: результат, курсор событий, ар�
     // Живой Runner: outputRefs пуст, артефакт виден в GET /v1/runs/{runId}/artifacts.
     const { adapter } = makeFakeRunner({
       outputRefs: [],
-      artifactManifests: [{ artifactId: 'art-1', name: 'ran.txt', storageKey: 'runs/run-1/ran.txt', size: 2, sha256: 'deadbeef' }],
+      artifactManifests: [{ artifactId: 'art-1', name: 'ran.txt', storageKey: 'runs/run-1/ran.txt', size: 2, sha256: 'deadbeef', mime: 'text/plain' }],
     });
     const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
     await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
@@ -453,7 +453,7 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     expect(result.ownerGeneration).toBe(1);
     expect(result.attempt).toBe(1);
     expect(result.persistence).toBe('persisted');
-    expect(result.artifacts[0]).toContain('answer.json');
+    expect(result.artifacts[0]!.ref).toContain('answer.json');
 
     // runId Runner'а привязан к попытке; события Runner'а — в журнале.
     const runs = await store.listRuns(taskId);
@@ -510,7 +510,7 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
     const { adapter } = makeFakeRunner({
       outputRefs: [],
-      artifactManifests: [{ artifactId: 'art-1', name: 'ran.txt', storageKey: 'runs/run-1/ran.txt', size: 2, sha256: 'deadbeef' }],
+      artifactManifests: [{ artifactId: 'art-1', name: 'ran.txt', storageKey: 'runs/run-1/ran.txt', size: 2, sha256: 'deadbeef', mime: 'text/plain' }],
     });
 
     const ctx: StepCtx = {
@@ -540,9 +540,9 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     const task = await store.requireTask(taskId);
     expect(task.status).toBe('done');
     const result = JSON.parse(task.result_json!);
-    expect(result.artifacts).toEqual(['runs/run-1/ran.txt']);
+    expect(result.artifacts).toEqual([{ ref: 'runs/run-1/ran.txt', name: 'ran.txt', mime: 'text/plain', sizeBytes: 2, sha256: 'deadbeef' }]);
     // Ровно тот же набор, что записан в task_artifacts — источник один.
-    expect((await store.listArtifacts(taskId)).map((a) => a.artifact_ref)).toEqual(result.artifacts);
+    expect((await store.listArtifacts(taskId)).map((a) => a.artifact_ref)).toEqual(result.artifacts.map((a: { ref: string }) => a.ref));
   });
 
   it('Runner недоступен в плане: задача не теряется, попытка unknown, повтор безопасен', async () => {

@@ -12,6 +12,16 @@ import { TaskStore } from '../taskstore';
 import type { TaskRow } from '../taskstore/types';
 import { logStructured } from '../logging/structured-log';
 
+export interface ReportArtifact {
+  /** Ссылка на артефакт (storage key или outputRef). */
+  ref: string;
+  kind: string;
+  sizeBytes: number | null;
+  /** SHA-256 в hex без префикса; null, если манифест не отдал контрольную сумму. */
+  sha256: string | null;
+  runId: string | null;
+}
+
 export interface ReportSnapshot {
   userTaskId: string;
   profileId: string;
@@ -22,7 +32,16 @@ export interface ReportSnapshot {
   deliveryState: string | null;
   awaitingInputId: string | null;
   result: unknown;
-  artifactRefs: string[];
+  /**
+   * Конечный текст движка (`result.answer`), а не ответ человека: клиент
+   * получает ровно то, что вернул движок. `null` означает «движок не ответил»
+   * и никогда не выдаётся за пустой ответ.
+   */
+  answer: string | null;
+  /** Манифесты выходов: ссылка + размер + контрольная сумма. */
+  artifacts: ReportArtifact[];
+  /** Ответ человека (если был явный host ask). Не источник результата. */
+  userAnswer: string | null;
   conversationId: string | null;
   updatedAt: number | null;
 }
@@ -48,11 +67,20 @@ export interface ReportView {
   eventCount: number;
 }
 
-/** Краткий снапшот задачи — одна транзакция чтения. */
+/**
+ * Краткий снапшот задачи — одна транзакция чтения.
+ *
+ * `answer` берётся из структурированного результата шага (`result.answer`), а
+ * `userAnswer` — рядом и отдельно: отчёт не даёт перепутать ответ человека с
+ * ответом движка. Артефакты приходят как манифесты (размер + контрольная
+ * сумма), чтобы клиент мог проверить скачанное, а не только получить ссылку.
+ */
 export async function reportSnapshot(store: TaskStore, userTaskId: string): Promise<ReportSnapshot> {
   const task = await store.getTask(userTaskId);
   if (!task) throw new Error(`task not found: ${userTaskId}`);
   const artifacts = await store.listArtifacts(userTaskId);
+  const result = task.result_json ? (JSON.parse(task.result_json) as Record<string, unknown>) : null;
+  const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
   return {
     userTaskId: task.id,
     profileId: task.profile_id,
@@ -62,8 +90,16 @@ export async function reportSnapshot(store: TaskStore, userTaskId: string): Prom
     revision: task.revision,
     deliveryState: task.delivery_state,
     awaitingInputId: task.awaiting_input_id,
-    result: task.result_json ? JSON.parse(task.result_json) : null,
-    artifactRefs: artifacts.map((a) => a.artifact_ref),
+    result,
+    answer: text(result?.['answer'] ?? null),
+    userAnswer: text(result?.['userAnswer'] ?? null),
+    artifacts: artifacts.map((a) => ({
+      ref: a.artifact_ref,
+      kind: a.kind,
+      sizeBytes: a.size_bytes ?? null,
+      sha256: a.checksum?.startsWith('sha256:') ? a.checksum.slice('sha256:'.length) : null,
+      runId: a.run_id ?? null,
+    })),
     conversationId: task.conversation_id,
     updatedAt: task.updated_at,
   };
