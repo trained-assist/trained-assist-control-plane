@@ -352,3 +352,185 @@ print("OK: после enable одно новое occurrence (coalesce), gtd_id =
 
 echo
 echo "PASS: прогоны $REQUEST_ID/$REQ2/$REQ3/$REQ4/$REQ5 и расписание $SCHED_ID завершены"
+
+echo "== 15. GTD opt-in и bounded control (P23, виртуальные часы) =="
+# Контроль появляется только по явной регистрации: обычная задача и occurrence
+# расписания остаются без gtdId (AC-141 не меняется). Время — виртуальное
+# (now в теле /gtd/tick), внешний гейт — synthetic provider (SANDBOX · I07).
+GTD_REQ="gtd-smoke-$(date +%s)-$$"
+GTD_DEADLINE=$(( $(date +%s) * 1000 + 4 * 3600000 ))
+GTD_NOW=$(( $(date +%s) * 1000 ))
+
+echo "== 15.1 обычная задача без контроля: gtdId отсутствует, владелец продолжения output =="
+PLAIN_REQ="req-p23-plain-$(date +%s)"
+PLAIN="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$PLAIN_REQ\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"разовый вопрос без контроля\"}]}")"
+PLAIN_TASK="$(echo "$PLAIN" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+post /start "{\"taskId\":\"$PLAIN_TASK\",\"profileId\":\"$PROFILE\",\"goal\":\"разовый вопрос без контроля\"}" >/dev/null
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$PLAIN_TASK\"}" | py 'import json,sys; t=json.load(sys.stdin)["taskStore"]; print(t["status"])')
+  [ "$st" = "done" ] && break
+  sleep 0.5
+done
+[ "$st" = "done" ] || { echo "FAIL: обычная задача не дошла до done ($st)" >&2; exit 1; }
+post /status "{\"taskId\":\"$PLAIN_TASK\"}" | py '
+import json,sys
+d = json.load(sys.stdin); r = d["taskStore"]["result"]
+assert "gtdId" not in r, r
+assert r["continuationOwner"] == "output", r
+print("OK: без регистрации контроля нет: gtdId отсутствует, continuationOwner =", r["continuationOwner"])
+' || exit 1
+get "/gtd?profileId=$PROFILE" | py 'import json,sys; d=json.load(sys.stdin); assert d["records"]==[], d' || exit 1
+echo "OK: записей контроля нет (GTD не создаётся сам)"
+
+echo "== 15.2 явная регистрация: одна запись, детерминированный gtdId =="
+GTD="$(post /gtd "{\"requestId\":\"$GTD_REQ\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$PLAIN_TASK\",\"reason\":\"довести до конца и проверить CI\",\"criteria\":[{\"id\":\"ci-gate\",\"description\":\"required check зелёный\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":3}")"
+echo "$GTD" | py 'import json,sys; d=json.load(sys.stdin); assert d["created"] is True and d["continuationOwner"]=="gtd", d' || exit 1
+GTD_ID="$(echo "$GTD" | py 'import json,sys; print(json.load(sys.stdin)["gtdId"])')"
+echo "OK: запись контроля создана: $GTD_ID (continuationOwner=gtd)"
+GTD_DUP="$(post /gtd "{\"requestId\":\"$GTD_REQ\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$PLAIN_TASK\",\"reason\":\"довести до конца и проверить CI\",\"criteria\":[{\"id\":\"ci-gate\",\"description\":\"required check зелёный\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":3}")"
+echo "$GTD_DUP" | py 'import json,sys; d=json.load(sys.stdin); assert d["created"] is False and d["gtdId"]=="'"$GTD_ID"'", d' || exit 1
+echo "OK: повторная регистрация — тот же gtdId, второй записи нет"
+
+echo "== 15.3 managed шаг: критерий не выполнен -> ровно одно продолжение =="
+post /start "{\"taskId\":\"$PLAIN_TASK\",\"profileId\":\"$PROFILE\",\"goal\":\"довести до конца и проверить CI\",\"gtdId\":\"$GTD_ID\",\"stepOutcome\":\"succeeded\",\"criteria\":{\"ci-gate\":false}}" >/dev/null
+for _ in $(seq 1 60); do
+  pending=$(get "/gtd/$GTD_ID" | py 'import json,sys; d=json.load(sys.stdin); print(sum(1 for o in d["outcomes"] if o["state"]=="pending"))')
+  active=$(post /status "{\"taskId\":\"$PLAIN_TASK\"}" | py 'import json,sys; print(len([r for r in json.load(sys.stdin)["runs"] if r["status"]=="running"]))')
+  [ "$pending" = "1" ] && [ "$active" = "0" ] && break
+  sleep 0.5
+done
+[ "$pending" = "1" ] && [ "$active" = "0" ] || { echo "FAIL: исход managed шага не доехал (pending=$pending active=$active)" >&2; exit 1; }
+ACK1="$(post /gtd/ack "{\"gtdId\":\"$GTD_ID\"}")"
+echo "$ACK1" | py 'import json,sys
+d = json.load(sys.stdin)
+assert len(d["processed"]) == 1, d
+p = d["processed"][0]
+assert p["decision"] == "continue" and p["reason"] == "criteria_not_met", p
+assert p["continuationRunId"], p
+print("OK: ACK -> одно решение continue, continuationRunId =", p["continuationRunId"])
+' || exit 1
+for _ in $(seq 1 60); do
+  pending=$(get "/gtd/$GTD_ID" | py 'import json,sys; d=json.load(sys.stdin); print(sum(1 for o in d["outcomes"] if o["state"]=="pending"))')
+  active=$(post /status "{\"taskId\":\"$PLAIN_TASK\"}" | py 'import json,sys; print(len([r for r in json.load(sys.stdin)["runs"] if r["status"]=="running"]))')
+  [ "$pending" = "1" ] && [ "$active" = "0" ] && break
+  sleep 0.5
+done
+[ "$pending" = "1" ] && [ "$active" = "0" ] || { echo "FAIL: исход продолжения не доехал (pending=$pending active=$active)" >&2; exit 1; }
+ACK2="$(post /gtd/ack "{\"gtdId\":\"$GTD_ID\"}")"
+echo "$ACK2" | py 'import json,sys
+d = json.load(sys.stdin)
+assert len(d["processed"]) == 1, d
+p = d["processed"][0]
+assert p["decision"] == "complete" and p["reason"] == "criteria_met", p
+assert p["continuationRunId"] is None, p
+print("OK: критерий выполнен -> complete, новых попыток нет")
+' || exit 1
+post /status "{\"taskId\":\"$PLAIN_TASK\"}" | py '
+import json,sys
+d = json.load(sys.stdin); t = d["taskStore"]
+assert t["status"] == "done", t["status"]
+r = t["result"]
+assert r["gtdId"] == "'"$GTD_ID"'" and r["completedBy"] == "gtd", r
+runs = [x["id"] for x in d["runs"]]
+assert len(runs) == 2 and len(set(runs)) == 2, runs
+print("OK: задача закрыта GTD (done); попыток:", len(runs), "| владелец продолжения один")
+' || exit 1
+
+echo "== 15.4 wait по вводу человека: durable ожидание, ответ -> одно продолжение =="
+INPUT_REQ="req-p23-input-$(date +%s)"
+INPUT="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$INPUT_REQ\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"нужен выбор пользователя\"}]}")"
+INPUT_TASK="$(echo "$INPUT" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+INPUT_REG="$(post /gtd "{\"requestId\":\"reg-$INPUT_REQ\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$INPUT_TASK\",\"reason\":\"довести до конца, нужен выбор\",\"criteria\":[{\"id\":\"choice-made\",\"description\":\"пользователь выбрал\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":3}")"
+INPUT_GTD="$(echo "$INPUT_REG" | py 'import json,sys; print(json.load(sys.stdin)["gtdId"])')"
+post /start "{\"taskId\":\"$INPUT_TASK\",\"profileId\":\"$PROFILE\",\"goal\":\"нужен выбор пользователя\",\"gtdId\":\"$INPUT_GTD\",\"stepOutcome\":\"awaiting_user\"}" >/dev/null
+for _ in $(seq 1 60); do
+  st=$(post /status "{\"taskId\":\"$INPUT_TASK\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["status"])')
+  [ "$st" = "awaiting_input" ] && break
+  sleep 0.5
+done
+[ "$st" = "awaiting_input" ] || { echo "FAIL: managed шаг не встал на ожидание ($st)" >&2; exit 1; }
+AID="$(post /status "{\"taskId\":\"$INPUT_TASK\"}" | py 'import json,sys; print(json.load(sys.stdin)["taskStore"]["awaiting_input_id"])')"
+post /status "{\"taskId\":\"$INPUT_TASK\"}" | py '
+import json,sys
+d = json.load(sys.stdin)
+runs = d["runs"]
+assert len(runs) == 1 and runs[0]["status"] == "waiting", runs
+print("OK: попытка паркована (waiting), живого процесса нет; awaitingInputId =", d["taskStore"]["awaiting_input_id"])
+' || exit 1
+post /gtd/ack "{\"gtdId\":\"$INPUT_GTD\"}" | py 'import json,sys
+d = json.load(sys.stdin)
+assert d["processed"][0]["decision"] == "wait" and d["processed"][0]["triggerKind"] == "input", d
+print("OK: ACK -> wait по вводу, продолжения нет")
+' || exit 1
+# Тики без ответа: ни одной новой попытки (токены не расходуются).
+for i in 1 2 3; do
+  post /gtd/tick "{\"now\":$(( GTD_NOW + i * 60000 ))}" | py 'import json,sys; d=json.load(sys.stdin); assert d["continued"]==0 and d["waiting"]==1, d' || exit 1
+done
+post /status "{\"taskId\":\"$INPUT_TASK\"}" | py 'import json,sys; d=json.load(sys.stdin); assert len(d["runs"])==1, d["runs"]' || exit 1
+echo "OK: 3 тика без ответа — новых попыток нет (wait не держит токены)"
+post "/awaiting/$AID/answer" "{\"idempotencyKey\":\"web:p23-smoke\",\"answer\":{\"optionId\":\"opt-a\"}}" >/dev/null
+post /gtd/tick "{\"now\":$GTD_NOW}" | py 'import json,sys; d=json.load(sys.stdin); assert d["continued"]==1, d' || exit 1
+for _ in $(seq 1 60); do
+  pending=$(get "/gtd/$INPUT_GTD" | py 'import json,sys; d=json.load(sys.stdin); print(sum(1 for o in d["outcomes"] if o["state"]=="pending"))')
+  active=$(post /status "{\"taskId\":\"$INPUT_TASK\"}" | py 'import json,sys; print(len([r for r in json.load(sys.stdin)["runs"] if r["status"]=="running"]))')
+  [ "$pending" = "1" ] && [ "$active" = "0" ] && break
+  sleep 0.5
+done
+[ "$pending" = "1" ] && [ "$active" = "0" ] || { echo "FAIL: продолжение после ответа не отработало" >&2; exit 1; }
+post /gtd/ack "{\"gtdId\":\"$INPUT_GTD\"}" | py 'import json,sys
+d = json.load(sys.stdin)
+assert d["processed"][0]["decision"] == "complete", d
+print("OK: ответ пользователя -> ровно одно продолжение, критерий выполнен")
+' || exit 1
+post /status "{\"taskId\":\"$INPUT_TASK\"}" | py '
+import json,sys
+d = json.load(sys.stdin)
+assert d["taskStore"]["status"] == "done", d["taskStore"]["status"]
+assert len(d["runs"]) == 2, d["runs"]
+print("OK: задача закрыта после ответа; попыток:", len(d["runs"]))
+' || exit 1
+
+echo "== 15.5 caps завершают прогрессию: обхода новой записью нет =="
+CAPS_REQ="req-p23-caps-$(date +%s)"
+CAPS="$(post /intake "{\"contractVersion\":1,\"requestId\":\"$CAPS_REQ\",\"profileId\":\"$PROFILE\",\"inputItems\":[{\"text\":\"шаг падает\"}]}")"
+CAPS_TASK="$(echo "$CAPS" | py 'import json,sys; print(json.load(sys.stdin)["userTaskId"])')"
+CAPS_REG="$(post /gtd "{\"requestId\":\"reg-$CAPS_REQ\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$CAPS_TASK\",\"reason\":\"довести до конца с проверкой\",\"criteria\":[{\"id\":\"release-ok\",\"description\":\"релиз проверен\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":2}")"
+CAPS_GTD="$(echo "$CAPS_REG" | py 'import json,sys; print(json.load(sys.stdin)["gtdId"])')"
+for attempt in 1 2; do
+  post /start "{\"taskId\":\"$CAPS_TASK\",\"profileId\":\"$PROFILE\",\"goal\":\"шаг падает\",\"gtdId\":\"$CAPS_GTD\",\"stepOutcome\":\"failed\"}" >/dev/null
+  for _ in $(seq 1 60); do
+    pending=$(get "/gtd/$CAPS_GTD" | py 'import json,sys; d=json.load(sys.stdin); print(sum(1 for o in d["outcomes"] if o["state"]=="pending"))')
+    active=$(post /status "{\"taskId\":\"$CAPS_TASK\"}" | py 'import json,sys; print(len([r for r in json.load(sys.stdin)["runs"] if r["status"]=="running"]))')
+    [ "$pending" = "1" ] && [ "$active" = "0" ] && break
+    sleep 0.5
+  done
+  [ "$pending" = "1" ] && [ "$active" = "0" ] || { echo "FAIL: попытка $attempt не отработала" >&2; exit 1; }
+  post /gtd/ack "{\"gtdId\":\"$CAPS_GTD\"}" | py 'import json,sys
+d = json.load(sys.stdin)
+p = d["processed"][0]
+assert p["decision"] in ("continue","stop"), p
+print("OK: попытка", '"$attempt"', "->", p["decision"], p["reason"])
+' || exit 1
+done
+post /status "{\"taskId\":\"$CAPS_TASK\"}" | py '
+import json,sys
+d = json.load(sys.stdin); t = d["taskStore"]
+assert t["status"] == "blocked", t["status"]
+assert t["blockerReason"] == "attempt_cap_exhausted", t["blockerReason"]
+assert len(d["runs"]) == 2, d["runs"]
+print("OK: attempt cap -> blocked (blockerReason =", t["blockerReason"], "), попыток:", len(d["runs"]))
+' || exit 1
+DUP_REG="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/gtd" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"requestId\":\"reg-$CAPS_REQ-again\",\"profileId\":\"$PROFILE\",\"userTaskId\":\"$CAPS_TASK\",\"reason\":\"начать заново\",\"criteria\":[{\"id\":\"release-ok\",\"description\":\"релиз проверен\",\"required\":true}],\"deadlineAt\":$GTD_DEADLINE,\"maxAttempts\":5}")"
+[ "$DUP_REG" = "409" ] || { echo "FAIL: ждали 409 на повторную регистрацию, получили $DUP_REG" >&2; exit 1; }
+echo "OK: обойти caps новой записью контроля нельзя (409)"
+
+echo "== 15.6 неизвестный gtdId у managed outcome: карантин, не тихий fallback =="
+GHOST="$(curl -sS -X POST "$BASE/gtd/outcomes" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"gtdId\":\"gtd-ffffffffffffffffffff\",\"userTaskId\":\"$CAPS_TASK\",\"stepId\":\"step-9\",\"outcome\":\"failed\",\"idempotencyKey\":\"ghost:smoke\"}")"
+echo "$GHOST" | py 'import json,sys; d=json.load(sys.stdin); assert d["state"]=="quarantined" and d["reason"]=="unknown_control_record", d' || exit 1
+GHOST_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/gtd/outcomes" -H 'content-type: application/json' -H "X-Principal: $PRINCIPAL" -d "{\"gtdId\":\"gtd-ffffffffffffffffffff\",\"userTaskId\":\"$CAPS_TASK\",\"stepId\":\"step-9\",\"outcome\":\"failed\",\"idempotencyKey\":\"ghost:smoke\"}")"
+[ "$GHOST_CODE" = "409" ] || { echo "FAIL: ждали 409 на неизвестный gtdId, получили $GHOST_CODE" >&2; exit 1; }
+post /status "{\"taskId\":\"$CAPS_TASK\"}" | py 'import json,sys; d=json.load(sys.stdin); assert len(d["runs"])==2, d["runs"]' || exit 1
+echo "OK: исход без записи контроля — quarantined (409), попыток не добавилось"
+
+echo
+echo "PASS: раздел 15 (GTD opt-in и bounded control) завершён; записи контроля: $GTD_ID/$INPUT_GTD/$CAPS_GTD"
