@@ -218,6 +218,29 @@ export class RunnerApiAdapter {
     return res.artifacts;
   }
 
+  /**
+   * Манифест одного артефакта (`GET /v1/artifacts/{id}/meta`) — для read-only
+   * проксирования байтов наружу: ключ Runner'а остаётся в binding воркера.
+   */
+  async artifactMeta(artifactId: string): Promise<RunnerArtifact> {
+    return this.request<RunnerArtifact>('GET', `/v1/artifacts/${artifactId}/meta`);
+  }
+
+  /** Байты артефакта (`GET /v1/artifacts/{id}`) — только чтение, ключ в binding. */
+  async artifactBytes(artifactId: string): Promise<{ body: Uint8Array; artifact: RunnerArtifact }> {
+    const res = await this.doFetch(`${this.baseUrl}/v1/artifacts/${artifactId}`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${this.apiKey}` },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new RunnerConflictError(`artifact ${artifactId}: HTTP_${res.status}: ${text}`);
+    }
+    const body = new Uint8Array(await res.arrayBuffer());
+    const artifact = await this.artifactMeta(artifactId);
+    return { body, artifact };
+  }
+
   async cancel(runId: string, opts: { ownerGeneration?: number; reason?: string } = {}): Promise<{ status: string; reason?: string; state?: string }> {
     return this.request('POST', `/v1/runs/${runId}/cancel`, { body: { ownerGeneration: opts.ownerGeneration, reason: opts.reason } });
   }
