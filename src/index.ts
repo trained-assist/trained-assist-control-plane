@@ -418,6 +418,142 @@ const localDeliveryAdapter: DeliveryAdapter = {
 };
 
 /**
+ * Сверка манифестов артефактов с Runner'ом (read-only, идемпотентно).
+ *
+ * Нужна из-за дефекта Runner'а: `POST /v1/runs` принимает `outputs`, но
+ * `assembleSpec` не копирует его в RunSpec — объявленные выходы не экспортируются,
+ * и `result.outputRefs` остаётся пустым (зафиксировано живым прогоном и
+ * возвращает в #23 как СТОП). Контроллер здесь ничего не создаёт: он читает
+ * УЖЕ сохранённые манифесты Runner'а (`GET /v1/runs/{runId}/artifacts`) и
+ * записывает недостающие ссылки в `task_artifacts`.
+ *
+ * Ни spawn, ни записи в workspace, ни ручной загрузки байтов: манифесты —
+ * собственность Runner'а, control plane их только перечитывает.
+ */
+async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): Promise<unknown> {
+  const adapter = runnerAdapterOf({
+    RUNNER_API_URL: env.RUNNER_API_URL,
+    RUNNER_API_KEY: env.RUNNER_API_KEY,
+  });
+  if (!adapter) return json({ error: 'runner not configured' }, 503);
+
+  const runs = await store.listRuns(taskId);
+  const task = await store.requireTask(taskId);
+  const before = (await store.listArtifacts(taskId)).length;
+  const seen = new Set<string>();
+  const failed: string[] = [];
+
+  for (const run of runs) {
+    const runnerRunId = run.session_id;
+    if (!runnerRunId) continue;
+    let manifests;
+    try {
+      manifests = await adapter.artifacts(runnerRunId);
+    } catch (e) {
+      failed.push(`${runnerRunId}: ${String((e as Error)?.message ?? e)}`);
+      continue;
+    }
+    for (const manifest of manifests) {
+      const ref = manifest.storageKey || manifest.artifactId;
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      await store.recordArtifact({
+        taskId,
+        kind: 'file',
+        artifactRef: ref,
+        sizeBytes: manifest.size,
+        checksum: manifest.sha256 ? `sha256:${manifest.sha256}` : null,
+        runId: run.id,
+        generation: task.generation,
+      });
+    }
+  }
+
+  const after = (await store.listArtifacts(taskId)).length;
+  logStructured({
+    event: 'artifacts.reconciled',
+    profileId: task.profile_id,
+    userTaskId: taskId,
+    reason: 'runner_manifest_rescan',
+    added: after - before,
+    total: after,
+    runnerFailures: failed.length,
+  });
+  return { taskId, added: after - before, total: after, scanned: seen.size, runnerFailures: failed };
+}
+
+/**
+ * Байты артефакта наружу — read-only прокси к Runner'у.
+ *
+ * Ключ Runner'а остаётся в binding воркера: клиент получает файл по
+ * аутентифицированному URL `/artifact?taskId=…&ref=…`, а не по ссылке с ключом
+ * внутри. Сначала ищем артефакт в `task_artifacts` (ссылка + манифест), потом —
+ * по манифестам Runner'а для этого рана. Никакой записи в workspace и никакой
+ * подмены результата: это чтение уже сохранённого выхода.
+ */
+async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: string): Promise<Response> {
+  const adapter = runnerAdapterOf({
+    RUNNER_API_URL: env.RUNNER_API_URL,
+    RUNNER_API_KEY: env.RUNNER_API_KEY,
+  });
+  if (!adapter) return json({ error: 'runner not configured' }, 503);
+
+  const artifacts = await store.listArtifacts(taskId);
+  const row = artifacts.find((a) => a.artifact_ref === ref);
+  if (!row) return json({ error: 'artifact not found' }, 404);
+
+  // runId попытки control plane и runId Runner'а — РАЗНЫЕ идентификаторы
+  // (attachRunnerRun кладёт runId Runner'а в executions.session_id). Манифесты
+  // Runner'а ищем по его runId, а не по нашему.
+  const attempt = row.run_id ? await store.getRun(row.run_id) : null;
+  const runnerRunId = attempt?.session_id ?? null;
+  const candidates: string[] = [];
+  if (runnerRunId) {
+    try {
+      for (const manifest of await adapter.artifacts(runnerRunId)) {
+        if (manifest.storageKey === ref || manifest.artifactId === ref) candidates.push(manifest.artifactId);
+      }
+    } catch {
+      // Манифесты недоступны — пробуем ссылку как artifactId.
+    }
+  }
+  if (!candidates.includes(ref)) candidates.push(ref);
+
+  let lastError = 'artifact not found';
+  for (const artifactId of candidates) {
+    try {
+      const { body, artifact } = await adapter.artifactBytes(artifactId);
+      const owner = await store.getTask(taskId);
+      logStructured({
+        event: 'artifact.served',
+        profileId: owner?.profile_id ?? null,
+        userTaskId: taskId,
+        runId: artifact.runId,
+        reason: 'read_only_proxy',
+        artifactId: artifact.artifactId,
+        sizeBytes: artifact.size,
+        sha256: artifact.sha256,
+      });
+      return new Response(body, {
+        status: 200,
+        headers: {
+          'content-type': artifact.mime || 'application/octet-stream',
+          'content-length': String(body.length),
+          'x-artifact-sha256': artifact.sha256,
+          'x-artifact-id': artifact.artifactId,
+          'content-disposition': `attachment; filename="${artifact.name}"`,
+          'cache-control': 'private, no-store',
+          'x-content-type-options': 'nosniff',
+        },
+      });
+    } catch (e) {
+      lastError = String((e as Error)?.message ?? e);
+    }
+  }
+  return json({ error: 'artifact unavailable', reason: lastError }, 502);
+}
+
+/**
  * Локальный HTTP-слой для воспроизводимого прогона (см. README «Как запустить»):
  *   POST /start {taskId, profileId, goal, ...}  -> submit (ранний ответ)
  *   POST /signal {taskId, type, payload, idempotencyKey}
@@ -539,6 +675,20 @@ const store = new TaskStore(env.DB);
           retryAfterSec: (body.retryAfterSec as number | undefined) ?? 0,
         });
         return result ? json(result) : json({ delivered: false, reason: 'outbox empty' });
+      }
+      if (url.pathname === '/artifact') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        const taskId = url.searchParams.get('taskId');
+        const ref = url.searchParams.get('ref');
+        if (!taskId || !ref) return json({ error: 'taskId and ref are required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
+        return await serveArtifact(env, store, taskId, ref);
+      }
+      if (url.pathname === '/artifacts/reconcile') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
+        return json(await reconcileArtifacts(env, store, taskId));
       }
       if (url.pathname === '/artifacts') {
         if (req.method !== 'POST') {

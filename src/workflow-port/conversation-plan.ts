@@ -542,6 +542,14 @@ export async function conversationPlan(
         attempt: 1,
         deduplicated: receipt.deduplicated,
         idempotencyKey: attemptKey,
+        // Что реально ушло в Runner: манифест выходов и ссылки. Без этого
+        // «объявленные выходы не экспортируются» не отличить от «не объявлены».
+        runSpec: {
+          outputs: runSpec.spec.outputs?.map((o) => o.path) ?? [],
+          refs: runSpec.spec.input?.refs?.length ?? 0,
+          promptNormalized: runSpec.promptNormalized,
+          mcpNotTransmitted: runSpec.spec.mcp ? true : false,
+        },
       },
     });
   }
