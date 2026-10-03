@@ -17,7 +17,8 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
-import { awaitRunnerResult } from '../runner-adapter/await-runner-result';
+import { awaitRunnerResult, type TaskArtifactManifest } from '../runner-adapter/await-runner-result';
+import type { EngineText } from '../runner-adapter/engine-text';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
 import { RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
@@ -284,11 +285,15 @@ async function managedStep(ctx: StepCtx, store: TaskStore, p: PlanDeps, plan: Pl
 export interface EngineRun {
   ok: boolean;
   text: string | null;
-  artifacts: string[];
+  /** Манифесты выходов (ссылка + размер + sha256), а не голые строки ссылок. */
+  artifacts: TaskArtifactManifest[];
   persistence: string;
   exitReason: string;
   runId: string;
   ownerGeneration: number;
+  /** Происхождение текста: из каких событий он собран (см. `engine-text.ts`). */
+  textSource: EngineText['source'] | null;
+  textVersion: EngineText['version'] | null;
 }
 
 /**
@@ -321,6 +326,11 @@ async function finalizeRun(
           ownerGeneration: engine.ownerGeneration,
           attempt: 1,
           artifacts: engine.artifacts,
+          engineText: {
+            text: engine.text,
+            source: engine.textSource,
+            version: engine.textVersion,
+          },
           persistence: engine.persistence,
           exitReason: engine.exitReason,
         }
@@ -608,6 +618,8 @@ export async function conversationPlan(
       ok: runnerResult.outcome === 'succeeded',
       // Конечный текст движка (stdout), а не ответ человека.
       text: outcome.engineText ? outcome.engineText.text : runnerResult.text ?? null,
+      textSource: outcome.engineText?.source ?? null,
+      textVersion: outcome.engineText?.version ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
       exitReason: runnerResult.exitReason,
