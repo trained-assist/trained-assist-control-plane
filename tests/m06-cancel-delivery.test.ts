@@ -31,7 +31,7 @@ const setup = () => {
 };
 
 const doneTask = async (store: TaskStore, port: CfWorkflowPort, taskId = nextId('m06')) => {
-  await port.submit({ id: taskId, profileId: 'profile-1', goal: 'отмена и доставка' });
+  await port.submit({ id: taskId, profileId: 'profile-1', goal: 'отмена и доставка', awaitingPurpose: 'missing_fact' as const });
   await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
   await port.signal(taskId, 'user_reply', { answer: 'да' }, { idempotencyKey: `web:${taskId}` });
   await pollUntil('done', async () => {
@@ -161,7 +161,7 @@ describe('M06: отмена, доставка и артефакты', () => {
   it('подтверждённая отмена подавляет retry доставки (C03)', async () => {
     const { store, port } = setup();
     const taskId = nextId('m06-cancel-suppress');
-    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'отмена с доставкой' });
+    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'отмена с доставкой', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     await store.queueDelivery({
@@ -192,7 +192,7 @@ describe('M06: отмена, доставка и артефакты', () => {
   it('артефакты сохраняются после отмены', async () => {
     const { store, port } = setup();
     const taskId = nextId('m06-artifacts');
-    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'артефакт до отмены' });
+    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'артефакт до отмены', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     const run = (await store.listRuns(taskId))[0]!;

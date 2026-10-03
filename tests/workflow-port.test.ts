@@ -43,6 +43,8 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       profileId: 'profile-1',
       goal: 'сквозной прогон M1.2',
       conversationId: `conv-${taskId}`,
+      // Typed-запрос хоста: без него план не открывает ожидание (one-shot).
+      awaitingPurpose: 'missing_fact',
     });
     const submitMs = Date.now() - t0;
 
@@ -76,7 +78,14 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     expect(done.stage).toBe('finished');
 
     const status = await store.statusRow(taskId);
-    expect(status?.result).toEqual({ answer: 'да', ok: true, version: PLAN_VERSION });
+    expect(status?.result).toEqual({
+      ok: true,
+      // Ответ человека не подменяет текст движка: движка в этом прогоне нет.
+      answer: null,
+      userAnswer: 'да',
+      version: PLAN_VERSION,
+      mode: 'no_engine',
+    });
 
     // Ожидание закрыто, сигнал потреблён, история полная и упорядочена.
     expect(await store.getOpenAwaiting(taskId)).toBeNull();
@@ -101,7 +110,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
   it('дубль submit = один запуск: тот же экземпляр, один task_accepted, один prepare', async () => {
     const { store, port } = setup();
     const taskId = nextId('dup-submit');
-    const input = { id: taskId, profileId: 'p', goal: 'дубль submit' };
+    const input = { id: taskId, profileId: 'p', goal: 'дубль submit', awaitingPurpose: 'missing_fact' as const };
 
     const first = await port.submit(input);
     const second = await port.submit(input);
@@ -132,7 +141,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     const { store, port } = setup();
     const taskId = nextId('late-event');
 
-    await port.submit({ id: taskId, profileId: 'p', goal: 'позднее событие' });
+    await port.submit({ id: taskId, profileId: 'p', goal: 'позднее событие', awaitingPurpose: 'missing_fact' });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
     await port.signal(taskId, 'user_reply', { answer: 'да' }, { idempotencyKey: 'web:ok-1' });
     await pollUntil('done', async () => {
@@ -170,7 +179,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     const taskId = nextId('stale-gen');
 
     const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, taskId);
-    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'старый generation' });
+    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'старый generation', awaitingPurpose: 'missing_fact' });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     // Новый владелец взял задачу (lease истёк) — поколение поднято.
@@ -203,7 +212,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       status: 'done',
       stage: 'finished',
       step: 'finalize',
-      result: { answer: 'да', ok: true, version: PLAN_VERSION },
+      result: { ok: true, answer: null, userAnswer: 'да', version: PLAN_VERSION, mode: 'no_engine' },
     });
     expect((await store.requireTask(taskId)).status).toBe('done');
   }, 60_000);
@@ -217,6 +226,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       profileId: 'p',
       goal: 'рестарт посередине',
       crashRunOnce: true,
+      awaitingPurpose: 'missing_fact',
     });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
@@ -242,9 +252,11 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     });
     expect(done.status).toBe('done');
     expect((await afterRestart.statusRow(taskId))?.result).toEqual({
-      answer: 'да',
       ok: true,
+      answer: null,
+      userAnswer: 'да',
       version: PLAN_VERSION,
+      mode: 'no_engine',
     });
   }, 60_000);
 
@@ -257,6 +269,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       id: taskId,
       profileId: 'p',
       goal: 'поздний тайм-аут ожидания',
+      awaitingPurpose: 'missing_fact',
       // Короткий дедлайн: тайм-аут ожидания должен наступить ПОСЛЕ того, как
       // задача закрыта извне, — ровно окно, в котором пилот писал wait_timeout
       // поверх done (issue #90).
@@ -269,7 +282,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       status: 'done',
       stage: 'finished',
       step: 'finalize',
-      result: { answer: 'да', ok: true, version: PLAN_VERSION },
+      result: { ok: true, answer: null, userAnswer: 'да', version: PLAN_VERSION, mode: 'no_engine' },
     });
     const before = await store.statusRow(taskId);
 
@@ -291,7 +304,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     const { store, port } = setup();
     const taskId = nextId('cancel');
 
-    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'отмена' });
+    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'отмена', awaitingPurpose: 'missing_fact' });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     const cancelled = await port.cancel(taskId, { reason: 'user pressed stop' });
@@ -309,5 +322,41 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
 
     // Шаг, работавший на старом поколении, отвергнут.
     await expect(store.commit(taskId, submit.generation, { status: 'done' })).rejects.toBeInstanceOf(FencedError);
+  }, 60_000);
+});
+
+/**
+ * Own-API dogfood (#23), шаг 1: обычный one-shot запуск НЕ требует ответа
+ * человека. План не открывает ожидание, не ждёт сигнала и закрывает задачу
+ * результатом движка. Ожидание — только по typed-запросу хоста (тесты выше).
+ */
+describe('Workflow Port: one-shot без обязательного ожидания (#23)', () => {
+  it('без awaitingPurpose план не открывает ожидание и закрывает задачу сам', async () => {
+    const { store, port } = setup();
+    const taskId = nextId('one-shot');
+
+    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'one-shot без ожидания' });
+    expect(submit.created).toBe(true);
+
+    const done = await pollUntil('done', async () => {
+      const row = await store.requireTask(taskId);
+      return row.status === 'done' ? row : null;
+    });
+    expect(done.stage).toBe('finished');
+
+    // Ключевое: ожидание не открывалось, сигналов не было.
+    expect(await store.getOpenAwaiting(taskId)).toBeNull();
+    expect(await store.listSignals(taskId)).toHaveLength(0);
+    expect(done.awaiting_input_id).toBeNull();
+
+    // Результат — от движка (здесь движка нет), а не от человека.
+    const result = (await store.statusRow(taskId))?.result as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: true, answer: null, userAnswer: null, mode: 'no_engine' });
+
+    // Повторный submit — тот же экземпляр, второго прохода нет.
+    const second = await port.submit({ id: taskId, profileId: 'p', goal: 'one-shot без ожидания' });
+    expect(second.created).toBe(false);
+    expect(second.instanceCreated).toBe(false);
+    expect((await store.history(taskId)).filter((e) => e.task_item_id === 'prepare')).toHaveLength(1);
   }, 60_000);
 });

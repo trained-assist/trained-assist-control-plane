@@ -27,7 +27,7 @@ const setup = () => {
 };
 
 const submitAndPark = async (store: TaskStore, port: CfWorkflowPort, taskId = nextId('p05')) => {
-  const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'P05/P06' });
+  const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'P05/P06', awaitingPurpose: 'missing_fact' as const });
   await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
   return submit;
 };
@@ -107,7 +107,7 @@ describe('P05: поток событий с курсором (C02)', () => {
   it('queued/starting/running/terminal различимы по status+stage+attempt', async () => {
     const { store, port } = setup();
     const taskId = nextId('phases');
-    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'фазы' });
+    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'фазы', awaitingPurpose: 'missing_fact' as const });
 
     // принята, ещё не запущена: active/queued
     let task = await store.requireTask(taskId);
@@ -167,9 +167,11 @@ describe('P05/P06: replay без rerun и отмена', () => {
 
     // Итог воспроизводится: результат и финальные события на месте.
     expect((await store.statusRow(taskId))?.result).toEqual({
-      answer: 'да',
       ok: true,
+      answer: null,
+      userAnswer: 'да',
       version: PLAN_VERSION,
+      mode: 'no_engine',
     });
     // Никакого rerun: одна попытка, одно событие старта.
     expect(all.filter((e) => e.kind === 'run_started')).toHaveLength(1);
@@ -196,9 +198,11 @@ describe('P05/P06: replay без rerun и отмена', () => {
       return row.status === 'done' ? row : null;
     });
     expect((await store.statusRow(taskId))?.result).toEqual({
-      answer: 'да',
       ok: true,
+      answer: null,
+      userAnswer: 'да',
       version: PLAN_VERSION,
+      mode: 'no_engine',
     });
     // Попытка завершена один раз, результат один.
     const run = await store.getRun(submit.runId!);
@@ -269,7 +273,7 @@ describe('P05/P06: replay без rerun и отмена', () => {
   it('resume после упавшего экземпляра: terminate не блокирует delete+create', async () => {
     const { store, port } = setup();
     const taskId = nextId('resume-errored');
-    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'упавший экземпляр' });
+    const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'упавший экземпляр', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     // Доводим экземпляр до errored: поднимаем поколение и будим сигналом —
@@ -293,9 +297,11 @@ describe('P05/P06: replay без rerun и отмена', () => {
       return row.status === 'done' ? row : null;
     });
     expect((await store.statusRow(taskId))?.result).toEqual({
-      answer: 'да',
       ok: true,
+      answer: null,
+      userAnswer: 'да',
       version: PLAN_VERSION,
+      mode: 'no_engine',
     });
   }, 60_000);
 

@@ -254,39 +254,75 @@ async function managedStep(ctx: StepCtx, store: TaskStore, p: PlanDeps, plan: Pl
   return { ok: stepOutcome === 'succeeded', reason: stepOutcome };
 }
 
-/** apply + finalize: общий хвост для обычного хода и для явного продолжения. */
-async function finishAfterAnswer(
+/**
+ * Итог одного прохода движка. `text` — конечный текст ответа движка (stdout,
+ * см. `engine-text.ts`), а НЕ ответ человека: подмена ответа пользователя
+ * текстом результата — тот самый разрыв, который нельзя скрывать за ok=true.
+ */
+export interface EngineRun {
+  ok: boolean;
+  text: string | null;
+  artifacts: string[];
+  persistence: string;
+  exitReason: string;
+  runId: string;
+  ownerGeneration: number;
+}
+
+/**
+ * Финализация одного прохода.
+ *
+ * `ok` определяется исходом движка (или отсутствием движка), а НЕ тем,
+ * ответил ли человек «да». Ответ человека сохраняется рядом
+ * (`userAnswer`) и не влияет на статус задачи.
+ */
+async function finalizeRun(
   ctx: StepCtx,
   store: TaskStore,
   p: PlanParams,
-  raw: unknown,
+  engine: EngineRun | null,
+  userAnswer: unknown,
 ): Promise<PlanOutcome> {
   const { taskId, generation } = p;
-  const answer = answerText(raw);
-
-  await ctx.step('apply', () =>
-    store.commit(taskId, generation, {
-      kind: 'step_done',
-      status: 'active',
-      stage: 'running',
-      step: 'apply',
-      payload: { used: answer, version: PLAN_VERSION },
-    }),
-  );
-
-  const result = { answer, ok: answer === 'да', version: PLAN_VERSION };
+  const ok = engine ? engine.ok : true;
+  const result = {
+    ok,
+    // Конечный текст движка. Без движка — null: «ответа нет» видно, а не
+    // выдаётся за пустую строку.
+    answer: engine ? engine.text : null,
+    userAnswer: answerText(userAnswer),
+    version: PLAN_VERSION,
+    ...(engine
+      ? {
+          mode: 'engine' as const,
+          runId: engine.runId,
+          ownerGeneration: engine.ownerGeneration,
+          attempt: 1,
+          artifacts: engine.artifacts,
+          persistence: engine.persistence,
+          exitReason: engine.exitReason,
+        }
+      : { mode: 'no_engine' as const }),
+  };
   await ctx.step('finalize', () =>
     store.commit(taskId, generation, {
-      status: 'done',
-      stage: 'finished',
+      status: ok ? 'done' : 'failed',
+      stage: ok ? 'finished' : undefined,
       step: 'finalize',
       result,
-      payload: { version: PLAN_VERSION },
+      payload: {
+        version: PLAN_VERSION,
+        runId: engine?.runId ?? null,
+        persistence: engine?.persistence ?? null,
+        exitReason: engine?.exitReason ?? null,
+        engineText: engine?.text ?? null,
+        userAnswer: result.userAnswer,
+      },
     }),
   );
-  if (p.runId) await store.finishRun(p.runId, 'success', { result });
+  if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', { result });
 
-  return { ok: true, answer };
+  return { ok, answer: result.answer };
 }
 
 export async function conversationPlan(
@@ -320,7 +356,7 @@ export async function conversationPlan(
   if (resumeAwaitingId) {
     const row = await store.getAwaiting(resumeAwaitingId);
     if (row?.status === 'answered' && row.answer_json !== null) {
-      return finishAfterAnswer(ctx, store, p, JSON.parse(row.answer_json));
+      return finalizeRun(ctx, store, p, null, JSON.parse(row.answer_json));
     }
     if (row?.status === 'open') {
       const waited = await waitForAnswer({
@@ -333,7 +369,7 @@ export async function conversationPlan(
         step: 'wait',
       });
       if (waited.answer === null) return handleWaitTimeout(store, p);
-      return finishAfterAnswer(ctx, store, p, waited.answer);
+      return finalizeRun(ctx, store, p, null, waited.answer);
     }
   }
 
@@ -460,41 +496,52 @@ export async function conversationPlan(
     );
   }
 
-  const awaitingInputId: string = await ctx.step('mark-awaiting', async () => {
-    try {
-      const opened = await store.openAwaiting({
-        taskId,
-        purpose: p.awaitingPurpose ?? 'missing_fact',
-        question: p.question ?? 'Продолжить работу? Ответьте на вопрос задачи.',
-        respondentScope: p.profileId,
+  // Ожидание человека открывается ТОЛЬКО по явному typed-запросу хоста
+  // (`awaitingPurpose` задан в params, а не угадан планом). Обычный one-shot
+  // запуск не требует ответа «да»: результат даёт движок. Нового цикла агента
+  // здесь нет — тот же шаг `mark-awaiting`, просто не безусловный.
+  const awaitingInputId: string | null = p.awaitingPurpose
+    ? await ctx.step('mark-awaiting', async () => {
+        try {
+          const opened = await store.openAwaiting({
+            taskId,
+            purpose: p.awaitingPurpose,
+            question: p.question ?? 'Продолжить работу? Ответьте на вопрос задачи.',
+            respondentScope: p.profileId,
         step: 'wait',
         generation,
         schema: p.awaitingOptions ? { options: p.awaitingOptions } : undefined,
         engineRefs: p.runId ? { sessionRef: `run:${p.runId}` } : null,
       });
-      return opened.awaitingInputId;
-    } catch (e) {
-      // Повтор шага: ожидание уже открыто — возвращаем прежний адрес ответа.
-      if (e instanceof AlreadyOpenAwaitingError) return e.awaitingInputId;
-      throw e;
-    }
-  });
+          return opened.awaitingInputId;
+        } catch (e) {
+          // Повтор шага: ожидание уже открыто — возвращаем прежний адрес ответа.
+          if (e instanceof AlreadyOpenAwaitingError) return e.awaitingInputId;
+          throw e;
+        }
+      })
+    : null;
 
   // Ожидание человека: истина — durable строка awaiting_inputs, движок только
   // будит. Ответ по явному адресу применяет host (API ответа).
-  const waited = await waitForAnswer({
-    store,
-    ctx,
-    taskId,
-    awaitingInputId,
-    pollSec: p.waitPollSec ?? 60,
-    timeoutSec: p.waitTimeoutSec ?? 24 * 3600,
-    step: 'wait',
-  });
-  if (waited.answer === null) return handleWaitTimeout(store, p);
+  let userAnswer: unknown = null;
+  if (awaitingInputId) {
+    const waited = await waitForAnswer({
+      store,
+      ctx,
+      taskId,
+      awaitingInputId,
+      pollSec: p.waitPollSec ?? 60,
+      timeoutSec: p.waitTimeoutSec ?? 24 * 3600,
+      step: 'wait',
+    });
+    if (waited.answer === null) return handleWaitTimeout(store, p);
+    userAnswer = waited.answer;
+  }
 
   // Настоящий Runner: читаем результат и события по курсору, финализируем
   // артефакты. connection_lost — неизвестный исход, не failed, без авто-rerun.
+  let engine: EngineRun | null = null;
   if (adapter && runnerRunId) {
     const outcome = await ctx.step('await-runner', () =>
       awaitRunnerResult(adapter, store, {
@@ -511,33 +558,19 @@ export async function conversationPlan(
       return { ok: false, reason: outcome.reason };
     }
     const runnerResult = outcome.result;
-    const answer = answerText(waited.answer);
-    const ok = runnerResult.outcome === 'succeeded';
-    const result = {
-      answer,
-      ok,
-      version: PLAN_VERSION,
-      runId: runnerResult.runId,
-      ownerGeneration: runnerResult.ownerGeneration,
-      attempt: 1,
+    engine = {
+      ok: runnerResult.outcome === 'succeeded',
+      // Конечный текст движка (stdout), а не ответ человека.
+      text: outcome.engineText ? outcome.engineText.text : runnerResult.text ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
       exitReason: runnerResult.exitReason,
+      runId: runnerResult.runId,
+      ownerGeneration: runnerResult.ownerGeneration,
     };
-    await ctx.step('finalize', () =>
-      store.commit(taskId, generation, {
-        status: ok ? 'done' : 'failed',
-        stage: ok ? 'finished' : undefined,
-        step: 'finalize',
-        result,
-        payload: { runId: runnerResult.runId, persistence: runnerResult.persistence, eventsRecorded: outcome.eventsRecorded },
-      }),
-    );
-    if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', { result });
-    return { ok, answer };
   }
 
-  return finishAfterAnswer(ctx, store, p, waited.answer);
+  return finalizeRun(ctx, store, p, engine, userAnswer);
 }
 
 export { isWaitTimeout };
