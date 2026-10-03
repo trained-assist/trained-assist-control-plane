@@ -11,6 +11,7 @@ import type {
   SignalSource,
   TaskStore,
 } from '../taskstore';
+import { isTerminalStatus } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
@@ -156,6 +157,31 @@ export class CfWorkflowPort implements WorkflowPortApi {
   async submit(input: SubmitInput): Promise<SubmitResult> {
     const { created, task } = await this.store.admitTask(input);
     const pilotRoute = parsePilotRoute(task.user_value);
+
+    // Повторный submit на терминальной задаче: тот же экземпляр, новой попытки
+    // и второго Run нет — возвращаем сохранённую квитанцию, а не ошибку.
+    // Иначе клиент, потерявший ответ после done, получал 500 вместо квитанции.
+    if (isTerminalStatus(task.status)) {
+      const runs = await this.store.listRuns(task.id);
+      logStructured({
+        event: 'submit.duplicate_terminal',
+        profileId: input.profileId,
+        userTaskId: task.id,
+        reason: 'task_already_terminal',
+        status: task.status,
+        runId: runs.at(-1)?.id ?? null,
+      });
+      return {
+        taskId: task.id,
+        instanceId: task.id,
+        created: false,
+        instanceCreated: false,
+        generation: task.generation,
+        runId: runs.at(-1)?.id ?? null,
+        pilotRoute: pilotRoute.route,
+        pilotReason: pilotRoute.reason,
+      };
+    }
 
     // Пилотный гейт: cohort — только новые задачи. Legacy-задачи не запускаются
     // на новом plane вообще; возвращаем маршрут, чтобы вызывающий знал.

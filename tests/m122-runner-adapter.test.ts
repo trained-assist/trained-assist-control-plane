@@ -55,7 +55,10 @@ const makeFakeRunner = (
         events: [
           { type: 'claimed', sequence: 1, payload: { operationId: 'op-1' } },
           { type: 'started', sequence: 2 },
-          { type: 'log', sequence: 3, payload: { text: 'работаю' } },
+          // Конечный текст движка живёт только в событиях log/stdout (контракт
+          // Runner'а не имеет поля с текстом ответа) — см. engine-text.ts.
+          { type: 'log', sequence: 3, payload: { stream: 'stdout', level: 'info', message: 'работаю' } },
+          { type: 'log', sequence: 4, payload: { stream: 'stdout', level: 'info', message: 'Готово: отчёт собран.' } },
         ],
         result: {
           outcome: 'succeeded',
@@ -288,16 +291,16 @@ describe('Runner adapter: результат, курсор событий, ар�
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.result.outcome).toBe('succeeded');
-    expect(outcome.eventsRecorded).toBe(3);
+    expect(outcome.eventsRecorded).toBe(4);
 
     // События Runner записаны в журнал с курсором и оригинальным типом.
     const events = await store.history(taskId);
     const runnerEvents = events.filter((e) => e.execution_id === receipt.runId);
-    expect(runnerEvents.length).toBe(3);
+    expect(runnerEvents.length).toBe(4);
     const payloads = runnerEvents.map((e) => JSON.parse(e.payload_json));
-    expect(payloads.map((p) => p.type)).toEqual(['claimed', 'started', 'log']);
+    expect(payloads.map((p) => p.type)).toEqual(['claimed', 'started', 'log', 'log']);
     expect(payloads[0].sequence).toBe(1);
-    expect(payloads[2].eventId).toBeTruthy();
+    expect(payloads[3].eventId).toBeTruthy();
 
     // Артефакты: ссылки на выходы Runner'а.
     const artifacts = await store.listArtifacts(taskId);

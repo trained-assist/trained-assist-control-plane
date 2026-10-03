@@ -48,11 +48,11 @@ describe('Шаг 5: purpose -> kind (маппинг, без второго на�
   it('ожидание хранит purpose и производный kind; варианты со стабильными option ID (#115)', async () => {
     const { store, port } = setup();
     const taskId = nextId('purpose');
-    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'выбор проекта' });
+    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'выбор проекта', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting', async () => store.getOpenAwaiting(taskId));
 
     const open = (await store.getOpenAwaiting(taskId))!;
-    // По умолчанию план спрашивает факт (missing_fact -> data).
+    // План спрашивает факт только по typed-запросу хоста (missing_fact -> data).
     expect(open.purpose).toBe('missing_fact');
     expect(open.kind).toBe('data');
 
@@ -84,7 +84,7 @@ describe('Шаг 5: ответ по явному awaitingInputId с дедупо
   const parked = async () => {
     const { store, port } = setup();
     const taskId = nextId('answer');
-    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'дождись ответа' });
+    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'дождись ответа', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting', async () => store.getOpenAwaiting(taskId));
     const awaiting = (await store.getOpenAwaiting(taskId))!;
     return { store, port, taskId, awaiting };
@@ -160,7 +160,7 @@ describe('Шаг 5: ожидание переживает смерть движ�
   it('смерть движка после регистрации wait: ответ переживает, продолжение ЯВНОЕ', async () => {
     const { store, port } = setup();
     const taskId = nextId('death');
-    const submit = await port.submit({ id: taskId, profileId: 'profile-1', goal: 'умри во время ожидания' });
+    const submit = await port.submit({ id: taskId, profileId: 'profile-1', goal: 'умри во время ожидания', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting', async () => store.getOpenAwaiting(taskId));
     const awaiting = (await store.getOpenAwaiting(taskId))!;
 
@@ -206,7 +206,7 @@ describe('Шаг 5: ожидание переживает смерть движ�
     expect(awaitingOpened).toHaveLength(1);
 
     const result = await store.statusRow(taskId);
-    expect(result?.result).toEqual({ answer: 'да', ok: true, version: PLAN_VERSION });
+    expect(result?.result).toEqual({ ok: true, answer: null, userAnswer: 'да', version: PLAN_VERSION, mode: 'no_engine' });
     const runs = await store.listRuns(taskId);
     expect(runs).toHaveLength(2);
     expect(runs.find((r) => r.id === submit.runId)?.status).toBe('running');
@@ -220,6 +220,7 @@ describe('Шаг 5: ожидание переживает смерть движ�
       id: taskId,
       profileId: 'profile-1',
       goal: 'ответ без события',
+      awaitingPurpose: 'missing_fact' as const,
       waitPollSec: 1,
     });
     await pollUntil('awaiting', async () => store.getOpenAwaiting(taskId));
@@ -239,9 +240,11 @@ describe('Шаг 5: ожидание переживает смерть движ�
       return row.status === 'done' ? row : null;
     });
     expect((await store.statusRow(taskId))?.result).toEqual({
-      answer: 'да',
       ok: true,
+      answer: null,
+      userAnswer: 'да',
       version: PLAN_VERSION,
+      mode: 'no_engine',
     });
     expect(resumed.runId).not.toBe(submit.runId);
   }, 90_000);
@@ -249,7 +252,7 @@ describe('Шаг 5: ожидание переживает смерть движ�
   it('ранний ответ (сразу после открытия wait) не ждёт движок', async () => {
     const { store, port } = setup();
     const taskId = nextId('early');
-    const submit = await port.submit({ id: taskId, profileId: 'profile-1', goal: 'ранний ответ' });
+    const submit = await port.submit({ id: taskId, profileId: 'profile-1', goal: 'ранний ответ', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting', async () => store.getOpenAwaiting(taskId));
     const awaiting = (await store.getOpenAwaiting(taskId))!;
 
@@ -276,7 +279,7 @@ describe('Шаг 5: доступные данные продолжения', () 
   it('availableContinuationData перечисляет ожидание, артефакты и результат', async () => {
     const { store, port } = setup();
     const taskId = nextId('available');
-    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'доступные данные' });
+    await port.submit({ id: taskId, profileId: 'profile-1', goal: 'доступные данные', awaitingPurpose: 'missing_fact' as const });
     await pollUntil('awaiting', async () => store.getOpenAwaiting(taskId));
 
     await store.recordArtifact({

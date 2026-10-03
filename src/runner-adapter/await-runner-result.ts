@@ -14,7 +14,8 @@
  *    (`persistence != 'persisted'`) — задача не завершается успехом молча.
  */
 import type { TaskStore, TaskEventKind } from '../taskstore';
-import type { RunnerApiAdapter, RunnerResult, RunnerStatusView } from './runner-api-adapter';
+import type { RunnerApiAdapter, RunnerEvent, RunnerResult, RunnerStatusView } from './runner-api-adapter';
+import { extractEngineText, type EngineText } from './engine-text';
 
 export interface AwaitRunnerResultOptions {
   runId: string;
@@ -25,7 +26,7 @@ export interface AwaitRunnerResultOptions {
 }
 
 export type AwaitRunnerResult =
-  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: string[] }
+  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: string[]; engineText: EngineText | null }
   | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
@@ -85,9 +86,11 @@ async function finalize(
   // События по курсору: читаем с нуля, записываем в журнал с курсором в payload.
   let cursor = 0;
   let eventsRecorded = 0;
+  const seenEvents: RunnerEvent[] = [];
   for (;;) {
     const page = await adapter.events(opts.runId, cursor, 500);
     for (const event of page.events) {
+      seenEvents.push(event);
       await store.logEvent({
         taskId: opts.taskId,
         kind: RUNNER_EVENT_KIND[event.type] ?? 'progress',
@@ -168,5 +171,9 @@ async function finalize(
     return { ok: false, reason: 'runner_failed' };
   }
 
-  return { ok: true, result, eventsRecorded, artifacts: artifactRefs };
+  // Конечный текст движка — из потока событий, а не из поля результата: в
+  // контракте Runner'а текста нет. Отсутствие текста не прячется за ok=true —
+  // вызывающий видит `engineText: null` и решает сам.
+  const engineText = extractEngineText(seenEvents);
+  return { ok: true, result, eventsRecorded, artifacts: artifactRefs, engineText };
 }
