@@ -67,6 +67,14 @@ export interface ManagedGtdContext {
   stepOutcome: GtdStepOutcome;
 }
 
+
+/** Один шаг сценария synthetic provider'а (песочница I07). */
+export interface SyntheticStep {
+  stepOutcome: GtdStepOutcome;
+  criteria?: Record<string, unknown> | null;
+  conditionRef?: string | null;
+}
+
 /** Сырой ввод регистрации на контроль (явный opt-in). */
 export interface RegisterGtdInput {
   /** Ключ идемпотентности регистрации; scope = (profileId, requestId). */
@@ -83,6 +91,12 @@ export interface RegisterGtdInput {
   nextCheckAt?: number;
   /** Кто контролирует эту запись. Не поддерживается: самоконтроль запрещён. */
   supervisedByGtdId?: string | null;
+  /**
+   * Сценарий synthetic provider'а песочницы I07: по одной записи на каждое
+   * продолжение. В проде исход шага приходит от Runner'а (M1.3) — сценарий
+   * остаётся пустым и не используется.
+   */
+  syntheticSteps?: SyntheticStep[] | null;
 }
 
 export interface GtdRecordRow {
@@ -102,6 +116,7 @@ export interface GtdRecordRow {
   attempts: number;
   current_step_id: string | null;
   control_generation: number;
+  synthetic_steps_json: string | null;
   supervised_by_gtd_id: string | null;
   last_outcome: string | null;
   created_at: number;

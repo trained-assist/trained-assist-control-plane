@@ -9,8 +9,8 @@ import type { GtdConditionRow, GtdOutcomeRow, GtdProgressionRow, GtdRecordRow } 
 
 const RECORD_COLUMNS = `gtd_id, profile_id, user_task_id, registration_reason, criteria_json,
     continuation_owner, state, stop_reason, next_trigger_kind, next_trigger_ref, next_check_at,
-    deadline_at, max_attempts, attempts, current_step_id, control_generation, supervised_by_gtd_id,
-    last_outcome, created_at, updated_at, revision`;
+    deadline_at, max_attempts, attempts, current_step_id, control_generation, synthetic_steps_json,
+    supervised_by_gtd_id, last_outcome, created_at, updated_at, revision`;
 
 const OUTCOME_COLUMNS = `outcome_id, gtd_id, profile_id, user_task_id, run_id, step_id, outcome,
     detail_json, event_id, idempotency_key, state, reason, attempt, created_at, updated_at, acked_at`;
@@ -28,7 +28,7 @@ export class GtdStore {
   async insertRecord(r: GtdRecordRow): Promise<boolean> {
     const res = await this.db
       .prepare(
-        `INSERT INTO gtd_records(${RECORD_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `INSERT INTO gtd_records(${RECORD_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(gtd_id) DO NOTHING`,
       )
       .bind(
@@ -48,6 +48,7 @@ export class GtdStore {
         r.attempts,
         r.current_step_id,
         r.control_generation,
+        r.synthetic_steps_json,
         r.supervised_by_gtd_id,
         r.last_outcome,
         r.created_at,

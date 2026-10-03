@@ -29,15 +29,16 @@
  * Решения детерминированы: критерии проверяются по структурированному
  * свидетельству исхода, LLM в цикл контроля не входит.
  */
+import { isTerminalStatus, type TaskStore } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import { systemClock, type Clock } from '../schedule/virtual-clock';
-import type { TaskStore } from '../taskstore';
 import type { WorkflowPortApi } from '../workflow-port/workflow-port';
 import {
   GTD_OPEN_STATES,
   deriveGtdId,
   evaluateCriteria,
   parseCriteria,
+  type SyntheticStep,
   type GtdCriterion,
   type GtdDecision,
   type GtdOutcomeRow,
@@ -68,6 +69,8 @@ export interface GtdContinuationRequest {
   stepOutcome: GtdStepOutcome;
   /** Свидетельство по критериям следующего шага ({criterionId: true}). */
   criteria?: Record<string, unknown> | null;
+  /** Ссылка на внешнее условие, если следующий шаг ждёт гейт/CI. */
+  conditionRef?: string | null;
 }
 
 export interface GtdContinuationResult {
@@ -90,6 +93,7 @@ export function portResumeIssuer(port: WorkflowPortApi): GtdContinuationIssuer {
       instructions: req.instructions ?? undefined,
       gtd: { gtdId: req.gtdId, stepId: req.stepId, attempt: req.attempt, stepOutcome: req.stepOutcome },
       criteria: req.criteria ?? null,
+      conditionRef: req.conditionRef ?? null,
     });
     return { runId, generation, created: true };
   };
@@ -125,6 +129,8 @@ export interface AckItemReport {
   attempt: number;
   decision: GtdDecision;
   reason: string;
+  triggerKind?: GtdTriggerKind | null;
+  triggerRef?: string | null;
   continuationRunId: string | null;
   deferred: boolean;
 }
@@ -208,6 +214,10 @@ export class GtdService {
     const task = await this.tasks.getTask(input.userTaskId);
     if (!task) throw new GtdUnknownRecordError(input.userTaskId);
     if (task.profile_id !== input.profileId) throw new GtdOutcomeScopeError(input.userTaskId, input.profileId, task.profile_id);
+    // Закрытую задачу на контроль не берём: контроль — про будущие шаги.
+    if (isTerminalStatus(task.status)) {
+      throw new GtdAlreadyRegisteredError(input.userTaskId, 'task_terminal');
+    }
 
     const gtdId = await deriveGtdId(input.profileId, input.userTaskId);
     const record: GtdRecordRow = {
@@ -227,6 +237,7 @@ export class GtdService {
       attempts: 0,
       current_step_id: stepIdForAttempt(1),
       control_generation: 1,
+      synthetic_steps_json: input.syntheticSteps ? JSON.stringify(input.syntheticSteps) : null,
       supervised_by_gtd_id: null,
       last_outcome: null,
       created_at: now,
@@ -412,6 +423,25 @@ export class GtdService {
     return { outcomeId, accepted: true, duplicate: false, state: 'pending', reason: null };
   }
 
+  /**
+   * Шаг сценария synthetic provider'а для очередного продолжения (песочница
+   * I07). Индекс — по числу уже выданных продолжений: первое продолжение
+   * берёт первую запись сценария. В проде сценарий пуст, и исход шага приходит
+   * от Runner'а (M1.3) — тогда запись отсутствует и работает обычный путь.
+   */
+  private syntheticStepFor(record: GtdRecordRow): SyntheticStep | null {
+    if (!record.synthetic_steps_json) return null;
+    let script: SyntheticStep[];
+    try {
+      const parsed = JSON.parse(record.synthetic_steps_json) as unknown;
+      script = Array.isArray(parsed) ? (parsed as SyntheticStep[]) : [];
+    } catch {
+      return null;
+    }
+    const index = Math.max(0, record.attempts - 1);
+    return script[index] ?? null;
+  }
+
   // ------------------------------------------------------- ACK и прогрессия
 
   /**
@@ -474,7 +504,7 @@ export class GtdService {
         recordState: record.state,
         stopReason: record.stop_reason,
       });
-      return { ...base, decision: 'reject', reason: 'control_record_closed' };
+      return { ...base, decision: 'reject', reason: 'control_record_closed', triggerKind: null, triggerRef: null };
     }
 
     const detail = outcome.detail_json ? (JSON.parse(outcome.detail_json) as Record<string, unknown>) : {};
@@ -495,7 +525,7 @@ export class GtdService {
           stepId: outcome.step_id,
           reason: 'active_run_in_progress',
         });
-        return { ...base, decision: 'wait', reason: 'active_run_in_progress', deferred: true };
+        return { ...base, decision: 'wait', reason: 'active_run_in_progress', triggerKind: null, triggerRef: null, deferred: true };
       }
     }
 
@@ -541,12 +571,15 @@ export class GtdService {
         ...base,
         decision: (existing?.decision ?? 'reject') as GtdDecision,
         reason: 'progression_already_recorded',
+        triggerKind: existing?.trigger_kind ?? null,
+        triggerRef: existing?.trigger_ref ?? null,
         continuationRunId: existing?.continuation_run_id ?? null,
       };
     }
 
     let continuationRunId: string | null = null;
     if (plan.decision === 'continue') {
+      const synthetic = this.syntheticStepFor(record);
       const issued = await this.issuer({
         gtdId: record.gtd_id,
         userTaskId: outcome.user_task_id,
@@ -555,7 +588,9 @@ export class GtdService {
         attempt: nextAttempt,
         reason: plan.reason,
         instructions: `Продолжение контроля ${record.gtd_id}: ${plan.reason}`,
-        stepOutcome: (detail.nextStepOutcome as GtdStepOutcome) ?? 'succeeded',
+        stepOutcome: synthetic?.stepOutcome ?? (detail.nextStepOutcome as GtdStepOutcome) ?? 'succeeded',
+        criteria: synthetic?.criteria ?? null,
+        conditionRef: synthetic?.conditionRef ?? null,
       });
       continuationRunId = issued.runId;
       await this.store.setProgressionRun(progressionId, continuationRunId);
@@ -637,7 +672,14 @@ export class GtdService {
       recordState: plan.decision === 'continue' ? 'active' : plan.decision === 'wait' ? (plan.triggerKind === 'input' ? 'awaiting_user' : 'waiting_condition') : plan.decision,
       ack: true,
     });
-    return { ...base, decision: plan.decision, reason: plan.reason, continuationRunId };
+    return {
+      ...base,
+      decision: plan.decision,
+      reason: plan.reason,
+      triggerKind: plan.triggerKind ?? null,
+      triggerRef: plan.triggerRef ?? null,
+      continuationRunId,
+    };
   }
 
   /** Детерминированное решение по исходу: без LLM, по структурированным фактам. */
@@ -859,6 +901,7 @@ export class GtdService {
       created_at: now,
     });
     if (!inserted) return;
+    const synthetic = this.syntheticStepFor(record);
     const issued = await this.issuer({
       gtdId: record.gtd_id,
       userTaskId: record.user_task_id,
@@ -867,7 +910,9 @@ export class GtdService {
       attempt: planAttempt,
       reason,
       instructions: `Продолжение контроля ${record.gtd_id}: ${reason}`,
-      stepOutcome: 'succeeded',
+      stepOutcome: synthetic?.stepOutcome ?? 'succeeded',
+      criteria: synthetic?.criteria ?? null,
+      conditionRef: synthetic?.conditionRef ?? null,
     });
     await this.store.setProgressionRun(progressionId, issued.runId);
     await this.store.updateRecord(
@@ -1005,6 +1050,15 @@ export class GtdService {
       reason: 'external_condition',
     });
     return { condition: { conditionRef, conclusion: input.conclusion }, created };
+  }
+
+  /**
+   * Карантированный исход по ключу идемпотентности: managed outcome с
+   * неизвестным gtdId не теряется и не превращается в тихий output-owned
+   * recovery (§5a) — он остаётся видимым с явной причиной.
+   */
+  async quarantinedOutcome(gtdId: string, idempotencyKey: string): Promise<GtdOutcomeRow | null> {
+    return this.store.outcomeByIdempotencyKey(gtdId, idempotencyKey);
   }
 
   async get(gtdId: string) {

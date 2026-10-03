@@ -24,7 +24,14 @@ import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
 import { ScheduleService, ScheduleStore, VirtualClock, portSubmitter, systemClock, type Clock } from './schedule';
-import { GtdError, GtdService, GtdStore, type GtdStepOutcome, type ManagedGtdContext } from './gtd';
+import {
+  GtdError,
+  GtdService,
+  GtdStore,
+  GtdUnknownRecordError,
+  type GtdStepOutcome,
+  type ManagedGtdContext,
+} from './gtd';
 
 export interface Env {
   DB: D1Database;
@@ -170,6 +177,16 @@ async function handleGtdRoute(
       maxAttempts: body.maxAttempts === undefined ? undefined : Number(body.maxAttempts),
       nextCheckAt: body.nextCheckAt === undefined ? undefined : Number(body.nextCheckAt),
       supervisedByGtdId: (body.supervisedByGtdId as string | undefined) ?? null,
+      syntheticSteps: Array.isArray(body.syntheticSteps)
+        ? (body.syntheticSteps as Record<string, unknown>[]).map((raw) => {
+            const s = raw ?? {};
+            return {
+              stepOutcome: String(s.stepOutcome ?? 'succeeded') as GtdStepOutcome,
+              criteria: (s.criteria as Record<string, unknown> | undefined) ?? null,
+              conditionRef: (s.conditionRef as string | undefined) ?? null,
+            };
+          })
+        : null,
     });
     return json(
       { gtdId: result.record.gtd_id, state: result.record.state, created: result.created, continuationOwner: result.record.continuation_owner, record: result.record, criteria: result.record.criteria_json ? JSON.parse(result.record.criteria_json) : [] },
@@ -212,7 +229,7 @@ async function handleGtdRoute(
     if (!record) {
       // Contract error: неизвестный gtdId — карантин и явный статус, НЕ тихий
       // переход к output-owned recovery (§5a).
-      const result = await service.reportOutcome({
+      const input = {
         gtdId,
         userTaskId: String(body.userTaskId ?? ''),
         runId: (body.runId as string | undefined) ?? null,
@@ -220,8 +237,24 @@ async function handleGtdRoute(
         outcome: String(body.outcome ?? 'failed') as GtdStepOutcome,
         detail: (body.detail as Record<string, unknown> | undefined) ?? null,
         idempotencyKey: String(body.idempotencyKey ?? `api:${crypto.randomUUID()}`),
-      });
-      return json(result);
+      };
+      try {
+        return json(await service.reportOutcome(input));
+      } catch (e) {
+        if (e instanceof GtdUnknownRecordError) {
+          const quarantined = await service.quarantinedOutcome(input.gtdId, input.idempotencyKey);
+          return json(
+            {
+              state: quarantined?.state ?? 'quarantined',
+              reason: quarantined?.reason ?? 'unknown_control_record',
+              reconciliationRequired: true,
+              continuationOwner: 'gtd',
+            },
+            409,
+          );
+        }
+        throw e;
+      }
     }
     requirePermission(principal, record.record.profile_id, 'tasks:signal');
     const result = await service.reportOutcome({
@@ -698,6 +731,7 @@ const store = new TaskStore(env.DB);
             waitTimeoutSec: body.waitTimeoutSec as number | undefined,
             crashRunOnce: body.crashRunOnce as boolean | undefined,
             runnerEngine: body.runnerEngine as string | undefined,
+            autoRun: body.autoRun as boolean | undefined,
             gtd: managed,
             criteria: (body.criteria as Record<string, unknown> | undefined) ?? null,
             conditionRef: (body.conditionRef as string | undefined) ?? null,

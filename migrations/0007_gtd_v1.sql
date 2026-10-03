@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS gtd_records (
     -- Шаг, который ждёт результата: стабилен между попытками (§11).
     current_step_id       TEXT,
     control_generation    INTEGER NOT NULL DEFAULT 1,
+    -- Сценарий synthetic provider'а песочницы I07: что выдадут следующие шаги
+    -- (outcome/criteria/conditionRef по одной записи на продолжение). В проде
+    -- исход шага приходит от Runner'а (M1.3), сценарий не используется.
+    synthetic_steps_json TEXT,
     -- Кто контролирует эту запись. NULL = регистрация от пользователя/хоста.
     -- Любое не-NULL значение отклоняется сервисом: самоконтроль запрещён.
     supervised_by_gtd_id  TEXT,
