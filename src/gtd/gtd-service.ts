@@ -66,6 +66,8 @@ export interface GtdContinuationRequest {
   instructions: string | null;
   /** Синтетический провайдер песочницы I07: что выдаст следующий шаг. */
   stepOutcome: GtdStepOutcome;
+  /** Свидетельство по критериям следующего шага ({criterionId: true}). */
+  criteria?: Record<string, unknown> | null;
 }
 
 export interface GtdContinuationResult {
@@ -87,6 +89,7 @@ export function portResumeIssuer(port: WorkflowPortApi): GtdContinuationIssuer {
       reason: `gtd_continuation:${req.reason}`,
       instructions: req.instructions ?? undefined,
       gtd: { gtdId: req.gtdId, stepId: req.stepId, attempt: req.attempt, stepOutcome: req.stepOutcome },
+      criteria: req.criteria ?? null,
     });
     return { runId, generation, created: true };
   };
@@ -450,6 +453,7 @@ export class GtdService {
     const base = {
       outcomeId: outcome.outcome_id,
       stepId: outcome.step_id,
+      // Номер решения по этому исходу (он же — номер попытки плана).
       attempt: record.attempts + 1,
       continuationRunId: null,
       deferred: false,
@@ -495,14 +499,18 @@ export class GtdService {
       }
     }
 
-    const nextAttempt = record.attempts + 1;
+    // Номер решения по этому исходу и номер следующего шага. Решение N+1
+    // относится к исходу шага N, поэтому продолжение — это уже шаг N+1: номера
+    // шагов и попыток не наезжают друг на друга (важно для UNIQUE в схеме).
+    const decisionAttempt = record.attempts + 1;
+    const nextAttempt = decisionAttempt + 1;
     const nextStepId = stepIdForAttempt(nextAttempt);
-    const progressionId = `gtd-pro-${await sha(`${record.gtd_id} ${outcome.step_id} ${nextAttempt}`)}`;
+    const progressionId = `gtd-pro-${await sha(`${record.gtd_id} ${outcome.step_id} ${decisionAttempt}`)}`;
     const inserted = await this.store.insertProgression({
       progression_id: progressionId,
       gtd_id: record.gtd_id,
       user_task_id: outcome.user_task_id,
-      attempt: nextAttempt,
+      attempt: decisionAttempt,
       step_id: outcome.step_id,
       decision: plan.decision,
       reason: plan.reason,
@@ -515,7 +523,7 @@ export class GtdService {
     if (!inserted) {
       // Решение для этого шага и попытки уже есть — второго продолжения нет.
       const existing = (await this.store.listProgressions(record.gtd_id)).find(
-        (p) => p.step_id === outcome.step_id && p.attempt === nextAttempt,
+        (p) => p.step_id === outcome.step_id && p.attempt === decisionAttempt,
       );
       logStructured({
         event: 'gtd.decision.deduplicated',
@@ -524,7 +532,7 @@ export class GtdService {
         gtdId: record.gtd_id,
         outcomeId: outcome.outcome_id,
         stepId: outcome.step_id,
-        attempt: nextAttempt,
+        attempt: decisionAttempt,
         reason: 'progression_already_recorded',
         decision: existing?.decision ?? null,
         continuationRunId: existing?.continuation_run_id ?? null,
@@ -550,18 +558,19 @@ export class GtdService {
         stepOutcome: (detail.nextStepOutcome as GtdStepOutcome) ?? 'succeeded',
       });
       continuationRunId = issued.runId;
+      await this.store.setProgressionRun(progressionId, continuationRunId);
     }
 
     await this.store.ackOutcome(
       outcome.outcome_id,
-      { state: plan.decision === 'continue' ? 'acked' : 'acked', reason: plan.reason, attempt: nextAttempt },
+      { state: 'acked', reason: plan.reason, attempt: decisionAttempt },
       now,
     );
 
     if (plan.decision === 'continue') {
       await this.store.updateRecord(
         record.gtd_id,
-        { state: 'active', attempts: nextAttempt, current_step_id: nextStepId, next_trigger_kind: 'timer', next_check_at: now, last_outcome: outcome.outcome },
+        { state: 'active', attempts: decisionAttempt, current_step_id: nextStepId, next_trigger_kind: 'timer', next_check_at: now, last_outcome: outcome.outcome },
         now,
       );
     } else if (plan.decision === 'wait') {
@@ -569,7 +578,7 @@ export class GtdService {
         record.gtd_id,
         {
           state: plan.triggerKind === 'input' ? 'awaiting_user' : 'waiting_condition',
-          attempts: nextAttempt,
+          attempts: decisionAttempt,
           current_step_id: nextStepId,
           next_trigger_kind: plan.triggerKind ?? null,
           next_trigger_ref: plan.triggerRef ?? null,
@@ -579,7 +588,7 @@ export class GtdService {
         now,
       );
     } else if (plan.decision === 'complete') {
-      await this.store.updateRecord(record.gtd_id, { state: 'completed', attempts: nextAttempt, last_outcome: outcome.outcome }, now);
+      await this.store.updateRecord(record.gtd_id, { state: 'completed', attempts: decisionAttempt, last_outcome: outcome.outcome }, now);
       await this.closeTask(outcome.user_task_id, 'done', {
         ok: true,
         gtdId: record.gtd_id,
@@ -587,13 +596,13 @@ export class GtdService {
         completedBy: 'gtd',
         criteria: plan.criteria?.satisfied ?? [],
         stepId: outcome.step_id,
-        attempt: nextAttempt,
+        attempt: decisionAttempt,
         reason: plan.reason,
       });
     } else {
       await this.store.updateRecord(
         record.gtd_id,
-        { state: 'stopped', stop_reason: plan.reason, attempts: nextAttempt, last_outcome: outcome.outcome },
+        { state: 'stopped', stop_reason: plan.reason, attempts: decisionAttempt, last_outcome: outcome.outcome },
         now,
       );
       await this.closeTask(outcome.user_task_id, 'blocked', {
@@ -603,7 +612,7 @@ export class GtdService {
         stoppedBy: 'gtd',
         stopReason: plan.reason,
         stepId: outcome.step_id,
-        attempt: nextAttempt,
+        attempt: decisionAttempt,
         criteria: plan.criteria?.missing ?? [],
       });
     }
@@ -616,7 +625,7 @@ export class GtdService {
       gtdId: record.gtd_id,
       outcomeId: outcome.outcome_id,
       stepId: outcome.step_id,
-      attempt: nextAttempt,
+      attempt: decisionAttempt,
       decision: plan.decision,
       reason: plan.reason,
       continuationOwner: 'gtd',
@@ -827,15 +836,20 @@ export class GtdService {
   }
 
   private async continueAfterWait(record: GtdRecordRow, reason: string, now: number): Promise<void> {
-    const nextAttempt = record.attempts + 1;
-    const nextStepId = stepIdForAttempt(nextAttempt);
-    const progressionId = `gtd-pro-${await sha(`${record.gtd_id} ${record.current_step_id ?? 'step-0'} ${nextAttempt}`)}`;
+    // Решение по событию (ответ/условие/таймер) относится к шагу, который ждал
+    // (current_step_id), и к счётчику решений на момент события. Решение по
+    // ИСХОДУ этого шага получит следующий номер — поэтому UNIQUE(gtd_id, step_id,
+    // attempt) в схеме не даёт ни одному шагу двух разных продолжений.
+    const stepId = record.current_step_id ?? stepIdForAttempt(record.attempts + 1);
+    const attempt = record.attempts;
+    const planAttempt = attempt + 1;
+    const progressionId = `gtd-pro-${await sha(`${record.gtd_id} ${stepId} ${attempt}`)}`;
     const inserted = await this.store.insertProgression({
       progression_id: progressionId,
       gtd_id: record.gtd_id,
       user_task_id: record.user_task_id,
-      attempt: nextAttempt,
-      step_id: record.current_step_id ?? 'step-0',
+      attempt,
+      step_id: stepId,
       decision: 'continue',
       reason,
       trigger_kind: record.next_trigger_kind,
@@ -849,15 +863,16 @@ export class GtdService {
       gtdId: record.gtd_id,
       userTaskId: record.user_task_id,
       profileId: record.profile_id,
-      stepId: nextStepId,
-      attempt: nextAttempt,
+      stepId,
+      attempt: planAttempt,
       reason,
       instructions: `Продолжение контроля ${record.gtd_id}: ${reason}`,
       stepOutcome: 'succeeded',
     });
+    await this.store.setProgressionRun(progressionId, issued.runId);
     await this.store.updateRecord(
       record.gtd_id,
-      { state: 'active', attempts: nextAttempt, current_step_id: nextStepId, next_trigger_kind: 'timer', next_check_at: now, stop_reason: null },
+      { state: 'active', attempts: attempt, current_step_id: stepId, next_trigger_kind: 'timer', next_check_at: now, stop_reason: null },
       now,
     );
     logStructured({
@@ -865,8 +880,8 @@ export class GtdService {
       profileId: record.profile_id,
       userTaskId: record.user_task_id,
       gtdId: record.gtd_id,
-      stepId: nextStepId,
-      attempt: nextAttempt,
+      stepId,
+      attempt,
       decision: 'continue',
       reason,
       continuationOwner: 'gtd',

@@ -130,6 +130,11 @@ export interface WorkflowPortApi {
       awaitingOptions?: { id: string; label: string }[] | null;
       runnerPollSec?: number;
       runnerTimeoutSec?: number;
+      /** Свидетельство по критериям завершения управляемой работы ({criterionId: true}). */
+      criteria?: Record<string, unknown> | null;
+      /** Ссылка на внешнее условие (synthetic CI provider I07). */
+      conditionRef?: string | null;
+      /** Управляемая работа (P23): контекст контроля для продолжения. */
       gtd?: ManagedGtdContext | null;
     },
   ): Promise<{ runId: string; generation: number }>;
@@ -374,6 +379,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
       awaitingOptions?: { id: string; label: string }[] | null;
       runnerPollSec?: number;
       runnerTimeoutSec?: number;
+      /** Свидетельство по критериям завершения управляемой работы ({criterionId: true}). */
+      criteria?: Record<string, unknown> | null;
+      /** Ссылка на внешнее условие (synthetic CI provider I07). */
+      conditionRef?: string | null;
       /** Управляемая работа (P23): контекст контроля для продолжения. */
       gtd?: ManagedGtdContext | null;
     } = {},
@@ -422,6 +431,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
         awaitingInputId: available.lastAwaitingInputId,
         awaitingPurpose: opts.awaitingPurpose ?? available.awaitingPurpose ?? null,
         awaitingOptions: opts.awaitingOptions ?? null,
+        criteria: opts.criteria ?? null,
+        conditionRef: opts.conditionRef ?? null,
         gtd: opts.gtd ?? null,
         question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
         goal: task.goal,

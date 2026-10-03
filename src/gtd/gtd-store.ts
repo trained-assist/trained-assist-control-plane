@@ -239,6 +239,14 @@ export class GtdStore {
     return res.results;
   }
 
+  /** Привязка выданного продолжения к решению: видно, какой Run выдал GTD. */
+  async setProgressionRun(progressionId: string, continuationRunId: string | null): Promise<void> {
+    await this.db
+      .prepare(`UPDATE gtd_progressions SET continuation_run_id = ? WHERE progression_id = ?`)
+      .bind(continuationRunId, progressionId)
+      .run();
+  }
+
   // --------------------------------------------------------------- условия
 
   async insertCondition(c: GtdConditionRow): Promise<boolean> {
