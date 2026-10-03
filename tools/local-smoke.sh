@@ -100,7 +100,7 @@ import json, sys
 d = json.load(sys.stdin)
 t = d["taskStore"]
 assert t["status"] == "done", t
-assert t["result"] == {"answer": "да", "ok": True, "version": "m1-conversation-v1"}, t["result"]
+assert t["result"] == {"answer": "да", "ok": True, "version": "m1-conversation-v2"}, t["result"]
 kinds = [e["kind"] for e in t["history"]]
 order = ["task_accepted", "run_started", "awaiting_opened", "signal_received",
          "step_woken", "awaiting_answered", "task_status_changed"]

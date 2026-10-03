@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { NonRetryableError } from 'cloudflare:workflows';
 import { FencedError, TaskNotFoundError, TaskStore, TerminalStateError } from './taskstore';
 import type { AdmissionScope, AwaitingKind, AwaitingPurpose, TaskRow } from './taskstore';
-import { resolvePrincipal, requirePermission } from './intake/authorization';
+import { authorizeIntake, resolvePrincipal, requirePermission } from './intake/authorization';
 import { toC02Event } from './events';
 import {
   CfWorkflowPort,
@@ -23,6 +23,7 @@ import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/er
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
+import { ScheduleService, ScheduleStore, VirtualClock, portSubmitter, systemClock, type Clock } from './schedule';
 
 export interface Env {
   DB: D1Database;
@@ -30,6 +31,11 @@ export interface Env {
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  /**
+   * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
+   * виртуальных часах. В проде не задаётся: время берёт системный clock.
+   */
+  SCHEDULE_CLOCK?: string;
 }
 
 const isPermanent = (e: unknown): boolean =>
@@ -95,6 +101,97 @@ const authorizeTaskRoute = async (
 };
 
 const principalOf = (req: Request): string | null => req.headers.get('x-principal');
+
+/** Часы расписания: прод — системные, песочница/тесты — виртуальные. */
+const scheduleClockOf = (env: Env): Clock =>
+  env.SCHEDULE_CLOCK ? new VirtualClock(Number(env.SCHEDULE_CLOCK)) : systemClock;
+
+const scheduleServiceOf = (env: Env, store: TaskStore, port: CfWorkflowPort, clock?: Clock): ScheduleService =>
+  new ScheduleService({
+    store: new ScheduleStore(env.DB),
+    submitter: portSubmitter(port),
+    clock: clock ?? scheduleClockOf(env),
+  });
+
+/**
+ * Маршруты расписания (P22, #61).
+ *
+ * Авторизация — по профилю расписания (tasks:read/intake/control), как у задач.
+ * Проход планировщика (`/schedules/tick`) ограничен профилем принципала: одно
+ * расписание не запускается командой чужого профиля.
+ */
+async function handleScheduleRoute(
+  req: Request,
+  url: URL,
+  env: Env,
+  store: TaskStore,
+  port: CfWorkflowPort,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const path = url.pathname.slice('/schedules'.length).replace(/\/$/, '') || '/';
+  const service = scheduleServiceOf(env, store, port);
+  const identity = { principalId: principalOf(req) ?? '' };
+
+  if (path === '/' && req.method === 'POST') {
+    const profileId = String(body.profileId ?? '');
+    await authorizeIntake(store, identity, profileId, 'tasks:intake');
+    const result = await service.create(profileId, {
+      requestId: String(body.requestId ?? ''),
+      cron: String(body.cron ?? ''),
+      timezone: String(body.timezone ?? ''),
+      goal: String(body.goal ?? ''),
+      projectId: (body.projectId as string | undefined) ?? null,
+      conversationId: (body.conversationId as string | undefined) ?? null,
+      audienceId: (body.audienceId as string | undefined) ?? null,
+      destinationId: (body.destinationId as string | undefined) ?? null,
+      overlapPolicy: body.overlapPolicy as never,
+      catchUpPolicy: body.catchUpPolicy as never,
+      maxAdmitAttempts: body.maxAdmitAttempts as number | undefined,
+      enabled: body.enabled as boolean | undefined,
+    });
+    return json({ schedule: result.schedule, created: result.created, gtdId: null }, result.created ? 201 : 200);
+  }
+
+  if (path === '/' && req.method === 'GET') {
+    const principal = await resolvePrincipal(store, identity);
+    const profileId = url.searchParams.get('profileId') ?? principal.profileId;
+    requirePermission(principal, profileId, 'tasks:read');
+    return json({ schedules: await service.list(profileId) });
+  }
+
+  // Явный «сейчас» — только для песочницы на виртуальных часах (I07). В проде
+  // время берёт планировщик, а не тело запроса.
+  if (path === '/tick') {
+    const principal = await resolvePrincipal(store, identity);
+    requirePermission(principal, principal.profileId, 'tasks:control');
+    const now = body.now === undefined ? undefined : Number(body.now);
+    if (now !== undefined && !Number.isFinite(now)) return json({ error: 'now must be a number (epoch ms)' }, 400);
+    const report = await service.tick({ now, profileId: principal.profileId });
+    return json(report);
+  }
+
+  const scheduleId = url.searchParams.get('scheduleId') ?? (body.scheduleId as string | undefined) ?? '';
+  if (path === '/occurrences') {
+    if (!scheduleId) return json({ error: 'scheduleId is required' }, 400);
+    const schedule = await service.get(scheduleId);
+    if (!schedule) return json({ error: 'schedule not found' }, 404);
+    await authorizeIntake(store, identity, schedule.profile_id, 'tasks:read');
+    return json({ scheduleId, occurrences: await service.occurrences(scheduleId) });
+  }
+
+  if (path === '/enable' || path === '/disable') {
+    if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+    const id = String(body.scheduleId ?? scheduleId ?? '');
+    if (!id) return json({ error: 'scheduleId is required' }, 400);
+    const schedule = await service.get(id);
+    if (!schedule) return json({ error: 'schedule not found' }, 404);
+    await authorizeIntake(store, identity, schedule.profile_id, 'tasks:control');
+    const updated = path === '/enable' ? await service.enable(id) : await service.disable(id);
+    return json({ schedule: updated });
+  }
+
+  return json({ error: 'not found' }, 404);
+}
 
 /**
  * Адаптер канала для локальной песочницы: доставка подтверждается без вызова
@@ -356,6 +453,14 @@ const store = new TaskStore(env.DB);
           });
         }
       }
+      // ── Расписание (P22, этап I07) ──────────────────────────────
+      // Расписание создаёт occurrences, occurrence — обычную задачу. Ни один
+      // маршрут здесь не отменяет уже принятые задачи: disable меняет только
+      // разрешение будущих срабатываний (AC-140).
+      if (url.pathname.startsWith('/schedules')) {
+        return await handleScheduleRoute(req, url, env, store, port, body);
+      }
+
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
         const receipt = await store.acceptReceipt(taskId);
