@@ -1,5 +1,5 @@
 import { TaskStore } from '../src/taskstore';
-import { runStuckInputWatchdog } from '../src/intake';
+import { enqueueStuckInputNotification, runStuckInputWatchdog } from '../src/intake';
 import { DEFAULT_START_DEADLINE_MS } from '../src/taskstore';
 import { afterEach, describe, expect, it } from 'vitest';
 import { env } from './env';
@@ -15,11 +15,17 @@ const nextId = (prefix: string) => `${prefix}-${++seq}-${Date.now()}`;
 // и «просроченные» из соседнего теста ломают счётчики.
 const created: string[] = [];
 const track = (id: string) => { created.push(id); return id; };
+const batches: string[] = [];
+const trackBatch = (id: string) => { batches.push(id); return id; };
 afterEach(async () => {
   const store = new TaskStore(env.DB);
   while (created.length) {
     const id = created.pop()!;
     await dbOf(store).prepare('DELETE FROM durable_tasks WHERE id = ?').bind(id).run();
+  }
+  while (batches.length) {
+    const id = batches.pop()!;
+    await dbOf(store).prepare('DELETE FROM pending_inputs WHERE batch_id = ?').bind(id).run();
   }
 });
 
@@ -100,5 +106,202 @@ describe('принято, но не начато: дедлайн старта и
     const result = await runStuckInputWatchdog(store, {}, Date.now());
     expect(result.stuck).toBe(0);
     expect(result.tasks).not.toContain(task.id);
+  });
+
+  it('notify вызывается на каждую просроченную задачу и получает возраст', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('notify'), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const seen: { taskId: string | null; ageMs: number }[] = [];
+    const result = await runStuckInputWatchdog(
+      store,
+      { notify: async (ctx) => { seen.push({ taskId: ctx.task?.id ?? null, ageMs: ctx.ageMs }); } },
+      Date.now(),
+    );
+
+    expect(result.stuck).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.taskId).toBe(task.id);
+    expect(seen[0]!.ageMs).toBeGreaterThan(0);
+  });
+
+  it('notify по умолчанию не задан — детектор только наблюдает (не угадывает канал)', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('silent'), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const result = await runStuckInputWatchdog(store, {}, Date.now());
+    expect(result.stuck).toBe(1);
+    // Доставка не поставлена: канал знает хост, а не детектор.
+    expect(await store.listDeliveries(task.id)).toHaveLength(0);
+  });
+
+  it('enqueueStuckInputNotification ставит идемпотентную доставку в outbox (C02)', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('deliver'), 1);
+
+    await enqueueStuckInputNotification(store, { task, pendingInput: null }, { channel: 'telegram' });
+    // Повторный вызов по той же задаче — не создаёт вторую доставку.
+    await enqueueStuckInputNotification(store, { task, pendingInput: null }, { channel: 'telegram' });
+
+    const deliveries = await store.listDeliveries(task.id);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]!.channel).toBe('telegram');
+    expect(deliveries[0]!.status).toBe('pending');
+    const message = JSON.parse(deliveries[0]!.message_json) as { kind: string; action: string };
+    expect(message.kind).toBe('stuck_input');
+    expect(message.action).toBe('launch');
+  });
+
+  it('сигнал алерта intake.stuck_input эмитится как error event (путь для Watcher)', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('alert'), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      await runStuckInputWatchdog(store, {}, Date.now());
+    } finally {
+      console.log = original;
+    }
+
+    const event = lines
+      .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+      .find((e) => e?.event === 'intake.stuck_input');
+    expect(event).toBeTruthy();
+    expect(event!.level).toBe('error');
+    expect(event!.userTaskId).toBe(task.id);
+    expect(event!.reason).toBe('accepted_but_not_started');
+    expect(event!.stage).toBe('queued');
+    expect(typeof event!.ageMs).toBe('number');
+  });
+});
+
+// ── Окно ДО admission (arch#132 R9) ───────────────────────────────────────────
+// Детектор по durable_tasks не видит пакет, который шлюз принял, но который ещё не
+// дошёл до admitTask: задачи нет — строки нет. Это ровно то окно, где вход терялся.
+
+describe('принятый вход до admitTask виден детектору (arch#132 R9)', () => {
+  const batch = (store: TaskStore, id: string, firstMessageAt: number, deadlineMs?: number) =>
+    store.recordPendingInput({
+      batchId: trackBatch(id), version: 1, profileId: 'profile-1',
+      channel: 'telegram', firstMessageAt, deadlineMs,
+    });
+
+  it('приём пакета НЕ создаёт пользовательскую задачу — запись лёгкая', async () => {
+    const store = setup();
+    await batch(store, nextId('batch'), Date.now(), 1);
+
+    const pending = await store.requirePendingInput(batches.at(-1)!);
+    expect(pending.prep_state).toBe('collecting');
+    expect(pending.user_task_id).toBeNull();
+    // Задачи нет: watchdog-запись не превращается в durable_tasks строку.
+    expect(await store.unfinishedTasks()).toHaveLength(0);
+  });
+
+  it('просроченный пакет без задачи попадает в детектор', async () => {
+    const store = setup();
+    await batch(store, nextId('batch'), Date.now(), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const stuck = await store.sweepStuckPendingInputs(Date.now());
+    expect(stuck.map((r) => r.batch_id)).toContain(batches.at(-1)!);
+  });
+
+  it('новые сообщения НЕ подставляют возраст: first_message_at не перебивается', async () => {
+    const store = setup();
+    const firstAt = Date.now() - 60_000; // первый вход час назад
+    await batch(store, nextId('batch'), firstAt, 1);
+    const id = batches.at(-1)!;
+
+    // Активный чат продолжает слать: свежие сообщения с текущим временем.
+    await store.recordPendingInput({ batchId: id, version: 1, profileId: 'profile-1', channel: 'telegram', firstMessageAt: Date.now(), deadlineMs: 1 });
+    await store.recordPendingInput({ batchId: id, version: 1, profileId: 'profile-1', channel: 'telegram', firstMessageAt: Date.now(), deadlineMs: 1 });
+
+    const pending = await store.requirePendingInput(id);
+    expect(pending.first_message_at).toBe(firstAt);   // возраст самого старого — виден
+    expect(pending.message_count).toBe(3);
+  });
+
+  it('после admitTask пакет выходит из окна «до admission»', async () => {
+    const store = setup();
+    await batch(store, nextId('batch'), Date.now(), 1);
+    const id = batches.at(-1)!;
+    const { task } = await admit(store, nextId('task'));
+
+    await store.linkPendingInputToTask(id, task.id);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const pending = await store.requirePendingInput(id);
+    expect(pending.prep_state).toBe('admitted');
+    expect(pending.user_task_id).toBe(task.id);
+    expect((await store.sweepStuckPendingInputs(Date.now())).map((r) => r.batch_id)).not.toContain(id);
+  });
+
+  it('детектор сливает оба окна и ставит самый старый первым', async () => {
+    const store = setup();
+    // Задача, просроченная давно (deadline 1 мс назад).
+    const { task } = await admit(store, nextId('task'), 1);
+    // Пакет, просроченный сильнее.
+    await batch(store, nextId('batch'), Date.now(), -120_000);
+    const batchId = batches.at(-1)!;
+    await new Promise((r) => setTimeout(r, 5));
+
+    const result = await runStuckInputWatchdog(store, {}, Date.now());
+    expect(result.stuck).toBe(2);
+    expect(result.tasks[0]).toBe(batchId); // самый старый — первым, независимо от окна
+    expect(result.tasks).toContain(task.id);
+  });
+
+  it('сигнал алерта различает окна: accepted_before_admission vs accepted_but_not_started', async () => {
+    const store = setup();
+    await batch(store, nextId('batch'), Date.now(), -60_000);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      await runStuckInputWatchdog(store, {}, Date.now());
+    } finally {
+      console.log = original;
+    }
+
+    const event = lines
+      .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+      .find((e) => e?.event === 'intake.stuck_input' && e?.reason === 'accepted_before_admission');
+    expect(event).toBeTruthy();
+    expect(event!.userTaskId).toBeNull();
+    expect(typeof event!.batchId).toBe('string');
+    expect(event!.prepState).toBe('collecting');
+  });
+
+  it('уведомление для пакета без задачи не выдумывает доставку', async () => {
+    const store = setup();
+    await batch(store, nextId('batch'), Date.now(), -60_000);
+    const id = batches.at(-1)!;
+    await new Promise((r) => setTimeout(r, 5));
+
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      await runStuckInputWatchdog(store, {
+        notify: async (ctx) => {
+          await enqueueStuckInputNotification(store, { task: ctx.task, pendingInput: ctx.pendingInput }, { channel: 'telegram' });
+        },
+      }, Date.now());
+    } finally {
+      console.log = original;
+    }
+
+    // Доставки нет: задачи нет, а значит нет и адресата в outbox доставки.
+    const skipped = lines
+      .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+      .find((e) => e?.event === 'intake.stuck_input_notify_skipped' && e?.batchId === id);
+    expect(skipped).toBeTruthy();
   });
 });
