@@ -39,6 +39,12 @@ export interface EngineSpec {
 export interface InputRef {
   ref: string;
   version?: string;
+  /**
+   * Снимок workspace предыдущего рана (Runner, issue #52 шаг 1). Клиент только называет
+   * снимок; байты лежат в долговечном хранилище и материализуются в workspace рана
+   * с проверкой владельца и дайджеста. Без снимка поле отсутствует.
+   */
+  snapshotId?: string;
 }
 
 export interface OutputSpec {
@@ -355,7 +361,16 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     if (ref.version !== undefined && (typeof ref.version !== 'string' || ref.version.length > 200)) {
       fail(`refs[${index}]`, `refs[${index}].version: expected 1..200 chars`);
     }
-    refs.push(ref.version === undefined ? { ref: ref.ref } : { ref: ref.ref, version: ref.version });
+    if (ref.snapshotId !== undefined) {
+      if (typeof ref.snapshotId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(ref.snapshotId)) {
+        fail(`refs[${index}]`, `refs[${index}].snapshotId: expected an id matching [A-Za-z0-9][A-Za-z0-9._:-]*`);
+      }
+      if (ref.snapshotId.length > 200) fail(`refs[${index}]`, `refs[${index}].snapshotId: expected 1..200 chars`);
+    }
+    const out: InputRef = { ref: ref.ref };
+    if (ref.version !== undefined) out.version = ref.version;
+    if (ref.snapshotId !== undefined) out.snapshotId = ref.snapshotId;
+    refs.push(out);
   }
 
   // Контракт Runner'а не пропускает управляющие символы в inlinePrompt

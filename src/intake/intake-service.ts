@@ -113,6 +113,7 @@ export class IntakeService {
       userValue: {
         inputItems: envelope.inputItems,
         artifactRefs: artifactRefsOf(envelope),
+        snapshotIds: envelope.inputItems.map((i) => i.snapshotId).filter((s): s is string => typeof s === 'string'),
         pilotRoute: route.route,
         pilotReason: route.reason,
       },
