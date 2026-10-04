@@ -172,6 +172,9 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
       decision.outcome = 'technical_error';
       decision.replyAllowed = false;
       decision.modelCalls = outcome.modelCalls;
+      // Ремонт схемы — максимум один (bounded termination, §11.2 шаг 7);
+      // факт ремонта виден в решении, а не спрятан внутрь счётчика вызовов.
+      decision.repairAttempts = outcome.kind === 'invalid_json' || outcome.kind === 'truncated' ? 1 : 0;
       reply = null;
     }
   }

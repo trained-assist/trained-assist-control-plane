@@ -39,6 +39,7 @@ import {
   routeRequest,
   sandboxCapabilityCatalog,
   sandboxRecipe,
+  type AttachmentFeature,
   type SandboxFault,
 } from './router';
 
@@ -234,8 +235,8 @@ async function handleRouteRoute(
   const text = inputItems.map((item) => item.text ?? '').join('\n').trim();
 
   const context = (body.context ?? {}) as Record<string, unknown>;
-  const attachments = Array.isArray(body.attachments) ? body.attachments : [];
-  const typedSignal = body.typedSignal as { kind: 'button' | 'command' | 'awaiting_answer'; ref: string } | null | undefined;
+  const attachments = routeAttachmentsOf(body.attachments);
+  const typedSignal = routeTypedSignalOf(body.typedSignal);
 
   const result = await routeRequest(
     {
@@ -261,7 +262,7 @@ async function handleRouteRoute(
           sessionEmpty: context.sessionEmpty === undefined ? true : Boolean(context.sessionEmpty),
           relevantTurns: Number(context.relevantTurns ?? 0),
         },
-        attachments: attachments as never,
+        attachments,
         typedSignal: typedSignal ?? null,
         contextVersion: `ctx:${task.id}:${catalog.version}`,
         readinessSnapshotPresent: true,
@@ -322,6 +323,37 @@ async function handleRouteRoute(
     execution: result.execution,
     evidence: result.decision.evidence,
   });
+}
+
+/**
+ * Манифест вложений от шлюза (§12): непригодные записи отбрасываются, а не
+ * «долетают» до решения в неизвестной форме — извлечение не завершено значит
+ * ждать, а не отвечать по пустому.
+ */
+function routeAttachmentsOf(raw: unknown): AttachmentFeature[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AttachmentFeature[] = [];
+  for (const item of raw) {
+    const record = (item ?? {}) as Record<string, unknown>;
+    const ref = typeof record.artifactRef === 'string' ? record.artifactRef : '';
+    if (!ref) continue;
+    out.push({
+      artifactRef: ref,
+      kind: typeof record.kind === 'string' ? record.kind : 'unknown',
+      extracted: record.extracted === true,
+      chars: typeof record.chars === 'number' ? record.chars : null,
+    });
+  }
+  return out;
+}
+
+function routeTypedSignalOf(raw: unknown): { kind: 'button' | 'command' | 'awaiting_answer'; ref: string } | null {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const kind = record.kind;
+  const ref = typeof record.ref === 'string' ? record.ref : '';
+  if (!ref) return null;
+  if (kind === 'button' || kind === 'command' || kind === 'awaiting_answer') return { kind, ref };
+  return null;
 }
 
 /** Разбор JSON-поля binding'а: мусорный конфиг не должен ронять маршрут. */

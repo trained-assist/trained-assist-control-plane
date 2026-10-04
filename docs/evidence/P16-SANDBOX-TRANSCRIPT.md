@@ -35,10 +35,10 @@
 
 | Проба | userTaskId | run_started |
 |---|---|---|
-| pr23_quoted | ut-1d5531f3c0b4a111df73 | 0 |
-| pr21_live | ut-5ef3fe1fdd1b548cc525 | 0 |
-| permission | ut-38eeedf898ea95ec63f8 | 0 |
-| fault_refused | ut-3515d8be1d96197aa2c8 | 0 |
+| pr23_quoted | ut-8eac290e5948fe37fdbf | 0 |
+| pr21_live | ut-e1538689ef264e7b1ad1 | 0 |
+| permission | ut-5d0d1d8fd5d2b403580e | 0 |
+| fault_refused | ut-faeaff72e827157e79a2 | 0 |
 
 Корроборация на песочном Runner'е **VM2** (read-only, ssh): ран для пробных задач — **0** при 246 ранах всего в песочнице. Ни одна проба не дошла до отправки в исполнитель.
 
@@ -46,10 +46,10 @@
 
 | userTaskId | route | mode | reasonCode | outcome | needsExecutor | escalationAttempt | permissionSource |
 |---|---|---|---|---|---|---|---|
-| ut-1d5531f3c0b4a111df73 | llm | llm-recipe-job | TEXT_WORK_ON_GIVEN_CONTENT | reply | false | false | identity_snapshot |
-| ut-5ef3fe1fdd1b548cc525 | agent | ai-agent-job | LIVE_DATA_NO_CAPABILITY | escalated | true | false | identity_snapshot |
-| ut-38eeedf898ea95ec63f8 | template | template-handler | PERMISSION_DENIED | blocked | false | false | identity_snapshot |
-| ut-3515d8be1d96197aa2c8 | llm | llm-recipe-job | MODEL_REFUSED | technical_error | false | false | identity_snapshot |
+| ut-8eac290e5948fe37fdbf | llm | llm-recipe-job | TEXT_WORK_ON_GIVEN_CONTENT | reply | false | false | identity_snapshot |
+| ut-e1538689ef264e7b1ad1 | agent | ai-agent-job | LIVE_DATA_NO_CAPABILITY | escalated | true | false | identity_snapshot |
+| ut-5d0d1d8fd5d2b403580e | template | template-handler | PERMISSION_DENIED | blocked | false | false | identity_snapshot |
+| ut-faeaff72e827157e79a2 | llm | llm-recipe-job | MODEL_REFUSED | technical_error | false | false | identity_snapshot |
 
 ## Ответы проб
 
@@ -81,7 +81,7 @@
  },
  "workOrder": {
   "executor": "opencode",
-  "originalRequestRef": "task:ut-5ef3fe1fdd1b548cc525:request:req-live-1791077513361252000",
+  "originalRequestRef": "task:ut-e1538689ef264e7b1ad1:request:req-live-1791077827438708000",
   "requiresConfirmation": false
  },
  "reply": null,
@@ -99,7 +99,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-5ef3fe1fdd1b548cc525:capabilities-v1"
+  "contextVersion": "ctx:ut-e1538689ef264e7b1ad1:capabilities-v1"
  }
 }
 ```
@@ -148,7 +148,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-1d5531f3c0b4a111df73:capabilities-v1"
+  "contextVersion": "ctx:ut-8eac290e5948fe37fdbf:capabilities-v1"
  }
 }
 ```
@@ -192,7 +192,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-38eeedf898ea95ec63f8:capabilities-v1"
+  "contextVersion": "ctx:ut-5d0d1d8fd5d2b403580e:capabilities-v1"
  }
 }
 ```
@@ -235,7 +235,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-3515d8be1d96197aa2c8:capabilities-v1"
+  "contextVersion": "ctx:ut-faeaff72e827157e79a2:capabilities-v1"
  }
 }
 ```
@@ -244,7 +244,7 @@
 
 Проверяются: значение PRINCIPAL_SECRET этого прогона, e-mail вне доменов RFC 2606, телефоны, абсолютные пути пользователя.
 
-- sha256 санитизированных событий: `00d73d241bd636daf345a0e7106120adf5954e2fc7a310bbda5b5df0b1f66957`
+- sha256 санитизированных событий: `0321968c3e11aa1e20a16aa164bf2948a72b8f1ec42c50be6637da6c370bcb72`
 - строк журнала маршрута в evidence: 4
 - сборка из тех же сырых логов даёт тот же sha256: транскрипт воспроизводим;
 - текст запроса в журнал не пишется — только идентификаторы, признаки и причины;

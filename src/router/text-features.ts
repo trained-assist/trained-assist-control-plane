@@ -276,7 +276,7 @@ export function extractTextFeatures(text: string): TextFeatures {
     textWorkIntent: textWork.length > 0,
     closingIntent: closing.length > 0,
     acknowledgementIntent: ack.length > 0 && outside.length <= 40,
-    bareImperative: BARE_IMPERATIVES.some((cue) => outside === cue || outside === `${cue} `),
+    bareImperative: BARE_IMPERATIVES.includes(outside),
   };
 }
 
