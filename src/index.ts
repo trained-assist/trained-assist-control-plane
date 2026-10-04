@@ -78,18 +78,18 @@ export interface Env {
   ROUTER_CLOCK?: string;
   /** Остаток платных вызовов модели в песочнице (по умолчанию 1). */
   ROUTER_LLM_BUDGET?: string;
+  /**
+   * Остаток вызовов именно рецепта (по умолчанию — общий `ROUTER_LLM_BUDGET`).
+   * Проверяется ДО платного вызова и независим от бюджета конверта: общий
+   * бюджет — план пользователя, этот — допуск быстрого пути (§11.2 шаг 7).
+   */
+  ROUTER_RECIPE_LLM_BUDGET?: string;
   /** 'false' — исполнитель запрещён политикой песочницы (проверка blocked). */
   ROUTER_AGENT_ALLOWED?: string;
   /**
    * Рецепт P17. По умолчанию — скриптованная модель песочницы (без сети и без
    * ключа): проверяются контракт решения, границы и исходы, а не качество живой
    * модели (§11.7.5/§11.7.6). Живой провайдер подключается отдельно.
-   */
-  ROUTER_RECIPE_STUB?: string;
-  /**
-   * Управляемый сбой рецепта: refused | timeout | invalid_json | truncated |
-   * provider_failure | budget_denied | semantic_invalid | needs_executor |
-   * clarify | awaiting_input | insufficient_context.
    */
   ROUTER_RECIPE_FAULT?: string;
   /** Сценарий решений скриптованной модели (JSON-массив строк). */
@@ -308,7 +308,7 @@ async function handleRouteRoute(
           script: parseScript(env.ROUTER_RECIPE_SCRIPT),
           fault: readSandboxFault(env.ROUTER_RECIPE_FAULT),
         }),
-        llmCallsRemaining: () => Number(env.ROUTER_LLM_BUDGET ?? 1),
+        llmCallsRemaining: () => Number(env.ROUTER_RECIPE_LLM_BUDGET ?? env.ROUTER_LLM_BUDGET ?? 1),
         deadlineMs: Number(env.ROUTER_RECIPE_DEADLINE_MS ?? 15_000),
       }),
       modelId: 'sandbox-scripted-fixed-model',
@@ -355,6 +355,10 @@ async function handleRouteRoute(
     coverage: result.decision.coverage,
     schemaOutcome: result.decision.schemaOutcome,
     semanticOutcome: result.decision.semanticOutcome,
+    recipeId: result.decision.recipeId,
+    modelId: result.decision.modelId,
+    providerCode: result.decision.providerCode,
+    repairAttempts: result.decision.repairAttempts,
     modelCalls: result.decision.modelCalls,
     firstUsefulReplyMs: result.decision.firstUsefulReplyMs,
     reply: result.reply,
@@ -379,7 +383,16 @@ async function issueContinuation(
   body: Record<string, unknown>,
 ): Promise<
   | { owner: 'output'; requested: true; issued: true; jobRef: string; runId: string; generation: number; executor: 'opencode' }
-  | { owner: 'output'; requested: true; issued: false; refusal: string; jobRef: null; runId: null; generation: null }
+  | {
+      owner: 'output';
+      requested: true;
+      issued: false;
+      refusal: string;
+      /** При `already_continued` — уже существующая работа, а не пустые ссылки. */
+      jobRef: string | null;
+      runId: string | null;
+      generation: number | null;
+    }
   | { owner: 'output'; requested: false; issued: false; refusal: null; jobRef: null; runId: null; generation: null }
 > {
   const requested = result.continuation !== null && body.continue === true;
@@ -399,18 +412,29 @@ async function issueContinuation(
     agentAllowed: env.ROUTER_AGENT_ALLOWED !== 'false',
   });
   if (!outcome.created) {
+    // Повторный запрос с тем же decisionId — это ТА ЖЕ работа: возвращаем её
+    // ссылки, чтобы вызывающий не решил, что работа потеряна.
+    const existing = outcome.refusal.reason === 'already_continued' ? outcome.refusal : null;
     logStructured({
       event: CONTINUATION_EVENT,
       level: 'info',
       profileId: request.profileId,
       userTaskId: request.userTaskId,
-      runId: null,
+      runId: existing?.runId ?? null,
       decisionId: request.decisionId,
       owner: outcome.owner,
       issued: false,
       refusal: outcome.refusal.reason,
     });
-    return { owner: 'output', requested: true, issued: false, refusal: outcome.refusal.reason, jobRef: null, runId: null, generation: null };
+    return {
+      owner: 'output',
+      requested: true,
+      issued: false,
+      refusal: outcome.refusal.reason,
+      jobRef: existing?.jobRef ?? null,
+      runId: existing?.runId ?? null,
+      generation: existing?.generation ?? null,
+    };
   }
   logStructured({
     event: CONTINUATION_EVENT,

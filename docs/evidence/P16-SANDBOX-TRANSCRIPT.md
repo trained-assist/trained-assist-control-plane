@@ -35,10 +35,10 @@
 
 | Проба | userTaskId | run_started |
 |---|---|---|
-| pr23_quoted | ut-1d5531f3c0b4a111df73 | 0 |
-| pr21_live | ut-5ef3fe1fdd1b548cc525 | 0 |
-| permission | ut-38eeedf898ea95ec63f8 | 0 |
-| fault_refused | ut-3515d8be1d96197aa2c8 | 0 |
+| pr23_quoted | ut-221918ed1d270b581122 | 0 |
+| pr21_live | ut-887bb143bda545a346fc | 0 |
+| permission | ut-35aebb50cbca8c8b7827 | 0 |
+| fault_refused | ut-578f3d0038e075b25f4a | 0 |
 
 Корроборация на песочном Runner'е **VM2** (read-only, ssh): ран для пробных задач — **0** при 246 ранах всего в песочнице. Ни одна проба не дошла до отправки в исполнитель.
 
@@ -46,10 +46,9 @@
 
 | userTaskId | route | mode | reasonCode | outcome | needsExecutor | escalationAttempt | permissionSource |
 |---|---|---|---|---|---|---|---|
-| ut-1d5531f3c0b4a111df73 | llm | llm-recipe-job | TEXT_WORK_ON_GIVEN_CONTENT | reply | false | false | identity_snapshot |
-| ut-5ef3fe1fdd1b548cc525 | agent | ai-agent-job | LIVE_DATA_NO_CAPABILITY | escalated | true | false | identity_snapshot |
-| ut-38eeedf898ea95ec63f8 | template | template-handler | PERMISSION_DENIED | blocked | false | false | identity_snapshot |
-| ut-3515d8be1d96197aa2c8 | llm | llm-recipe-job | MODEL_REFUSED | technical_error | false | false | identity_snapshot |
+| ut-221918ed1d270b581122 | llm | llm-recipe-job | TEXT_WORK_ON_GIVEN_CONTENT | reply | false | false | identity_snapshot |
+| ut-887bb143bda545a346fc | agent | ai-agent-job | LIVE_DATA_NO_CAPABILITY | escalated | true | false | identity_snapshot |
+| ut-35aebb50cbca8c8b7827 | template | template-handler | PERMISSION_DENIED | blocked | false | false | identity_snapshot |
 
 ## Ответы проб
 
@@ -81,10 +80,19 @@
  },
  "workOrder": {
   "executor": "opencode",
-  "originalRequestRef": "task:ut-5ef3fe1fdd1b548cc525:request:req-live-1791077513361252000",
+  "originalRequestRef": "task:ut-887bb143bda545a346fc:request:req-live-1791082557463861000",
   "requiresConfirmation": false
  },
  "reply": null,
+ "continuation": {
+  "owner": "output",
+  "requested": false,
+  "issued": false,
+  "refusal": null,
+  "jobRef": null,
+  "runId": null,
+  "generation": null
+ },
  "evidence": {
   "typedCommand": null,
   "matchedCapabilityId": null,
@@ -99,7 +107,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-5ef3fe1fdd1b548cc525:capabilities-v1"
+  "contextVersion": "ctx:ut-887bb143bda545a346fc:capabilities-v1"
  }
 }
 ```
@@ -130,6 +138,15 @@
  "reply": {
   "text": "[песочница: recipe-заглушка без модели] Черновик по вашему тексту (109 симв.): «Коллега пишет: «см. https://example.com/pricing — там всё дорого». Как вежливо ответить, что посмотрим позже?»"
  },
+ "continuation": {
+  "owner": "output",
+  "requested": false,
+  "issued": false,
+  "refusal": null,
+  "jobRef": null,
+  "runId": null,
+  "generation": null
+ },
  "evidence": {
   "typedCommand": null,
   "matchedCapabilityId": null,
@@ -148,7 +165,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-1d5531f3c0b4a111df73:capabilities-v1"
+  "contextVersion": "ctx:ut-221918ed1d270b581122:capabilities-v1"
  }
 }
 ```
@@ -177,6 +194,15 @@
  },
  "workOrder": null,
  "reply": null,
+ "continuation": {
+  "owner": "output",
+  "requested": false,
+  "issued": false,
+  "refusal": null,
+  "jobRef": null,
+  "runId": null,
+  "generation": null
+ },
  "evidence": {
   "typedCommand": null,
   "matchedCapabilityId": "google-drive.read",
@@ -192,7 +218,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-38eeedf898ea95ec63f8:capabilities-v1"
+  "contextVersion": "ctx:ut-35aebb50cbca8c8b7827:capabilities-v1"
  }
 }
 ```
@@ -221,6 +247,15 @@
  },
  "workOrder": null,
  "reply": null,
+ "continuation": {
+  "owner": "output",
+  "requested": false,
+  "issued": false,
+  "refusal": null,
+  "jobRef": null,
+  "runId": null,
+  "generation": null
+ },
  "evidence": {
   "typedCommand": null,
   "matchedCapabilityId": null,
@@ -235,7 +270,7 @@
   "permissionSource": "identity_snapshot",
   "authorizationRef": "authz-fb2fabaca7e32bc4",
   "catalogVersion": "capabilities-v1",
-  "contextVersion": "ctx:ut-3515d8be1d96197aa2c8:capabilities-v1"
+  "contextVersion": "ctx:ut-578f3d0038e075b25f4a:capabilities-v1"
  }
 }
 ```
@@ -244,8 +279,8 @@
 
 Проверяются: значение PRINCIPAL_SECRET этого прогона, e-mail вне доменов RFC 2606, телефоны, абсолютные пути пользователя.
 
-- sha256 санитизированных событий: `00d73d241bd636daf345a0e7106120adf5954e2fc7a310bbda5b5df0b1f66957`
-- строк журнала маршрута в evidence: 4
+- sha256 санитизированных событий: `0b387617d39d57e9d2f56ff2e13320e2698b373cb7b3f731079c77b51da92382`
+- строк журнала маршрута в evidence: 3
 - сборка из тех же сырых логов даёт тот же sha256: транскрипт воспроизводим;
 - текст запроса в журнал не пишется — только идентификаторы, признаки и причины;
 - негативные проверки санитизации (секрет, e-mail, домашний путь, телефон) выполняет `tools/p16-evidence-selfcheck.mjs`, он же гоняется в CI (`npm run check:evidence`).

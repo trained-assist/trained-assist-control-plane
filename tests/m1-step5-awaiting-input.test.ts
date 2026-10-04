@@ -186,10 +186,13 @@ describe('Шаг 5: ожидание переживает смерть движ�
     expect(resumed.runId).not.toBe(submit.runId);
     expect(resumed.generation).toBe(submit.generation + 1);
 
-    const runStarted = (await store.history(taskId))
-      .filter((e) => e.kind === 'run_started')
-      .map((e) => JSON.parse(e.payload_json) as Record<string, unknown>);
-    const continuation = runStarted.find((p) => p.resumed === true)!;
+    // Продолжение — отдельное событие `run_resumed`, а не второй `run_started`:
+    // старт попытки и продолжение не путаются в журнале.
+    const history = await store.history(taskId);
+    const continuation = history
+      .filter((e) => e.kind === 'run_resumed')
+      .map((e) => JSON.parse(e.payload_json) as Record<string, unknown>)[0]!;
+    expect(history.filter((e) => e.kind === 'run_resumed')).toHaveLength(1);
     expect(continuation.runId).toBe(resumed.runId);
     expect(continuation.previousRunId ?? null).toBe(null); // прежний runId в параметре не передавался
     expect(continuation.availableData).toBeDefined();

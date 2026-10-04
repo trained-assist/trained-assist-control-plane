@@ -59,7 +59,6 @@ function workerEnv() {
     ROUTER_PROFILE_FACTS: JSON.stringify({ connections: { 'web-search': true }, profileFields: {} }),
     ROUTER_GRANTS: JSON.stringify({ 'sandbox-p16': { capabilities: [], integrations: [] } }),
     ROUTER_CLOCK: String(Date.parse('2026-09-30T23:10:00+03:00')),
-    ROUTER_RECIPE_STUB: 'true',
   };
 }
 

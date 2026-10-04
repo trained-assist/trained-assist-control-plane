@@ -52,6 +52,8 @@ export const TASK_EVENT_KINDS = [
   'step_done',
   'step_failed',
   'run_started',
+  /** Продолжение попытки: новый runId и подъём поколения (не второй старт). */
+  'run_resumed',
   'run_finished',
   'awaiting_opened',
   'awaiting_answered',

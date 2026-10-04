@@ -79,6 +79,18 @@ const allowed = run([
 ]);
 check('домены RFC 2606, epoch-миллисекунды и идентификаторы — не нарушение', allowed.ok, allowed.findings?.join('; '));
 
+// Баннер wrangler'а о пути к его ЛОГАМ — служебная строка dev-сервера, а не
+// содержимое evidence. Домашний путь в любой другой строке по-прежнему стоп.
+const toolNoise = run([CLEAN_EVENT, '🪵  Logs were written to "/Users/someone/.wrangler/wrangler-null.log"']);
+check('путь к логам самого dev-сервера не считается утечкой', toolNoise.ok, toolNoise.findings?.join('; '));
+
+const otherHomePath = run([CLEAN_EVENT, '{"event":"route.dispatched","file":"/Users/someone/private/notes.md"}']);
+check(
+  'домашний путь в обычной строке по-прежнему останавливает сборку',
+  !otherHomePath.ok && otherHomePath.findings.some((f) => f.includes('домашний путь')),
+  otherHomePath.findings?.join('; '),
+);
+
 rmSync(ROOT, { recursive: true, force: true });
 if (failures.length > 0) {
   console.error(`\nсанитизация: нарушений ${failures.length}`);

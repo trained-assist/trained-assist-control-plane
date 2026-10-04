@@ -18,7 +18,8 @@
     "web:dev": "wrangler dev -c web/wrangler.web.jsonc",
     "eval:fast-replies": "node --experimental-strip-types --import ./tools/ts-ext-resolver.mjs tools/fast-replies-export-decisions.ts",
     "check:evidence": "node tools/p16-evidence-selfcheck.mjs",
-    "sandbox:p16": "./tools/p16-sandbox-probe.sh"
+    "sandbox:p16": "./tools/p16-sandbox-probe.sh",
+    "sandbox:p17": "./tools/p17-sandbox-probe.sh"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

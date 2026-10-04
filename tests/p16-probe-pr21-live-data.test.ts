@@ -37,7 +37,6 @@ interface RouteEnv {
   ROUTER_PROFILE_FACTS: string;
   ROUTER_GRANTS: string;
   ROUTER_CLOCK: string;
-  ROUTER_RECIPE_STUB: string;
 }
 
 async function envFor(overrides: Partial<RouteEnv> = {}): Promise<RouteEnv> {
@@ -48,7 +47,6 @@ async function envFor(overrides: Partial<RouteEnv> = {}): Promise<RouteEnv> {
     ROUTER_PROFILE_FACTS: JSON.stringify({ connections: { 'google-drive': true, 'web-search': true }, profileFields: {} }),
     ROUTER_GRANTS: JSON.stringify({ 'sandbox-p16': { capabilities: [], integrations: [] } }),
     ROUTER_CLOCK: String(Date.parse('2026-09-30T23:10:00+03:00')),
-    ROUTER_RECIPE_STUB: 'true',
     ...overrides,
   };
   return base;

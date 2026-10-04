@@ -614,10 +614,13 @@ export class TaskStore {
     });
     // Явная семантика продолжения: новый runId, тот же userTaskId, и перечень
     // доступных сохранённых данных (открытое ожидание, артефакты, результат).
+    // Событие — `run_resumed`, а НЕ второй `run_started`: одна попытка пишет
+    // ровно один `run_started` (его уже записал `startRun`), и по журналу
+    // можно сосчитать попытки, не различая старт и продолжение.
     const available = await this.availableContinuationData(taskId);
     await this.logEvent({
       taskId,
-      kind: 'run_started',
+      kind: 'run_resumed',
       generation,
       source: 'gateway',
       payload: {
@@ -626,6 +629,7 @@ export class TaskStore {
         reason: opts.reason ?? null,
         instructions: opts.instructions ?? null,
         previousRunId: opts.previousRunId ?? null,
+        engine: run.engine,
         availableData: {
           awaitingInputId: available.awaitingInputId,
           awaitingStatus: available.awaitingStatus,
