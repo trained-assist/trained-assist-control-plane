@@ -1,0 +1,16 @@
+OK   A intake durable — ut-ff91747995ef81f87b49
+OK   A start — 5a0d3f56-528b-4c35-a9e5-2e16fd9d9363
+OK   A done — done
+OK   snapshot created — {"snapshotId":"snap-f8beeeef501a2c9050f4baea","runId":"run_ebe965db-9eae-4ee9-a37d-710cb07c8ce6","userTaskId":"profile-sandbox-task","profileId":"profile-sandbo
+OK   у рана A есть артефакты — result.md 7B sha256=3c0690f004f1…
+OK   артефакт положен в снимок — artifacts=1
+OK   snapshot committed — {"snapshotId":"snap-f8beeeef501a2c9050f4baea","runId":"run_ebe965db-9eae-4ee9-a37d-710cb07c8ce6","userTaskId":"profile-sandbox-task","profileId":"profile-sandbo
+OK   B intake durable (snapshot ref) — ut-25ce329374087100c63b
+OK   B start — 0add8c5c-adea-431a-bf03-a5d573ff8cb1
+OK   B done — done
+OK   inputs_materialized event — status=materialized files=1 bytes=7
+OK   ран B прочитал содержимое из снимка (SEED-42)
+OK   несуществующий снимок → отказ до spawn — status=refused reason=snapshot snap-does-not-exist does not exist
+OK   дубль intake → та же задача — duplicate=true
+
+=== 14/14 проверок пройдено ===

@@ -64,6 +64,17 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(built.spec.input?.refs).toEqual([{ ref: 'artifact://a.md' }, { ref: 'artifact://b.md', version: 'v3' }]);
   });
 
+  it('snapshotId едет в input.refs: ран материализует байты снимка (Runner #52 шаг 1)', () => {
+    const built = buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }] }, policy);
+    expect(built.spec.input?.refs).toEqual([{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }]);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('snapshotId вне алфавита отклоняется: снимок — не произвольная строка', () => {
+    expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '../escape' }] }, policy)).toThrow(RunSpecMappingError);
+    expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '' }] }, policy)).toThrow(RunSpecMappingError);
+  });
+
   it('пустой prompt отклоняется: задача без сообщения — не задача', () => {
     expect(() => buildRunSpec({ ...baseInput, prompt: '   ' }, policy)).toThrow(RunSpecMappingError);
   });
@@ -185,6 +196,15 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     expect('runId' in body).toBe(false);
     expect('mcp' in body).toBe(false);
     expect(body['input']).toEqual({ inlinePrompt: 'собери отчёт', refs: [{ ref: 'artifact://a.md' }] });
+  });
+
+  it('snapshotId не теряется на границе с Runner: уезжает в submit', () => {
+    const built = buildRunSpec(
+      { ...baseInput, refs: [{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }] },
+      policy,
+    );
+    const body = toSubmitRequest(built.spec);
+    expect(body['input']).toEqual({ inlinePrompt: 'собери отчёт', refs: [{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }] });
   });
 
   it('поля, которые Runner выводит сам, перечислены явно', () => {

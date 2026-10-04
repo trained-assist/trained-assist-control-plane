@@ -14,6 +14,12 @@ export const ADMISSION_CONTRACT_VERSION = 1;
 export interface IntakeItem {
   text?: string;
   artifactRefs?: string[];
+  /**
+   * Снимок workspace предыдущего рана (Runner, issue #52 шаг 1): байты лежат в долговечном
+   * хранилище, а ран получает их в свой workspace с проверкой владельца и дайджеста.
+   * Версию/путь назначает хост, клиент только называет снимок.
+   */
+  snapshotId?: string;
 }
 
 export interface IntakeEnvelope {
@@ -80,13 +86,19 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     if (refs !== undefined && (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string'))) {
       throw new InvalidEnvelopeError(`inputItems[${i}].artifactRefs must be string[]`, 'inputItems');
     }
-    if (text === undefined && (refs === undefined || refs.length === 0)) {
-      throw new InvalidEnvelopeError(`inputItems[${i}] must have text or artifactRefs`, 'inputItems');
+    const snapshotId = typeof it.snapshotId === 'string' ? it.snapshotId.trim() : undefined;
+    if (snapshotId !== undefined) {
+      if (snapshotId.length === 0 || snapshotId.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(snapshotId)) {
+        throw new InvalidEnvelopeError(`inputItems[${i}].snapshotId: expected an id matching [A-Za-z0-9][A-Za-z0-9._:-]*`, 'inputItems');
+      }
+    }
+    if (text === undefined && (refs === undefined || refs.length === 0) && snapshotId === undefined) {
+      throw new InvalidEnvelopeError(`inputItems[${i}] must have text, artifactRefs or snapshotId`, 'inputItems');
     }
     if (text !== undefined && text.length > MAX_ITEM_CHARS) {
       throw new InvalidEnvelopeError(`inputItems[${i}].text is too long`, 'inputItems');
     }
-    return { text, artifactRefs: refs as string[] | undefined };
+    return { text, artifactRefs: refs as string[] | undefined, snapshotId };
   });
 
   const str = (key: string): string | null => {

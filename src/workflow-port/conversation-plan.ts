@@ -119,12 +119,19 @@ const answerText = (raw: unknown): string | null => {
  * в `durable_tasks.user_value` хостом. Клиент не может добавить ссылку сюда
  * после приёма — набор фиксируется в момент приёма.
  */
-function attachmentRefsOf(userValue: string | null): { ref: string; version?: string }[] {
+function attachmentRefsOf(userValue: string | null): { ref: string; version?: string; snapshotId?: string }[] {
   if (!userValue) return [];
   try {
-    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown };
+    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; snapshotIds?: unknown };
     const refs = Array.isArray(parsed?.artifactRefs) ? parsed.artifactRefs : [];
-    return refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0).map((ref) => ({ ref }));
+    const snapshotIds = Array.isArray(parsed?.snapshotIds) ? parsed.snapshotIds : [];
+    const out: { ref: string; version?: string; snapshotId?: string }[] = refs
+      .filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
+      .map((ref) => ({ ref }));
+    for (const id of snapshotIds) {
+      if (typeof id === 'string' && id.length > 0) out.push({ ref: id, snapshotId: id });
+    }
+    return out;
   } catch {
     return [];
   }
