@@ -1,5 +1,5 @@
 import { TaskStore } from '../src/taskstore';
-import { enqueueStuckInputNotification, runStuckInputWatchdog } from '../src/intake';
+import { classifyWait, enqueueStuckInputNotification, needsOperatorAlert, runStuckInputWatchdog } from '../src/intake';
 import { DEFAULT_START_DEADLINE_MS } from '../src/taskstore';
 import { afterEach, describe, expect, it } from 'vitest';
 import { env } from './env';
@@ -141,22 +141,26 @@ describe('принято, но не начато: дедлайн старта и
     const store = setup();
     const { task } = await admit(store, nextId('deliver'), 1);
 
-    await enqueueStuckInputNotification(store, { task, pendingInput: null }, { channel: 'telegram' });
+    const wait = classifyWait({ task, pendingInput: null });
+    await enqueueStuckInputNotification(store, { task, pendingInput: null, wait }, { channel: 'telegram' });
     // Повторный вызов по той же задаче — не создаёт вторую доставку.
-    await enqueueStuckInputNotification(store, { task, pendingInput: null }, { channel: 'telegram' });
+    await enqueueStuckInputNotification(store, { task, pendingInput: null, wait }, { channel: 'telegram' });
 
     const deliveries = await store.listDeliveries(task.id);
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]!.channel).toBe('telegram');
     expect(deliveries[0]!.status).toBe('pending');
-    const message = JSON.parse(deliveries[0]!.message_json) as { kind: string; action: string };
+    const message = JSON.parse(deliveries[0]!.message_json) as { kind: string; actions: string[]; text: string };
     expect(message.kind).toBe('stuck_input');
-    expect(message.action).toBe('launch');
+    expect(message.actions).toContain('launch');
+    expect(message.text.length).toBeGreaterThan(0);
   });
 
   it('сигнал алерта intake.stuck_input эмитится как error event (путь для Watcher)', async () => {
     const store = setup();
+    // Задача в очереди за полосу — это норма, поэтому алерта нет в пределах дедлайна.
     const { task } = await admit(store, nextId('alert'), 1);
+    await dbOf(store).prepare(`UPDATE durable_tasks SET stage = 'queued' WHERE id = ?`).bind(task.id).run();
     await new Promise((r) => setTimeout(r, 5));
 
     const lines: string[] = [];
@@ -167,16 +171,35 @@ describe('принято, но не начато: дедлайн старта и
     } finally {
       console.log = original;
     }
-
     const event = lines
       .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
       .find((e) => e?.event === 'intake.stuck_input');
     expect(event).toBeTruthy();
-    expect(event!.level).toBe('error');
-    expect(event!.userTaskId).toBe(task.id);
-    expect(event!.reason).toBe('accepted_but_not_started');
-    expect(event!.stage).toBe('queued');
-    expect(typeof event!.ageMs).toBe('number');
+    expect(event!.level).toBe('warn');
+    expect(event!.waitKind).toBe('queued_for_lane');
+
+    // Но если «норма» длится получасами — это уже эксплуатационная проблема.
+    const hard = await runStuckInputWatchdog(store, {}, Date.now() + 31 * 60_000);
+    expect(hard.oldestAgeMs).toBeGreaterThan(30 * 60_000);
+  });
+
+  it('классификация ожидания: медиа, полоса, готов-не-принят, сбой, зависание', () => {
+    const task = (stage: string) => ({ id: 't', profile_id: 'p', stage }) as never;
+    const pending = (prep_state: string) => ({ batch_id: 'b', profile_id: 'p', prep_state }) as never;
+
+    expect(classifyWait({ task: task('queued'), pendingInput: null }).kind).toBe('queued_for_lane');
+    expect(classifyWait({ task: task('collecting'), pendingInput: null }).kind).toBe('media_prep');
+    expect(classifyWait({ task: task('handing_off'), pendingInput: null }).kind).toBe('no_progress');
+    expect(classifyWait({ task: null, pendingInput: pending('collecting') }).kind).toBe('media_prep');
+    expect(classifyWait({ task: null, pendingInput: pending('preparing') }).kind).toBe('media_prep');
+    expect(classifyWait({ task: null, pendingInput: pending('ready') }).kind).toBe('ready_not_admitted');
+    expect(classifyWait({ task: null, pendingInput: pending('failed') }).kind).toBe('technical');
+
+    // Нормальное ожидание не алертится в пределах дедлайна, но алертится после порога.
+    expect(needsOperatorAlert(classifyWait({ task: task('queued'), pendingInput: null }), 60_000)).toBe(false);
+    expect(needsOperatorAlert(classifyWait({ task: task('queued'), pendingInput: null }), 31 * 60_000)).toBe(true);
+    expect(needsOperatorAlert(classifyWait({ task: null, pendingInput: pending('ready') }), 1)).toBe(true);
+    expect(needsOperatorAlert(classifyWait({ task: null, pendingInput: pending('failed') }), 1)).toBe(true);
   });
 });
 
@@ -258,7 +281,9 @@ describe('принятый вход до admitTask виден детектору
 
   it('сигнал алерта различает окна: accepted_before_admission vs accepted_but_not_started', async () => {
     const store = setup();
-    await batch(store, nextId('batch'), Date.now(), -60_000);
+    const p = await batch(store, nextId('batch'), Date.now(), -60_000);
+    // 'ready, но не принят' — настоящая дыра, а не ожидание медиа.
+    await store.setPendingInputPrep(p.batch_id, 'ready');
     await new Promise((r) => setTimeout(r, 5));
 
     const lines: string[] = [];
@@ -272,16 +297,18 @@ describe('принятый вход до admitTask виден детектору
 
     const event = lines
       .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
-      .find((e) => e?.event === 'intake.stuck_input' && e?.reason === 'accepted_before_admission');
+      .find((e) => e?.event === 'intake.stuck_input' && e?.reason === 'ready_but_not_admitted');
     expect(event).toBeTruthy();
     expect(event!.userTaskId).toBeNull();
     expect(typeof event!.batchId).toBe('string');
-    expect(event!.prepState).toBe('collecting');
+    expect(event!.prepState).toBe('ready');
+    expect(event!.waitKind).toBe('ready_not_admitted');
   });
 
   it('уведомление для пакета без задачи не выдумывает доставку', async () => {
     const store = setup();
-    await batch(store, nextId('batch'), Date.now(), -60_000);
+    const p = await batch(store, nextId('batch'), Date.now(), -60_000);
+    await store.setPendingInputPrep(p.batch_id, 'ready');
     const id = batches.at(-1)!;
     await new Promise((r) => setTimeout(r, 5));
 
@@ -291,7 +318,7 @@ describe('принятый вход до admitTask виден детектору
     try {
       await runStuckInputWatchdog(store, {
         notify: async (ctx) =>
-          enqueueStuckInputNotification(store, { task: ctx.task, pendingInput: ctx.pendingInput }, { channel: 'telegram' }),
+          enqueueStuckInputNotification(store, { task: ctx.task, pendingInput: ctx.pendingInput, wait: ctx.wait }, { channel: 'telegram' }),
       }, Date.now());
     } finally {
       console.log = original;

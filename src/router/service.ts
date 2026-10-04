@@ -446,6 +446,23 @@ async function applyRecipeResult(result: RecipeResult, state: RecipeApplyState):
     decision.replyAllowed = outcome === 'reply';
   };
 
+  /**
+   * Техническая деградация: НЕ тишина и НЕ «успешный быстрый ответ».
+   *
+   * Маршрутизация не смогла решить по технической причине. Дорогого агента молча
+   * не запускаем (needsExecutor остаётся false) — но хост обязан показать видимый
+   * контролируемый исход с причиной и разрешённым действием. Иначе пользователь
+   * получает тот же класс дефекта, что «сообщение принято, но дальше тишина»
+   * (arch#132, Приоритет 4).
+   */
+  const degrade = (text: string, actions: RoutingDecision['degradedNotice'] extends null ? never : NonNullable<RoutingDecision['degradedNotice']>['actions'] = ['retry', 'launch']) => {
+    decision.degraded = true;
+    decision.degradedNotice = { text, actions };
+    // Деградация не отвечает на вопрос и не эскалирует сама.
+    decision.needsExecutor = false;
+    decision.escalation = 'none';
+  };
+
   switch (result.kind) {
     case 'reply':
       mark('reply', decision.reasonCode, 'valid', 'valid');
@@ -470,22 +487,27 @@ async function applyRecipeResult(result: RecipeResult, state: RecipeApplyState):
       return;
     case 'schema_invalid':
       mark('technical_error', 'SCHEMA_INVALID', 'invalid', 'not_evaluated');
+      degrade('Ответ модели не распознан — повторите или запустите вручную.');
       return;
     case 'timeout':
       mark('technical_error', 'MODEL_TIMEOUT', 'timeout', 'not_evaluated');
+      degrade('Маршрутизация не ответила вовремя — повторите или запустите вручную.');
       return;
     case 'provider_failure':
       decision.providerCode = result.code;
       mark('technical_error', 'PROVIDER_FAILURE', 'provider_failure', 'not_evaluated');
+      degrade('Маршрутизация недоступна (провайдер). Запустите вручную или повторите.');
       return;
     case 'budget_denied':
       mark('blocked', 'BUDGET_DENIED', 'budget_denied', 'not_evaluated');
       return;
     case 'refused':
       mark('technical_error', 'MODEL_REFUSED', 'refused', 'not_evaluated');
+      degrade('Модель отказалась отвечать — запустите вручную или переформулируйте.');
       return;
     case 'truncated':
       mark('technical_error', 'SCHEMA_TRUNCATED', 'truncated', 'not_evaluated');
+      degrade('Ответ модели обрезан — повторите или запустите вручную.');
       return;
     case 'needs_capability':
       await executeCapability(result, state);

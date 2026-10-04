@@ -14,7 +14,13 @@ import {
   type PlanParams,
   type SubmitInput,
 } from './workflow-port';
-import { IntakeService } from './intake';
+import { IntakeService, resolveDeliveryAdapter, runStuckInputSweep } from './intake';
+
+/**
+ * Насколько устаревшей должна быть отметка планировщика, чтобы это стало инцидентом.
+ * Триггер идёт раз в минуту; 30 минут без отметки = планировщик умер молча.
+ */
+const WATCHDOG_STALE_MS = 30 * 60_000;
 import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
@@ -55,6 +61,20 @@ import {
 export interface Env {
   DB: D1Database;
   TASK_WORKFLOW: Workflow;
+  /**
+   * 'true' — изолированный preview: scheduled-обработчики не выполняются.
+   * Держать тем же флагом, что и в tg-bot, чтобы previews не слали алерты.
+   */
+  PREVIEW_ONLY?: string;
+  /**
+   * Доставка: 'local' — песочничная заглушка (искусственный providerMessageId,
+   * доставкой НЕ является), 'gateway' — реальный адаптер канала (arch#132 П3b).
+   */
+  DELIVERY_ADAPTER?: string;
+  /** URL шлюза для реального адаптера доставки, если DELIVERY_ADAPTER='gateway'. */
+  GATEWAY_DELIVERY_URL?: string;
+  /** Секрет шлюза для реального адаптера доставки. */
+  GATEWAY_DELIVERY_SECRET?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
@@ -1319,6 +1339,52 @@ const startResult = await port.submit(input);
       }
     } catch (e) {
       return json({ error: String((e as Error)?.message ?? e), name: (e as Error)?.name }, errorStatus(e));
+    }
+  },
+
+  /**
+   * Планировщик сквозного watchdog (arch#132, Приоритет 3c).
+   *
+   * Детектор без планировщика — мёртвый код: `runStuckInputSweep` никто не звал.
+   * Здесь — внешний триггер (Cron Trigger), который живёт ВНЕ накопителя и поэтому
+   * видит зависший вход даже тогда, когда аларм того DO сломан или не взведён.
+   *
+   * Контроль работоспособности самого планировщика: каждый успешный проход пишет
+   * отметку в Task Store. Независимая проверка (отдельный триггер/оператор) читает
+   * её и алертит, если отметка устарела — иначе планировщик может умереть молча.
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (env.PREVIEW_ONLY === 'true') return;
+    const store = new TaskStore(env.DB);
+    const adapter = await resolveDeliveryAdapter(env);
+
+    // Детектор наблюдает и уведомляет; переход состояния и запуск выполняет
+    // существующий авторитетный владелец (Output/Router), не планировщик.
+    const result = await runStuckInputSweep(store, { adapter, retryAfterSec: 60 });
+
+    // Отметка работоспособности: только после успешного прохода. Сбой прохода не
+    // должен выглядеть как «всё в порядке».
+    await store.markWatchdogRun({
+      at: Date.now(),
+      scanned: result.scanned,
+      queued: result.queued,
+      delivered: result.delivered,
+      skippedStale: result.skippedStale,
+      alerts: result.alerts,
+      oldestAgeMs: result.oldestAgeMs,
+    });
+
+    // Отметка устарела — планировщик не работает. Это отдельный инцидент, не
+    // смешанный с «просроченный вход»: у них разные владельцы и разные действия.
+    const last = await store.lastWatchdogRun();
+    if (!last || Date.now() - last.last_run_at > WATCHDOG_STALE_MS) {
+      console.error(JSON.stringify({
+        event: 'intake.watchdog_scheduler_stale',
+        level: 'error',
+        reason: 'scheduler_not_running',
+        lastAt: last?.last_run_at ?? null,
+        ageMs: last ? Date.now() - last.last_run_at : null,
+      }));
     }
   },
 };

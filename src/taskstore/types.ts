@@ -337,3 +337,15 @@ export interface StuckInputAlertRow {
   /** Сколько раз планировщик видел инцидент; сам алерт отправляется один раз. */
   count: number;
 }
+
+/** Отметка работоспособности планировщика watchdog (arch#132 П3c). */
+export interface WatchdogHealthRow {
+  id: number;
+  last_run_at: number;
+  scanned: number;
+  queued: number;
+  delivered: number;
+  skipped_stale: number;
+  alerts: number;
+  oldest_age_ms: number | null;
+}

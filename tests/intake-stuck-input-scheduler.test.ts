@@ -30,17 +30,23 @@ afterEach(async () => {
 
 const setup = () => new TaskStore(env.DB);
 
-const admitStuck = async (store: TaskStore, deadlineMs = 1) => {
+/**
+ * Приём ставит stage='queued' — это НОРМАЛЬНОЕ ожидание полосы, оно не алертится.
+ * Для проверки алертов и «настоящего зависания» переводим задачу в handing_off.
+ */
+const admitStuck = async (store: TaskStore, deadlineMs = 1, stage: string | null = 'handing_off') => {
   const id = track(nextId('task'));
   await store.admitTask({ id, profileId: 'profile-1', goal: 'сделай работу', startDeadlineMs: deadlineMs });
+  if (stage) await dbOf(store).prepare('UPDATE durable_tasks SET stage = ? WHERE id = ?').bind(stage, id).run();
   return id;
 };
 
-const recordStuckBatch = async (store: TaskStore, deadlineMs = 1) => {
+const recordStuckBatch = async (store: TaskStore, deadlineMs = 1, prep: 'collecting' | 'ready' = 'ready') => {
   const batchId = trackBatch(nextId('batch'));
   await store.recordPendingInput({
     batchId, version: 1, profileId: 'profile-1', channel: 'telegram', firstMessageAt: Date.now(), deadlineMs,
   });
+  if (prep !== 'collecting') await store.setPendingInputPrep(batchId, prep);
   return batchId;
 };
 
@@ -157,5 +163,30 @@ describe('сквозной watchdog: пагинация, актуальност�
     const second = await runStuckInputSweep(store, {}, Date.now());
     expect(second.alerts).toBe(0);
     expect((await store.listStuckInputAlerts())[0]!.incident_id).toBe(`batch:${batchId}`);
+  });
+
+  it('нормальная очередь за полосу НЕ алертится, но доводит сообщение до пользователя', async () => {
+    const store = setup();
+    await admitStuck(store, 1, 'queued');
+    await expired();
+
+    const result = await runStuckInputSweep(store, {}, Date.now());
+    expect(result.alerts).toBe(0);            // норма — тревоги нет
+    expect(result.queued).toBe(1);             // но сообщение пользователю ушло
+    expect((await store.listStuckInputAlerts())).toHaveLength(0);
+  });
+
+  it('подготовка медиа НЕ алертится, а готовый-не-принятый вход — алертится', async () => {
+    const store = setup();
+    const preparing = await recordStuckBatch(store, 1, 'collecting');
+    const ready = await recordStuckBatch(store, 1, 'ready');
+    await expired();
+
+    const result = await runStuckInputSweep(store, {}, Date.now());
+    expect(result.alerts).toBe(1);            // только ready
+    const alerted = await store.listStuckInputAlerts();
+    expect(alerted).toHaveLength(1);
+    expect(alerted[0]!.incident_id).toBe(`batch:${ready}`);
+    expect(preparing).toBeTruthy();
   });
 });
