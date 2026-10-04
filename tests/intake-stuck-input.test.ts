@@ -1,5 +1,5 @@
 import { TaskStore } from '../src/taskstore';
-import { runStuckInputWatchdog } from '../src/intake';
+import { enqueueStuckInputNotification, runStuckInputWatchdog } from '../src/intake';
 import { DEFAULT_START_DEADLINE_MS } from '../src/taskstore';
 import { afterEach, describe, expect, it } from 'vitest';
 import { env } from './env';
@@ -100,5 +100,76 @@ describe('принято, но не начато: дедлайн старта и
     const result = await runStuckInputWatchdog(store, {}, Date.now());
     expect(result.stuck).toBe(0);
     expect(result.tasks).not.toContain(task.id);
+  });
+
+  it('notify вызывается на каждую просроченную задачу и получает возраст', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('notify'), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const seen: { taskId: string; ageMs: number }[] = [];
+    const result = await runStuckInputWatchdog(
+      store,
+      { notify: async (ctx) => { seen.push({ taskId: ctx.task.id, ageMs: ctx.ageMs }); } },
+      Date.now(),
+    );
+
+    expect(result.stuck).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.taskId).toBe(task.id);
+    expect(seen[0]!.ageMs).toBeGreaterThan(0);
+  });
+
+  it('notify по умолчанию не задан — детектор только наблюдает (не угадывает канал)', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('silent'), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const result = await runStuckInputWatchdog(store, {}, Date.now());
+    expect(result.stuck).toBe(1);
+    // Доставка не поставлена: канал знает хост, а не детектор.
+    expect(await store.listDeliveries(task.id)).toHaveLength(0);
+  });
+
+  it('enqueueStuckInputNotification ставит идемпотентную доставку в outbox (C02)', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('deliver'), 1);
+
+    await enqueueStuckInputNotification(store, task, { channel: 'telegram' });
+    // Повторный вызов по той же задаче — не создаёт вторую доставку.
+    await enqueueStuckInputNotification(store, task, { channel: 'telegram' });
+
+    const deliveries = await store.listDeliveries(task.id);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]!.channel).toBe('telegram');
+    expect(deliveries[0]!.status).toBe('pending');
+    const message = JSON.parse(deliveries[0]!.message_json) as { kind: string; action: string };
+    expect(message.kind).toBe('stuck_input');
+    expect(message.action).toBe('launch');
+  });
+
+  it('сигнал алерта intake.stuck_input эмитится как error event (путь для Watcher)', async () => {
+    const store = setup();
+    const { task } = await admit(store, nextId('alert'), 1);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      await runStuckInputWatchdog(store, {}, Date.now());
+    } finally {
+      console.log = original;
+    }
+
+    const event = lines
+      .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+      .find((e) => e?.event === 'intake.stuck_input');
+    expect(event).toBeTruthy();
+    expect(event!.level).toBe('error');
+    expect(event!.userTaskId).toBe(task.id);
+    expect(event!.reason).toBe('accepted_but_not_started');
+    expect(event!.stage).toBe('queued');
+    expect(typeof event!.ageMs).toBe('number');
   });
 });
