@@ -15,7 +15,8 @@
     "db:migrate:local": "wrangler d1 migrations apply control-plane-task-store --local",
     "db:query:local": "wrangler d1 execute control-plane-task-store --local --command",
     "web:e2e": "node web/e2e/run-m1-web-slice-e2e.mjs",
-    "web:dev": "wrangler dev -c web/wrangler.web.jsonc"
+    "web:dev": "wrangler dev -c web/wrangler.web.jsonc",
+    "eval:fast-replies": "node --experimental-strip-types --import ./tools/ts-ext-resolver.mjs tools/fast-replies-export-decisions.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
