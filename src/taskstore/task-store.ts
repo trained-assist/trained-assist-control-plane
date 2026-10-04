@@ -336,6 +336,21 @@ export class TaskStore {
     return res.results;
   }
 
+  /**
+   * Нетерминальные задачи ПРОФИЛЯ: снимок «своих» данных для быстрых ответов
+   * (`/status`, «что сейчас в работе»). Чужие задачи не выдаются никогда
+   * (PR-09): выборка ограничена владельцем из записи, а не глобальным списком.
+   */
+  async activeTasksByProfile(profileId: string, limit = 20): Promise<TaskRow[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM durable_tasks WHERE profile_id = ? AND ${NON_TERMINAL_SQL} ORDER BY created_at DESC LIMIT ?`,
+      )
+      .bind(profileId, limit)
+      .all<TaskRow>();
+    return res.results;
+  }
+
   /** Задачи, которые ещё не в терминальном статусе (для recover/status). */
   async unfinishedTasks(): Promise<{ id: string }[]> {
     const res = await this.db

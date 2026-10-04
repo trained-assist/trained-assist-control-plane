@@ -1,0 +1,26 @@
+{
+  "corpus": "fast-replies",
+  "corpusVersion": 1,
+  "format": "dialogs.v1.jsonl",
+  "upstream": {
+    "repo": "trained-assist/trained-agent-architecture",
+    "path": "eval/fast-replies/dialogs.v1.jsonl",
+    "ref": "main",
+    "policyVersion": "fast-path-v1-draft-2026-10-02",
+    "note": "Корпус версионирован в архитектурном репозитории (P18, `corpus.manifest.json`). Здесь — пинned-снимок для CI роутера: байты файла и sha256 из манифеста. Обновление: ./tools/fetch-fast-replies-corpus.sh --refresh"
+  },
+  "files": {
+    "dialogs.v1.jsonl": {
+      "sha256": "c882b3f9446c9b6299b48d55bb9eebfcc58970fcf34fee7cb236e5f351200fca",
+      "records": 35,
+      "splits": { "dev": 30, "holdout": 5 }
+    }
+  },
+  "decisions": {
+    "p16-route-policy.v1.jsonl": {
+      "note": "Решения route policy P16 по этому корпусу. Формат строки — как у стенда P18 (`case`, `route`, `reasonCode`, …), поэтому файл грузится в `run_eval.py --source p16-route-policy` без конвертера. Воспроизводимость проверяется тестом: пересчёт должен дать байт-в-байт тот же файл.",
+      "source": "p16-route-policy",
+      "regenerate": "npm run eval:fast-replies"
+    }
+  }
+}

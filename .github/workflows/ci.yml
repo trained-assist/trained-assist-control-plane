@@ -27,3 +27,7 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      # Проверки санитизации evidence (P16) идут отдельным node-скриптом:
+      # файловые операции в workerd-пуле vitest запрещены.
+      - name: Evidence sanitizer self-check
+        run: npm run check:evidence

@@ -2,7 +2,7 @@
 
 Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workflows), поверх них — Input/Router/Output/GTD/Journal/Reporting.
 
-**Статус (03.10.2026): M1.1, M1.2, P04 (приём+квитанция), P05/P06 (поток событий, replay, восстановление), P22 (расписание) и P23 (GTD opt-in и bounded control) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
+**Статус (04.10.2026): M1.1, M1.2, P04 (приём+квитанция), P05/P06 (поток событий, replay, восстановление), P16 (route policy и высокоточные правила fast path), P22 (расписание) и P23 (GTD opt-in и bounded control) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
 
 ## Что здесь лежит
 
@@ -18,8 +18,11 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `web/` | Web-срез (M1, шаг 7): тонкий клиент к API control plane, страница одной conversation, сквозной прогон с рестартом посередине. Подключение — только из env |
 | `src/awaiting/` | Ожидание человека: маппинг purpose→kind, durable-ожидание (истина в Task Store, движок только будит) |
 | `migrations/0006_schedule_v1.sql` + `src/schedule/` | Расписание (P22, этап I07): `schedules`/`schedule_occurrences`, cron в IANA-зоне расписания, дедуп occurrence в БД, политики overlap/catch-up, виртуальные часы. Occurrence — обычная задача; `gtd_id` всегда `NULL` |
+| `src/router/` | Task Router (P16, этап I05): признаки текста, снимок прав, проверенный каталог, route policy, исполнение, события `routing.*`, replay корпуса P18 |
+| `eval/fast-replies/` | Пинned-снимок корпуса P18 (sha256 из манифеста) и артефакт решений route policy в формате стенда P18 |
+| `tools/p16-sandbox-probe.sh` + `tools/p16-evidence.mjs` | Изолированная песочница I05 и сборка sanitized evidence (fail closed) |
 | `migrations/0007_gtd_v1.sql` + `src/gtd/` | GTD (P23, этап I07): запись контроля одной User Task (opt-in), durable inbox Output→GTD, решения прогрессии, внешние условия (synthetic CI). `gtdId` — тот же идентификатор, что в `schedule_occurrences.gtd_id` |
-| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 170 тестов (в т.ч. `tests/p22-schedule.test.ts`, `tests/p23-gtd.test.ts`) |
+| `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 241 тест (в т.ч. `tests/p16-*.test.ts`, `tests/p22-schedule.test.ts`, `tests/p23-gtd.test.ts`) |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
 
 ## Как запустить локально
@@ -29,8 +32,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 ```bash
 npm ci                 # в этом шелле NODE_ENV=production -> NODE_ENV=development npm ci
 npm run typecheck      # tsc --noEmit
-npm test               # 162 теста в workerd (D1 + Workflows), ~25 с
-npm run check          # typecheck + test
+npm test               # 241 тест в workerd (D1 + Workflows), ~25 с
+npm run check          # typecheck + test + проверки санитизации evidence
 ```
 
 Ручной прогон через HTTP-слой:
@@ -59,6 +62,10 @@ curl -X POST localhost:8787/intake -H 'content-type: application/json' -H 'X-Pri
 # Повтор того же requestId -> 200 с той же квитанцией (duplicate=true);
 # другой payload с тем же ключом -> 409; без X-Principal -> 401 (до любой записи)
 curl "localhost:8787/receipt?taskId=ut-..."   # чтение квитанции
+
+# Маршрут по принятой задаче (P16): решение маршрута, ответ/заявка исполнителя
+curl -X POST localhost:8787/route -H 'content-type: application/json' -H 'X-Principal: sandbox-local' \
+  -d '{"taskId":"ut-..."}'
 
 curl -X POST localhost:8787/start  -H 'content-type: application/json' \
   -d '{"taskId":"ut-1","profileId":"demo","goal":"привет"}'
@@ -118,7 +125,7 @@ env** (`CONTROL_PLANE_URL`, `CONTROL_PLANE_PRINCIPAL`, `CONTROL_PLANE_PROFILE`,
 `CONTROL_PLANE_API_KEY`): в репозитории и логах секретов нет.
 
 ```bash
-npm test                       # 162 теста, из них 22 — web-срез и сквозной прогон
+npm test                       # 241 тест, из них web-срез, сквозной прогон и P16
 node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против настоящего control plane
 ```
 
@@ -137,7 +144,7 @@ env** (`CONTROL_PLANE_URL`, `CONTROL_PLANE_PRINCIPAL`, `CONTROL_PLANE_PROFILE`,
 `CONTROL_PLANE_API_KEY`): в репозитории и логах секретов нет.
 
 ```bash
-npm test                       # 162 теста, из них 22 — web-срез и сквозной прогон
+npm test                       # 241 тест, из них web-срез, сквозной прогон и P16
 node web/e2e/run-m1-web-slice-e2e.mjs   # живой прогон против настоящего control plane
 ```
 
@@ -213,6 +220,90 @@ Transcript и разбор приёмки — [`docs/P23-GTD-OPTIN-BOUNDED-CONTR
   .outcome.deferred / .outcome.rejected / .outcome.quarantined / .decision / .wait / .stopped /
   .cancelled / .condition.reported / .tick.started / .tick.finished` — с `profileId`, `userTaskId`,
   `runId`, `gtdId`, `stepId`, ключом идемпотентности и причиной перехода.
+
+## Route policy и высокоточные правила (P16, этап I05)
+
+Карточка [trained-agent-architecture#55](https://github.com/trained-assist/trained-agent-architecture/issues/55),
+контракт — [TASK-ROUTER-AND-MCP §11](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-ROUTER-AND-MCP.md),
+правила маршрутов и ловушки — [FAST-REPLIES](https://github.com/trained-assist/trained-agent-architecture/blob/main/stories/FAST-REPLIES.md)
+и [PROBES PR-21/PR-23](https://github.com/trained-assist/trained-agent-architecture/blob/main/stories/PROBES.md).
+Песочница и transcript — [`docs/evidence/P16-SANDBOX-TRANSCRIPT.md`](docs/evidence/P16-SANDBOX-TRANSCRIPT.md).
+
+- **Три вещи разделены, а не смешаны.** ПРИЗНАКИ (`src/router/text-features.ts`) — что видно в тексте;
+  РЕШЕНИЕ (`src/router/policy.ts`) — чистая функция от признаков, проверенного каталога и снимка прав;
+  ПРАВА (`src/router/authorization.ts`) — только из идентичности. Ссылка и ключевое слово — признак,
+  а не маршрут.
+- **Порядок правил** (§11.2): typed-сигнал/служебная команда → данные пользователя из снимка хоста →
+  шаблон каталога/политики → объявленная capability (не подключена → шаблон со шагом подключения;
+  нет обязательного входа → `required_input`; нет права → `blocked`) → закрывающая реплика (новый сбор
+  данных не запускается) → подтверждение → внешнее действие / самостоятельный выбор инструментов /
+  живые данные → исполнитель → уточнение → работа по уже данному тексту (один recipe-вызов без
+  инструментов). Технические предпосылки проверяются ПЕРВЫМИ: нет снимка каталога, нет снимка
+  готовности, нулевой бюджет, запрет исполнителя — это отказ с причиной, а не запуск агента.
+- **Цитата отделяется от просьбы ДО анализа намерений.** Текст внутри `«…»` — данные: ссылка в цитате
+  не открывается (PR-23), а императив внутри цитаты помечается `embeddedInstructionIgnored` и
+  исполнением не становится. Глагол чтения засчитывается в голове сообщения или рядом с объектом,
+  поэтому «что посмотрим позже?» не читается как просьба открыть страницу.
+- **Алиас capability обязан покрывать весь запрос.** Иначе детерминированный путь молча выбросил бы
+  вторую просьбу, а это `false-fast`. Неоднозначность (два capability с алиасом одинаковой
+  специфичности) даёт уточнение, а не выбор наугад.
+- **Права не выводятся regex.** Единственный источник `AuthorizationSnapshot` —
+  `deriveAuthorization(identity, catalog)`, в сигнатуре которой нет текста запроса; `POST /route`
+  адресуется принятой задаче в Task Store, поэтому профиль и текст в выдачу не попадают. Нет права →
+  `blocked` с причиной, а не «запустить агента вместо проверки» (§11.4).
+- **Живой вопрос не получает выдуманный ответ.** Если нужны данные, которых нет в сообщении и нет
+  объявленной read-only capability, решение эскалируется в OpenCode с `reasonCode`, а `replyAllowed`
+  равен `false`. Если capability объявлена (например, чтение известной страницы), вопрос обслуживается
+  детерминированно — «ссылка ⇒ агент» не является правилом.
+- **Исполнитель — только OpenCode, лестницы нет.** `AgentWorkOrder` собирается, но не исполняется:
+  запуск остаётся за M1.3/P17 после host-проверки прав, бюджета и подтверждения. Технический исход
+  recipe (отказ/таймаут/невалидный/обрезанный JSON) даёт `technical_error` и НЕ эскалирует;
+  `escalationAttempt` в журнале всегда `false`.
+- **Ограниченное исполнение:** одна capability на решение, максимум один repair схемы, бюджет
+  проверяется до платного вызова, неполное покрытие входа (`attachment_pending`) ждёт извлечения,
+  вместо ответа по пустому.
+- **HTTP**: `POST /route` (`tasks:read`) — текст и профиль из принятой задачи, контекст/манифест
+  вложений/typed-сигнал от шлюза, снимок прав из проверенной личности. Логи: `routing.decision`,
+  `routing.escalated`, `routing.blocked`, `routing.technical_error`, `route.dispatched` — с
+  `profileId`, `userTaskId`, `runId`, ключом события и причиной перехода; ключи события совпадают с
+  `REQUIRED_EVENT_KEYS` стенда P18.
+
+### Проверка
+
+```bash
+npm test                                   # 241 тест, из них P16: политика, PR-21, PR-23, корпус
+npm run eval:fast-replies                  # пересобрать артефакт решений по корпусу P18
+./tools/fetch-fast-replies-corpus.sh       # сверить пинned-снимок корпуса с манифестом P18
+./tools/p16-sandbox-probe.sh               # изолированная песочница + sanitized evidence
+npm run check:evidence                     # негативные проверки санитизации evidence
+```
+
+- **Корпус P18 переигран целиком:** 35/35 верных маршрутов (dev + holdout), `false_fast` = 0, ноль
+  ложно-быстрых ответов о живых данных. Решения лежат в
+  `eval/fast-replies/decisions/p16-route-policy.v1.jsonl` в формате стенда P18; CI пересчитывает их
+  и требует байт-в-байтного совпадения, поэтому подогнать результат нельзя.
+- **Пробы PR-21/PR-23** идут через настоящий HTTP-поток (приём задачи → `POST /route` с подписью
+  принципала) и проверяют обе половины ловушки: что видит пользователь и что в журнале.
+- **Двойное доказательство «агент не стартовал»:** `run_started` = 0 в журнале самой задачи (считается
+  прямо в D1 песочницы) плюс корроборация на песочном Runner'е VM2 — там для пробных задач нет ни
+  одного рана (read-only, ssh; если алиас недоступен, это фиксируется в транскрипте явно).
+- **Evidence собирается fail closed:** секрет прогона, e-mail вне RFC 2606, телефон или домашний путь
+  в сырых логах останавливают сборку транскрипта.
+
+### Чего эта карточка не доказывает
+
+- Recipe — заглушка без модели (`ROUTER_RECIPE_STUB`): настоящий вызов (одна модель без инструментов)
+  и его таймауты/отказы — P17.
+- Каталог возможностей песочничный (12 capability) и выдаётся binding'ом `ROUTER_GRANTS`: компилятор
+  каталога, brief и чтение реальных данных capability — P14/P19/P20, credential broker прав — P13.
+- Исполнитель не запускается: доказательство «агент не стартовал» — это отсутствие `run_started` в
+  Task Store и `agentDispatchAttempts`, а не прогон реального OpenCode (M1.3/P17).
+- Корпус синтетический (35 диалогов, P18), ground truth по живым логам не ревьюирован
+  (`human_reviewed = 0`): нулевая ошибка на корпусе не доказывает нулевую ошибку в проде (§11.9).
+- Задержка и стоимость на живых данных не измерены: измеряется только маршрут и признаки.
+- Смешанная просьба, разделённая союзом «и» без effect/adaptive/live-признаков, может быть
+  обслужена объявленной capability, если её алиас покрывает запрос целиком; ловится это эскалацией
+  только при наличии соответствующих признаков.
 
 ## Контрактные решения
 

@@ -34,6 +34,13 @@ import {
   type GtdStepOutcome,
   type ManagedGtdContext,
 } from './gtd';
+import {
+  deriveAuthorization,
+  routeRequest,
+  sandboxCapabilityCatalog,
+  sandboxRecipe,
+  type SandboxFault,
+} from './router';
 
 export interface Env {
   DB: D1Database;
@@ -51,6 +58,25 @@ export interface Env {
    * виртуальных часах. В проде не задаётся: время берёт системный clock.
    */
   SCHEDULE_CLOCK?: string;
+  /**
+   * Task Router (P16, этап I05). Песочница I05; в проде эти поля заполняет
+   * компилятор каталога и credential broker (P19/P20), поэтому здесь всё
+   * приходит из bindings, а не из кода клиента.
+   */
+  /** { principalId: { capabilities: [...], integrations: [...] } } — выдача прав. */
+  ROUTER_GRANTS?: string;
+  /** { connections: {...}, profileFields: {...} } — снимок профиля на момент запроса. */
+  ROUTER_PROFILE_FACTS?: string;
+  /** Фиксированные часы роутера (epoch ms) — воспроизводимый прогон песочницы. */
+  ROUTER_CLOCK?: string;
+  /** Остаток платных вызовов модели в песочнице (по умолчанию 1). */
+  ROUTER_LLM_BUDGET?: string;
+  /** 'false' — исполнитель запрещён политикой песочницы (проверка blocked). */
+  ROUTER_AGENT_ALLOWED?: string;
+  /** 'true' — включить recipe-заглушку песочницы (без модели). */
+  ROUTER_RECIPE_STUB?: string;
+  /** Управляемый сбой recipe: refused | timeout | invalid_json | truncated. */
+  ROUTER_RECIPE_FAULT?: string;
 }
 
 const isPermanent = (e: unknown): boolean =>
@@ -151,6 +177,167 @@ const gtdServiceOf = (env: Env, store: TaskStore, clock?: Clock): GtdService =>
     port: new CfWorkflowPort(env.TASK_WORKFLOW, store),
     clock: clock ?? scheduleClockOf(env),
   });
+
+/**
+ * Task Router: `POST /route` (P16, этап I05).
+ *
+ * Вход маршрутизации — ПРИНЯТАЯ задача в Task Store, а не тело запроса:
+ * профиль и текст берутся из записи (`authorizeTaskRoute` + `user_value`),
+ * поэтому права нельзя вывести из текста и нельзя подменить профиль клиентом.
+ * Контекст диалога, манифест вложений и typed-сигнал приходят от шлюза
+ * (§11.2 шаг 2): без них контекст считается пустым, а не «полным».
+ *
+ * Эндпоинт НЕ запускает исполнителя: при маршруте `agent` возвращается
+ * AgentWorkOrder (§11.5). Запуск остаётся за M1.3/P17 после host-проверки прав,
+ * бюджета и подтверждения.
+ */
+async function handleRouteRoute(
+  req: Request,
+  body: Record<string, unknown>,
+  env: Env,
+  store: TaskStore,
+  auth: PrincipalAuth,
+): Promise<Response> {
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+  const taskId = String(body.taskId ?? '');
+  if (!taskId) return json({ error: 'taskId is required' }, 400);
+
+  const task = await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
+  const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
+  const catalog = sandboxCapabilityCatalog();
+
+  // Права — из идентичности: выдача capability приходит из binding'а песочницы
+  // (в проде — из credential broker). Текст запроса в выдачу не входит.
+  const grants = parseJsonObject<Record<string, { capabilities?: string[]; integrations?: string[] }>>(env.ROUTER_GRANTS);
+  const own = grants[principal.principalId] ?? {};
+  const platform = catalog.capabilities.map((c) => c.id).filter((id) => /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
+  const authorization = await deriveAuthorization(
+    {
+      principalId: principal.principalId,
+      profileId: task.profile_id,
+      scopes: principal.scopes,
+      grantedCapabilityIds: [...platform, ...(own.capabilities ?? [])],
+      grantedIntegrationIds: own.integrations ?? [],
+    },
+    catalog,
+  );
+
+  const facts = parseJsonObject<{ connections?: Record<string, boolean>; profileFields?: Record<string, string | null> }>(
+    env.ROUTER_PROFILE_FACTS,
+  );
+  const activeRows = await store.activeTasksByProfile(task.profile_id);
+  const clockMs = env.ROUTER_CLOCK ? Number(env.ROUTER_CLOCK) : Date.now();
+
+  // Исходный текст — из принятой задачи: он неизменен и не переписывается шлюзом.
+  const storedValue = task.user_value ? (JSON.parse(task.user_value) as Record<string, unknown>) : {};
+  const inputItems = Array.isArray(storedValue.inputItems) ? (storedValue.inputItems as Array<{ text?: string }>) : [];
+  const text = inputItems.map((item) => item.text ?? '').join('\n').trim();
+
+  const context = (body.context ?? {}) as Record<string, unknown>;
+  const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+  const typedSignal = body.typedSignal as { kind: 'button' | 'command' | 'awaiting_answer'; ref: string } | null | undefined;
+
+  const result = await routeRequest(
+    {
+      envelope: {
+        principalId: principal.principalId,
+        profileId: task.profile_id,
+        userTaskId: task.id,
+        conversationId: task.conversation_id,
+        catalogVersion: catalog.version,
+        policyVersion: catalog.version,
+        budgets: {
+          llmCallsRemaining: Number(env.ROUTER_LLM_BUDGET ?? 1),
+          agentAllowed: env.ROUTER_AGENT_ALLOWED !== 'false',
+        },
+        runId: null,
+        requestId: task.request_id,
+      },
+      prepared: {
+        text,
+        context: {
+          pendingProposal: (context.pendingProposal as string | undefined) ?? null,
+          lastAssistantText: (context.lastAssistantText as string | undefined) ?? null,
+          sessionEmpty: context.sessionEmpty === undefined ? true : Boolean(context.sessionEmpty),
+          relevantTurns: Number(context.relevantTurns ?? 0),
+        },
+        attachments: attachments as never,
+        typedSignal: typedSignal ?? null,
+        contextVersion: `ctx:${task.id}:${catalog.version}`,
+        readinessSnapshotPresent: true,
+      },
+      catalog,
+      authorization,
+      hostFacts: {
+        clockMs: Number.isFinite(clockMs) ? clockMs : Date.now(),
+        connections: facts.connections ?? {},
+        profileFields: facts.profileFields ?? {},
+        activeTasks: activeRows.map((row) => ({ id: row.id, state: row.status, title: row.goal.slice(0, 80) })),
+        tasksYesterday: [],
+      },
+    },
+    {
+      source: 'http-route',
+      recipe: env.ROUTER_RECIPE_STUB === 'true' ? sandboxRecipe(readSandboxFault(env.ROUTER_RECIPE_FAULT)) : undefined,
+    },
+  );
+
+  logStructured({
+    event: 'route.dispatched',
+    profileId: task.profile_id,
+    userTaskId: task.id,
+    runId: null,
+    requestId: task.request_id,
+    decisionId: result.decisionId,
+    reason: result.decision.reasonCode,
+    route: result.decision.route,
+    agentDispatchAttempts: result.execution.agentDispatchAttempts,
+    agentStarted: false,
+    workOrderIssued: result.workOrder !== null,
+    permissionSource: authorization.source,
+    authorizationRef: authorization.snapshotRef,
+  });
+
+  return json({
+    decisionId: result.decisionId,
+    policyVersion: result.decision.policyVersion,
+    route: result.decision.route,
+    mode: result.decision.mode,
+    reasonCode: result.decision.reasonCode,
+    outcome: result.decision.outcome,
+    needsExecutor: result.decision.needsExecutor,
+    executor: result.decision.executor,
+    escalation: result.decision.escalation,
+    escalationAttempt: result.decision.escalationAttempt,
+    replyAllowed: result.decision.replyAllowed,
+    capabilityId: result.decision.capabilityId,
+    coverage: result.decision.coverage,
+    schemaOutcome: result.decision.schemaOutcome,
+    semanticOutcome: result.decision.semanticOutcome,
+    modelCalls: result.decision.modelCalls,
+    firstUsefulReplyMs: result.decision.firstUsefulReplyMs,
+    reply: result.reply,
+    askUser: result.askUser,
+    workOrder: result.workOrder,
+    execution: result.execution,
+    evidence: result.decision.evidence,
+  });
+}
+
+/** Разбор JSON-поля binding'а: мусорный конфиг не должен ронять маршрут. */
+function parseJsonObject<T>(raw: string | undefined): T {
+  if (!raw) return {} as T;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as T) : ({} as T);
+  } catch {
+    return {} as T;
+  }
+}
+
+function readSandboxFault(raw: string | undefined): SandboxFault {
+  return raw === 'refused' || raw === 'timeout' || raw === 'invalid_json' || raw === 'truncated' ? raw : 'none';
+}
 
 /**
  * Маршруты GTD (P23, #62).
@@ -579,6 +766,7 @@ const store = new TaskStore(env.DB);
           endpoints: [
             '/intake',
             '/receipt',
+            '/route',
             '/start',
             '/signal',
             '/cancel',
@@ -851,6 +1039,11 @@ const store = new TaskStore(env.DB);
       // задача и occurrence расписания остаются без записи контроля.
       if (url.pathname === '/gtd' || url.pathname.startsWith('/gtd/')) {
         return await handleGtdRoute(req, url, env, store, body, auth);
+      }
+
+      // ── Task Router (P16, этап I05): решение маршрута по принятой задаче ──
+      if (url.pathname === '/route') {
+        return await handleRouteRoute(req, body, env, store, auth);
       }
 
       if (url.pathname === '/receipt') {
