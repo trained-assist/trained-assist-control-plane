@@ -40,6 +40,28 @@ export const TASK_STAGES = [
 ] as const;
 export type TaskStage = (typeof TASK_STAGES)[number];
 
+/**
+ * Стадии «принято, но не начато»: задача durable, но Run ещё не стартовал.
+ * Именно у них обязан быть start_deadline_at — верхняя граница ожидания
+ * (arch#132 R1/R2; репро — инцидент tg-bot 2026-10-04, PR #345).
+ */
+export const PRE_START_STAGES = ['collecting', 'preparing', 'queued', 'handing_off'] as const;
+export type PreStartStage = (typeof PRE_START_STAGES)[number];
+
+export function isPreStartStage(stage: string | null | undefined): stage is PreStartStage {
+  return !!stage && (PRE_START_STAGES as readonly string[]).includes(stage);
+}
+
+/**
+ * Сколько принятый вход может ждать старта, прежде чем это дефект.
+ *
+ * Верхняя граница, а не «обычное время»: нарушение видно детектором (arch#132
+ * R3), а не догадкой. Значение — с запасом относительно нормального пути
+ * (приём → Router → движок), но заведомо меньше времени, за которое пользователь
+ * успевает решить, что «бот сдох».
+ */
+export const DEFAULT_START_DEADLINE_MS = 10 * 60_000;
+
 /** Закрытая лексика task_events.kind (§5.2): новый kind = значение, не миграция схемы. */
 export const TASK_EVENT_KINDS = [
   'task_accepted',
@@ -95,6 +117,11 @@ export interface TaskRow {
   goal: string;
   status: TaskStatus;
   stage: TaskStage | null;
+  /**
+   * Верхняя граница ожидания старта (NULL у started/terminal). Заполняется при
+   * приёме, сбрасывается в NULL при старте Run (миграция 0008).
+   */
+  start_deadline_at: number | null;
   conversation_id: string | null;
   audience_id: string | null;
   destination_id: string | null;

@@ -25,6 +25,8 @@ import {
 } from './errors';
 import { kindForPurpose } from '../awaiting/purpose';
 import {
+  DEFAULT_START_DEADLINE_MS,
+  PRE_START_STAGES,
   TERMINAL_STATUS_SQL,
   isTerminalStatus,
   type ArtifactRow,
@@ -69,6 +71,11 @@ export interface AdmitTaskInput {
   userValue?: unknown;
   /** Заголовок диалога для conversations при создании разговора. */
   conversationTitle?: string | null;
+  /**
+   * Верхняя граница ожидания старта; по умолчанию DEFAULT_START_DEADLINE_MS от
+   * момента приёма. Принятый вход без такой границы — дефект (arch#132 R1/R2).
+   */
+  startDeadlineMs?: number;
   source?: EventSource;
 }
 
@@ -196,8 +203,8 @@ export class TaskStore {
           `INSERT INTO durable_tasks(
              id, profile_id, project_id, goal, status, stage,
              conversation_id, audience_id, destination_id, request_id, origin_session_id, user_value,
-             generation, created_at, updated_at, revision)
-           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0)
+             generation, created_at, updated_at, revision, start_deadline_at)
+           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0,?)
            ON CONFLICT(id) DO NOTHING`,
         )
         .bind(
@@ -213,6 +220,9 @@ export class TaskStore {
           input.userValue === undefined ? null : JSON.stringify(input.userValue),
           now,
           now,
+          // Принято = «ещё не начато»: дедлайн старта обязателен уже на приёме
+          // (arch#132 R1/R2). Сбрасывается в NULL в startRun().
+          now + (input.startDeadlineMs ?? DEFAULT_START_DEADLINE_MS),
         ),
     );
 
@@ -418,7 +428,40 @@ export class TaskStore {
       source: 'executor',
       payload: { runId, engine: opts.engine ?? null, sessionId: opts.sessionId ?? null, leaseUntil },
     });
+    // Старт состоялся — верхняя граница ожидания старта больше не действует.
+    // Сбрасываем в той же точке, где задача перестаёт быть «принято, но не начато».
+    await this.db
+      .prepare(`UPDATE durable_tasks SET start_deadline_at = NULL, updated_at = ? WHERE id = ? AND start_deadline_at IS NOT NULL`)
+      .bind(Date.now(), task.id)
+      .run();
     return this.requireRun(runId);
+  }
+
+  /**
+   * Детектор «принято, но не начато» (arch#132 R3).
+   *
+   * Живёт ВНЕ накопителя: единственные «часы» буфера — его собственный таймер, а
+   * сломанный/не взведённый таймер и был причиной тишины в чате (tg-bot 2026-10-04).
+   * Этот запрос — единственный способ узнать возраст самого старого принятого, но
+   * не начатого входа; идёт по idx_tasks_start_deadline и сортируется по
+   * дедлайну, то есть «самому старому — первым».
+   *
+   * Наблюдение, а не переход: у одного перехода ровно один владелец, и следующий
+   * шаг решает не детектор.
+   */
+  async sweepStuckAccepted(now: number = Date.now(), limit = 50): Promise<TaskRow[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM durable_tasks
+         WHERE start_deadline_at IS NOT NULL
+           AND start_deadline_at < ?
+           AND stage IN (${PRE_START_STAGES.map(() => '?').join(',')})
+         ORDER BY start_deadline_at
+         LIMIT ?`,
+      )
+      .bind(now, ...PRE_START_STAGES, limit)
+      .all<TaskRow>();
+    return res.results;
   }
 
   /**
