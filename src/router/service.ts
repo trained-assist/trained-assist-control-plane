@@ -1,5 +1,5 @@
 /**
- * RouteService: host-owned оркестрация fast path (P16, §11.2 шаги 3–7).
+ * RouteService: host-owned оркестрация fast path (P16 policy + P17 recipe).
  *
  * Последовательность: подготовка снимка → решение политики → host-валидация →
  * исполнение ровно одного обработчика → ответ/эскалация → bounded termination.
@@ -8,23 +8,34 @@
  *  - решение принимает чистая функция `decideRoute`, а сервис только исполняет
  *    и проверяет; поэтому решение воспроизводимо и не зависит от состояния
  *    worker'а (нужно для eval §11.7.5);
- *  - ни один технический исход (отказ модели, таймаут, невалидный/обрезанный
- *    JSON, нулевой бюджет) не включает агента: `escalationAttempt` остаётся
- *    false, а исход пишется как technical_error/blocked;
- *  - capability исполняется не более одного раза на решение, repair — не более
- *    одного (§11.2 шаг 7);
- *  - `agentWorkOrder` — это заявка, а не запуск: реальную отправку делает
- *    M1.3/P17 после host-проверки прав и бюджета.
+ *  - ни один технический исход (отказ модели, таймаут, отказ провайдера,
+ *    невалидный/обрезанный JSON, нулевой бюджет) не включает агента:
+ *    `escalationAttempt` остаётся false, а исход пишется как
+ *    technical_error/blocked/insufficient_context (§11.3);
+ *  - capability исполняется не более одного раза на решение, repair схемы — не
+ *    более одного вызова (§11.2 шаг 7);
+ *  - продолжение запрашивается, но НЕ выдаётся: ровно один владелец
+ *    продолжения — Output (`src/output/continuation.ts`), и роутер не создаёт
+ *    ни job, ни run.
  */
 import { logStructured } from '../logging/structured-log';
-import { agentWorkOrder, deterministicAnswer, templateAnswer, type AgentWorkOrder, type RecipeRunner } from './handlers';
+import { agentWorkOrder, deterministicAnswer, templateAnswer, type AgentWorkOrder } from './handlers';
 import { ROUTING_BLOCKED_EVENT, ROUTING_ESCALATED_EVENT, ROUTING_TECHNICAL_ERROR_EVENT, routingLogFields } from './events';
 import { decideRoute, MAX_DECISION_ATTEMPTS } from './policy';
-import type { CapabilityEntry, RouteMode, RoutingDecision, RoutingInput } from './router-types';
+import { RECIPE_ID } from './recipe/decision-contract';
+import type { HostCapabilityHandler, PreparedCapabilityData } from './recipe/host-data';
+import { hostConstraintsOf, hostRequiresExternalAction, partialResultRefOf } from './recipe/host-data';
+import type { RecipeResult, ReplyOrRouteRunner } from './recipe/recipe';
+import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
+import type { FastPathContinuationRequest } from '../output/continuation';
 
 export interface RouteServiceDeps {
-  /** Recipe P17: одна модель без инструментов. В песочнице внедряется стабом. */
-  recipe?: RecipeRunner;
+  /** Рецепт P17: один вызов модели без инструментов → одно решение. */
+  replyOrRoute?: ReplyOrRouteRunner;
+  /** Идентификатор модели для журнала (без инструментов). */
+  modelId?: string;
+  /** Host-owned обработчик данных: модель capability не вызывает. */
+  handler?: HostCapabilityHandler;
   /** Источник решений для eval-стенда P18. */
   source?: string;
   now?: () => number;
@@ -39,6 +50,11 @@ export interface RouteResult {
   askUser: { question: string; missingFields: string[] } | null;
   /** Заявка исполнителю; сам запуск — вне модуля. */
   workOrder: AgentWorkOrder | null;
+  /**
+   * Запрос продолжения. Выдаёт его только Output — единственный владелец
+   * продолжения (P17); здесь он только собирается.
+   */
+  continuation: FastPathContinuationRequest | null;
   /** Что реально выполнено: счётчики для доказательства «агент не запускался». */
   execution: {
     capabilityExecutions: number;
@@ -69,6 +85,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
   let reply: RouteResult['reply'] = null;
   let askUser: RouteResult['askUser'] = null;
   let workOrder: AgentWorkOrder | null = null;
+  let continuation: FastPathContinuationRequest | null = null;
 
   // Невалидное решение не исполняется: JSON-валидность/совпадение алиаса не
   // доказывают ни существования capability, ни её готовности (§11.2 шаг 4).
@@ -79,20 +96,24 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
     decision.outcome = 'technical_error';
   }
 
+  // Данные для рецепта готовит ХОСТ: модель их не добывает и не выбирает (§5).
+  const preparedData: PreparedCapabilityData | null =
+    decision.capabilityId && deps.handler ? await deps.handler({ capabilityId: decision.capabilityId, hostFacts: input.hostFacts, prepared: input.prepared }) : null;
+
   if (decision.outcome === 'blocked' || decision.route === null) {
     reply = null;
   } else if (decision.route === 'agent') {
-    workOrder = agentWorkOrder({
-      envelope: input.envelope,
-      prepared: input.prepared,
+    ({ workOrder, continuation } = escalate({
+      input,
+      decision,
       reasonCode: decision.reasonCode,
       requiresExternalAction: decision.requiresExternalAction,
-      authorizationRef: input.authorization.snapshotRef,
-      catalogCapabilityIds: input.catalog.capabilities.map((c) => c.id),
-    });
+      hostConstraints: hostConstraintsOf(input.prepared.text),
+      partialResultRef: null,
+    }));
     // Счётчик попыток эскалации: он остаётся 0 для любого не-агентского пути.
     execution.agentDispatchAttempts = 1;
-    decision.jobRef = `job_${input.envelope.userTaskId}`;
+    decision.jobRef = null;
     decision.runRef = input.envelope.runId;
   } else if (decision.outcome === 'clarify') {
     askUser = { question: clarifyQuestion, missingFields: ['goal'] };
@@ -146,34 +167,39 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
       reply = null;
     }
   } else if (decision.mode === 'llm-recipe-job') {
-    const outcome = await runRecipe(input, decision, deps, execution);
-    if (outcome.kind === 'ok') {
-      reply = { text: outcome.text, evidenceRefs: ['recipe:reply-or-route'], mode: 'llm-recipe-job' };
-      decision.firstUsefulReplyMs = now() - startedAt;
-    } else {
-      // Отказ/таймаут/мусор — технический исход, НЕ ответ и НЕ повод для агента.
-      decision.schemaOutcome =
-        outcome.kind === 'refused'
-          ? 'refused'
-          : outcome.kind === 'timeout'
-            ? 'timeout'
-            : outcome.kind === 'truncated'
-              ? 'truncated'
-              : 'invalid';
-      decision.semanticOutcome = 'not_evaluated';
-      decision.reasonCode =
-        outcome.kind === 'refused'
-          ? 'MODEL_REFUSED'
-          : outcome.kind === 'timeout'
-            ? 'MODEL_TIMEOUT'
-            : outcome.kind === 'truncated'
-              ? 'SCHEMA_TRUNCATED'
-              : 'SCHEMA_INVALID';
-      decision.outcome = 'technical_error';
-      decision.replyAllowed = false;
-      decision.modelCalls = outcome.modelCalls;
-      reply = null;
-    }
+    const result: RecipeResult = deps.replyOrRoute
+      ? await deps.replyOrRoute({ input, decision, preparedData })
+      : // Рецепт не внедрён: платный вызов невозможен, и это видно, а не
+        // «ответ по умолчанию» (P16 → P17: тот же честный технический исход).
+        { kind: 'timeout', modelCalls: 0 };
+    execution.recipeCalls = 1;
+    decision.recipeId = RECIPE_ID;
+    decision.modelId = deps.modelId ?? null;
+    decision.modelCalls = result.modelCalls;
+    execution.modelCalls = result.modelCalls;
+    decision.repairAttempts = result.kind === 'schema_invalid' ? result.repairAttempts : 0;
+    await applyRecipeResult(result, {
+      input,
+      decision,
+      capability,
+      preparedData,
+      handler: deps.handler ?? null,
+      hostConstraints: hostConstraintsOf(input.prepared.text),
+      now,
+      startedAt,
+      execution,
+      setReply: (value) => {
+        reply = value;
+      },
+      setAskUser: (value) => {
+        askUser = value;
+      },
+      setEscalation: (value) => {
+        workOrder = value.workOrder;
+        continuation = value.continuation;
+        execution.agentDispatchAttempts = 1;
+      },
+    });
   }
 
   if (execution.capabilityExecutions > MAX_DECISION_ATTEMPTS) {
@@ -215,6 +241,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
   if (decision.needsExecutor) {
     logStructured({
       event: ROUTING_ESCALATED_EVENT,
+      level: 'info',
       profileId: input.envelope.profileId,
       userTaskId: input.envelope.userTaskId,
       runId: input.envelope.runId,
@@ -226,7 +253,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
     });
   }
 
-  return { decision, decisionId, reply, askUser, workOrder, execution };
+  return { decision, decisionId, reply, askUser, workOrder, continuation, execution };
 }
 
 function coverageWaits(coverage: RoutingDecision['coverage']): boolean {
@@ -238,29 +265,270 @@ function missingQuestion(capability: CapabilityEntry | null, missing: string[]):
   return `Нужны ваши данные: ${what}.${capability ? ` Действие: ${capability.title}.` : ''} Агент не запускаю — не хватает ввода, а не возможностей.`;
 }
 
-async function runRecipe(
-  input: RoutingInput,
-  decision: RoutingDecision,
-  deps: RouteServiceDeps,
-  execution: RouteResult['execution'],
-): Promise<Awaited<ReturnType<RecipeRunner>>> {
-  const recipe = deps.recipe;
-  if (!recipe) {
-    // Recipe внедряется в P17; до этого платный вызов невозможен, и это видно,
-    // а не «ответ по умолчанию».
-    decision.reasonCode = 'MODEL_TIMEOUT';
+interface EscalationParams {
+  input: RoutingInput;
+  decision: RoutingDecision;
+  reasonCode: RoutingDecision['reasonCode'];
+  requiresExternalAction: boolean;
+  hostConstraints: string[];
+  partialResultRef: string | null;
+  /** Возможности, названные решением; null — хост не знает ни одной (policy-эскалация). */
+  requiredCapabilities?: string[] | null;
+}
+
+/**
+ * Заявка исполнителю и ЗАПРОС продолжения. Продолжение здесь не выдаётся:
+ * владелец — Output, и решение о новой работе принимает только он.
+ */
+function escalate(params: EscalationParams): { workOrder: AgentWorkOrder; continuation: FastPathContinuationRequest } {
+  const { input, decision, reasonCode, requiresExternalAction, hostConstraints, partialResultRef } = params;
+  // Нужные capability — названные решением, а не весь каталог: «нужен веб» не
+  // значит «дай весь список возможностей» (§11.3).
+  const requiredCapabilities = params.requiredCapabilities && params.requiredCapabilities.length > 0
+    ? params.requiredCapabilities
+    : input.catalog.capabilities.map((c) => c.id);
+  const workOrder = agentWorkOrder({
+    envelope: input.envelope,
+    prepared: input.prepared,
+    reasonCode,
+    requiresExternalAction,
+    authorizationRef: input.authorization.snapshotRef,
+    catalogCapabilityIds: requiredCapabilities,
+  });
+  const continuation: FastPathContinuationRequest = {
+    decisionId: decision.decisionId,
+    userTaskId: input.envelope.userTaskId,
+    profileId: input.envelope.profileId,
+    conversationId: input.envelope.conversationId,
+    originalRequestRef: `task:${input.envelope.userTaskId}:request:${input.envelope.requestId ?? 'none'}`,
+    goal: input.prepared.text,
+    // Ограничения из исходного текста не теряются при reformulation (§11.3).
+    preservedConstraints: Array.from(new Set([...hostConstraints, ...workOrder.preservedConstraints])),
+    requiredCapabilities,
+    reasonCode: reasonCode as FastPathContinuationRequest['reasonCode'],
+    partialResultRef,
+    authorizationRef: input.authorization.snapshotRef,
+    requiresConfirmation: requiresExternalAction,
+    workOrder,
+  };
+  return { workOrder, continuation };
+}
+
+interface RecipeApplyState {
+  input: RoutingInput;
+  decision: RoutingDecision;
+  capability: CapabilityEntry | null;
+  preparedData: PreparedCapabilityData | null;
+  /** Host-owned обработчик: он и приносит данные для предложенной capability. */
+  handler: HostCapabilityHandler | null;
+  hostConstraints: string[];
+  now: () => number;
+  startedAt: number;
+  /** Счётчики исполнения: доказательство «агент не запускался». */
+  execution: RouteResult['execution'];
+  setReply: (value: RouteResult['reply']) => void;
+  setAskUser: (value: RouteResult['askUser']) => void;
+  setEscalation: (value: { workOrder: AgentWorkOrder; continuation: FastPathContinuationRequest }) => void;
+}
+
+/** Исход рецепта → поля решения. Ни один технический исход не эскалирует. */
+async function applyRecipeResult(result: RecipeResult, state: RecipeApplyState): Promise<void> {
+  const { decision } = state;
+  const mark = (outcome: RoutingDecision['outcome'], reasonCode: RoutingDecision['reasonCode'], schemaOutcome: RoutingDecision['schemaOutcome'], semanticOutcome: RoutingDecision['semanticOutcome']) => {
+    decision.outcome = outcome;
+    decision.reasonCode = reasonCode;
+    decision.schemaOutcome = schemaOutcome;
+    decision.semanticOutcome = semanticOutcome;
+    decision.replyAllowed = outcome === 'reply';
+  };
+
+  switch (result.kind) {
+    case 'reply':
+      mark('reply', decision.reasonCode, 'valid', 'valid');
+      state.setReply({ text: result.text, evidenceRefs: result.evidenceRefs, mode: 'llm-recipe-job' });
+      decision.firstUsefulReplyMs = state.now() - state.startedAt;
+      return;
+    case 'clarify':
+      mark('clarify', 'AMBIGUOUS_WITHOUT_CONTEXT', 'valid', 'valid');
+      state.setAskUser({ question: result.question, missingFields: result.missingFields });
+      return;
+    case 'awaiting_input':
+      // Недостающее — известное хосту поле: типизированное ожидание, а не вопрос.
+      mark('required_input', 'MISSING_REQUIRED_INPUT', 'valid', 'valid');
+      state.setAskUser({ question: result.question, missingFields: result.missingFields });
+      return;
+    case 'insufficient_context':
+      // Ответ не публикуется и не эскалируется: хост расширяет контекст сам.
+      mark('insufficient_context', 'CONTEXT_NOT_SUFFICIENT', 'valid', 'coverage_pending');
+      return;
+    case 'blocked':
+      mark('blocked', blockedReasonOf(result.reasonCode), 'invalid', 'invalid');
+      return;
+    case 'schema_invalid':
+      mark('technical_error', 'SCHEMA_INVALID', 'invalid', 'not_evaluated');
+      return;
+    case 'timeout':
+      mark('technical_error', 'MODEL_TIMEOUT', 'timeout', 'not_evaluated');
+      return;
+    case 'provider_failure':
+      decision.providerCode = result.code;
+      mark('technical_error', 'PROVIDER_FAILURE', 'provider_failure', 'not_evaluated');
+      return;
+    case 'budget_denied':
+      mark('blocked', 'BUDGET_DENIED', 'budget_denied', 'not_evaluated');
+      return;
+    case 'refused':
+      mark('technical_error', 'MODEL_REFUSED', 'refused', 'not_evaluated');
+      return;
+    case 'truncated':
+      mark('technical_error', 'SCHEMA_TRUNCATED', 'truncated', 'not_evaluated');
+      return;
+    case 'needs_capability':
+      await executeCapability(result, state);
+      return;
+    case 'needs_executor': {
+      decision.requiresFreshData = result.assessment.needsFreshData;
+      // Подтверждение решает хост: либо модель объявила действие, либо в исходном
+      // тексте есть явный запрет на внешнее действие (§11.3).
+      const requiresExternalAction = result.assessment.needsActions || hostRequiresExternalAction(state.hostConstraints);
+      decision.requiresExternalAction = requiresExternalAction;
+      const { workOrder, continuation } = escalate({
+        input: state.input,
+        decision,
+        reasonCode: result.reasonCode,
+        requiresExternalAction,
+        hostConstraints: state.hostConstraints,
+        partialResultRef: result.partialResultRef,
+        requiredCapabilities: result.requiredCapabilities,
+      });
+      state.setEscalation({ workOrder, continuation });
+      // Исполнителя назначает хост, а не модель: терминальный и только он (§11.3).
+      decision.needsExecutor = true;
+      decision.executor = TERMINAL_EXECUTOR;
+      decision.escalation = 'agent';
+      mark('escalated', result.reasonCode, 'valid', 'valid');
+      return;
+    }
+  }
+}
+
+/** Причина семантического отказа: значение, а не текст ошибки схемы. */
+function blockedReasonOf(code: string): RoutingDecision['reasonCode'] {
+  if (code === 'unknown_capability' || code === 'capability_version_mismatch') return 'UNKNOWN_CAPABILITY_VERSION';
+  if (code === 'capability_not_granted' || code === 'capability_mode_not_allowed') return 'PERMISSION_DENIED';
+  return 'SEMANTIC_INVALID';
+}
+
+/**
+ * Исполнение capability, НАЗВАННОЙ моделью: ровно один вызов host-обработчика
+ * (§11.2 шаг 5). Модель не выбирает backend и не вызывает capability сама — она
+ * предложила только id, версию и аргументы, а данные приносит хост.
+ *
+ * Данные берутся для той capability, которую назвало решение: на текстовой
+ * работе политика capability не выбирала, и предзагруженные данные (если были)
+ * относятся к другой возможности — брать их было бы подменой проверенного.
+ */
+async function executeCapability(
+  result: Extract<RecipeResult, { kind: 'needs_capability' }>,
+  state: RecipeApplyState,
+): Promise<void> {
+  const { decision, input } = state;
+  const entry =
+    input.catalog.capabilities.find((c) => c.id === result.capabilityId && c.version === result.capabilityVersion) ?? null;
+  if (!entry) {
+    // Решение прошло семантическую проверку, но снимок не подтвердил: не
+    // исполняем, а фиксируем расхождение (запись могла устареть между шагами).
+    decision.semanticOutcome = 'invalid';
+    decision.reasonCode = 'UNKNOWN_CAPABILITY_VERSION';
     decision.outcome = 'technical_error';
     decision.replyAllowed = false;
-    decision.modelCalls = 0;
-    return { kind: 'timeout', modelCalls: 0 };
+    return;
   }
-  execution.recipeCalls = 1;
-  const outcome = await recipe({
-    decisionId: decision.decisionId,
-    text: input.prepared.text,
-    preparedData: null,
-  });
-  return outcome;
+  if (!state.handler) {
+    decision.semanticOutcome = 'not_evaluated';
+    decision.reasonCode = 'CAPABILITY_HANDLER_ERROR';
+    decision.outcome = 'technical_error';
+    decision.replyAllowed = false;
+    return;
+  }
+  const data = await state.handler({ capabilityId: result.capabilityId, hostFacts: input.hostFacts, prepared: input.prepared });
+  decision.capabilityExecutions = 1;
+  state.execution.capabilityExecutions = 1;
+  switch (data.outcome) {
+    case 'completed': {
+      const answer = deterministicAnswer(entry.id, input.hostFacts, input.prepared);
+      if (!answer) {
+        decision.semanticOutcome = 'invalid_missing_arg';
+        decision.reasonCode = 'MISSING_REQUIRED_INPUT';
+        decision.outcome = 'clarify';
+        decision.replyAllowed = false;
+        state.setAskUser({ question: clarifyQuestion, missingFields: [] });
+        return;
+      }
+      decision.outcome = 'reply';
+      decision.reasonCode = 'CAPABILITY_QUESTION';
+      decision.schemaOutcome = 'valid';
+      decision.semanticOutcome = 'valid';
+      decision.replyAllowed = true;
+      state.setReply({ ...answer, evidenceRefs: answer.evidenceRefs, mode: 'llm-recipe-job' });
+      decision.firstUsefulReplyMs = state.now() - state.startedAt;
+      return;
+    }
+    case 'missing_input':
+      decision.outcome = 'required_input';
+      decision.reasonCode = 'MISSING_REQUIRED_INPUT';
+      decision.schemaOutcome = 'valid';
+      decision.semanticOutcome = 'valid';
+      decision.replyAllowed = false;
+      state.setAskUser({
+        question: missingQuestion(entry, data.missingInputs),
+        missingFields: data.missingInputs,
+      });
+      return;
+    case 'blocked':
+      decision.outcome = 'blocked';
+      decision.reasonCode = 'PERMISSION_DENIED';
+      decision.schemaOutcome = 'valid';
+      decision.semanticOutcome = 'invalid';
+      decision.replyAllowed = false;
+      return;
+    case 'needs_agent': {
+      // Хост решил, что нужен исполнитель: эскалация — решение владельца
+      // данных, а не догадка модели (§11.4).
+      const requiresExternalAction = result.assessment.needsActions || hostRequiresExternalAction(state.hostConstraints);
+      const { workOrder, continuation } = escalate({
+        input,
+        decision,
+        reasonCode: reasonCodeOf(data.needsAgentReason),
+        requiresExternalAction,
+        hostConstraints: state.hostConstraints,
+        partialResultRef: partialResultRefOf(data),
+        requiredCapabilities: [entry.id],
+      });
+      state.setEscalation({ workOrder, continuation });
+      decision.requiresFreshData = true;
+      decision.requiresExternalAction = requiresExternalAction;
+      decision.outcome = 'escalated';
+      decision.reasonCode = reasonCodeOf(data.needsAgentReason);
+      decision.schemaOutcome = 'valid';
+      decision.semanticOutcome = 'valid';
+      return;
+    }
+    case 'technical_error':
+      decision.outcome = 'technical_error';
+      decision.reasonCode = 'CAPABILITY_HANDLER_ERROR';
+      decision.schemaOutcome = 'valid';
+      decision.semanticOutcome = 'invalid';
+      decision.replyAllowed = false;
+      return;
+  }
+}
+
+function reasonCodeOf(reason: string | null): RoutingDecision['reasonCode'] {
+  if (reason === 'NO_DECLARED_CAPABILITY') return 'CONTEXT_NOT_COVERED';
+  if (reason === 'INTEGRATION_NOT_CONNECTED') return 'PERMISSION_DENIED';
+  if (reason === 'EXTERNAL_EFFECT_NOT_ALLOWED') return 'EXTERNAL_EFFECT_NO_CAPABILITY';
+  return 'NEEDS_CURRENT_USER_DATA';
 }
 
 function logRouting(

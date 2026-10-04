@@ -137,6 +137,9 @@ function blocked(input: RoutingInput, reasonCode: ReasonCode, outcome: DecisionO
     schemaOutcome: 'not_run',
     semanticOutcome: 'not_evaluated',
     modelCalls: 0,
+    recipeId: null,
+    modelId: null,
+    providerCode: null,
     usageSource: 'measured',
     escalationAttempt: false,
     firstUsefulReplyMs: null,
@@ -425,6 +428,9 @@ function finalize(input: RoutingInput, features: TextFeatures, draft: Draft, cov
       schemaOutcome,
       semanticOutcome,
       modelCalls,
+      recipeId: null,
+      modelId: null,
+      providerCode: null,
       usageSource: 'measured',
       // Технический исход не включает исполнителя: попытка эскалации по сбою
       // модели/схемы/бюджета запрещена (§11.3), и лог это фиксирует явно.

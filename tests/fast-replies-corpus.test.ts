@@ -145,7 +145,7 @@ describe('корпус fast-replies против route policy P16', () => {
         authorization,
         hostFacts: { clockMs: Date.parse('2026-09-30T23:10:00+03:00'), connections: {}, profileFields: {}, activeTasks: [], tasksYesterday: [] },
       },
-      { recipe: async () => ({ kind: 'refused', text: 'Извините, я не могу выполнить эту просьбу.', modelCalls: 1 }) },
+      { replyOrRoute: async () => ({ kind: 'refused', modelCalls: 1 }) },
     );
     expect(result.decision.route).toBe('llm');
     expect(result.decision.outcome).toBe('technical_error');

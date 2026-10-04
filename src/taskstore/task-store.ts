@@ -295,6 +295,20 @@ export class TaskStore {
     return { events, nextCursor: events.length ? events[events.length - 1]!.id : after, hasMore };
   }
 
+  /**
+   * Продолжения, выданные Output (P17): ключ идемпотентности — decisionId.
+   * Нужен, чтобы повторный запрос с тем же решением не создавал вторую работу.
+   */
+  async continuationEvents(
+    userTaskId: string,
+  ): Promise<Array<{ decisionId: string; jobRef: string; runId: string; generation: number }>> {
+    const res = await this.db
+      .prepare(`SELECT payload_json FROM task_events WHERE user_task_id = ? AND kind = 'continuation.created' ORDER BY id`)
+      .bind(userTaskId)
+      .all<{ payload_json: string }>();
+    return res.results.map((row) => JSON.parse(row.payload_json) as { decisionId: string; jobRef: string; runId: string; generation: number });
+  }
+
   /** Сохранённая квитанция приёма задачи (первое событие task_accepted). */
   async acceptReceipt(userTaskId: string): Promise<AcceptReceipt | null> {
     const row = await this.db

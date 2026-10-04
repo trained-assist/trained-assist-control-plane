@@ -38,9 +38,16 @@ import {
   deriveAuthorization,
   routeRequest,
   sandboxCapabilityCatalog,
-  sandboxRecipe,
-  type SandboxFault,
 } from './router';
+import { createReplyOrRouteRunner } from './router/recipe/recipe';
+import { sandboxHostCapabilityHandler } from './router/recipe/host-data';
+import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixed-model';
+import {
+  continueFastPathEscalation,
+  portContinuationPort,
+  taskStoreContinuationStore,
+  CONTINUATION_EVENT,
+} from './output';
 
 export interface Env {
   DB: D1Database;
@@ -73,10 +80,24 @@ export interface Env {
   ROUTER_LLM_BUDGET?: string;
   /** 'false' — исполнитель запрещён политикой песочницы (проверка blocked). */
   ROUTER_AGENT_ALLOWED?: string;
-  /** 'true' — включить recipe-заглушку песочницы (без модели). */
+  /**
+   * Рецепт P17. По умолчанию — скриптованная модель песочницы (без сети и без
+   * ключа): проверяются контракт решения, границы и исходы, а не качество живой
+   * модели (§11.7.5/§11.7.6). Живой провайдер подключается отдельно.
+   */
   ROUTER_RECIPE_STUB?: string;
-  /** Управляемый сбой recipe: refused | timeout | invalid_json | truncated. */
+  /**
+   * Управляемый сбой рецепта: refused | timeout | invalid_json | truncated |
+   * provider_failure | budget_denied | semantic_invalid | needs_executor |
+   * clarify | awaiting_input | insufficient_context.
+   */
   ROUTER_RECIPE_FAULT?: string;
+  /** Сценарий решений скриптованной модели (JSON-массив строк). */
+  ROUTER_RECIPE_SCRIPT?: string;
+  /** Дедлайн одного вызова модели в миллисекундах. */
+  ROUTER_RECIPE_DEADLINE_MS?: string;
+  /** 'true' — разрешить выдачу продолжения (новый job/run) на POST /route. */
+  ROUTER_CONTINUATION_ENABLED?: string;
 }
 
 const isPermanent = (e: unknown): boolean =>
@@ -179,7 +200,7 @@ const gtdServiceOf = (env: Env, store: TaskStore, clock?: Clock): GtdService =>
   });
 
 /**
- * Task Router: `POST /route` (P16, этап I05).
+ * Task Router: `POST /route` (P16 policy + P17 recipe, этап I05).
  *
  * Вход маршрутизации — ПРИНЯТАЯ задача в Task Store, а не тело запроса:
  * профиль и текст берутся из записи (`authorizeTaskRoute` + `user_value`),
@@ -187,15 +208,19 @@ const gtdServiceOf = (env: Env, store: TaskStore, clock?: Clock): GtdService =>
  * Контекст диалога, манифест вложений и typed-сигнал приходят от шлюза
  * (§11.2 шаг 2): без них контекст считается пустым, а не «полным».
  *
- * Эндпоинт НЕ запускает исполнителя: при маршруте `agent` возвращается
- * AgentWorkOrder (§11.5). Запуск остаётся за M1.3/P17 после host-проверки прав,
- * бюджета и подтверждения.
+ * Рецепт (P17) — один вызов модели без инструментов; данные для него готовит
+ * host-owned обработчик. Исполнитель отсюда НЕ запускается: при эскалации
+ * возвращается заявка (AgentWorkOrder) и ЗАПРОС продолжения. Продолжение
+ * (новый job/run при том же userTaskId) выдаёт только Output — единственный
+ * владелец продолжения, и только по явному `continue: true` при включённой
+ * политике `ROUTER_CONTINUATION_ENABLED`.
  */
 async function handleRouteRoute(
   req: Request,
   body: Record<string, unknown>,
   env: Env,
   store: TaskStore,
+  port: CfWorkflowPort,
   auth: PrincipalAuth,
 ): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -278,7 +303,16 @@ async function handleRouteRoute(
     },
     {
       source: 'http-route',
-      recipe: env.ROUTER_RECIPE_STUB === 'true' ? sandboxRecipe(readSandboxFault(env.ROUTER_RECIPE_FAULT)) : undefined,
+      replyOrRoute: createReplyOrRouteRunner({
+        model: scriptedFixedModel({
+          script: parseScript(env.ROUTER_RECIPE_SCRIPT),
+          fault: readSandboxFault(env.ROUTER_RECIPE_FAULT),
+        }),
+        llmCallsRemaining: () => Number(env.ROUTER_LLM_BUDGET ?? 1),
+        deadlineMs: Number(env.ROUTER_RECIPE_DEADLINE_MS ?? 15_000),
+      }),
+      modelId: 'sandbox-scripted-fixed-model',
+      handler: sandboxHostCapabilityHandler(),
     },
   );
 
@@ -294,9 +328,16 @@ async function handleRouteRoute(
     agentDispatchAttempts: result.execution.agentDispatchAttempts,
     agentStarted: false,
     workOrderIssued: result.workOrder !== null,
+    continuationRequested: result.continuation !== null,
     permissionSource: authorization.source,
     authorizationRef: authorization.snapshotRef,
   });
+
+  // Продолжение выдаёт ТОЛЬКО Output — единственный владелец продолжения. Роутер
+  // запрашивает, но не создаёт ни job, ни run; выдача — по явному запросу и
+  // только при включённой политике (по умолчанию выключена: запуск исполнителя
+  // — отдельное решение, а не побочный эффект маршрутизации).
+  const continuation = await issueContinuation(result, env, store, port, body);
 
   return json({
     decisionId: result.decisionId,
@@ -321,7 +362,91 @@ async function handleRouteRoute(
     workOrder: result.workOrder,
     execution: result.execution,
     evidence: result.decision.evidence,
+    continuation,
   });
+}
+
+/**
+ * Выдача продолжения владельцем — Output. Возвращает блок для ответа: либо
+ * созданную пару job/run, либо причину отказа. Ничего не создаёт, если
+ * продолжение не запрошено явно или политика его не разрешает.
+ */
+async function issueContinuation(
+  result: Awaited<ReturnType<typeof routeRequest>>,
+  env: Env,
+  store: TaskStore,
+  port: CfWorkflowPort,
+  body: Record<string, unknown>,
+): Promise<
+  | { owner: 'output'; requested: true; issued: true; jobRef: string; runId: string; generation: number; executor: 'opencode' }
+  | { owner: 'output'; requested: true; issued: false; refusal: string; jobRef: null; runId: null; generation: null }
+  | { owner: 'output'; requested: false; issued: false; refusal: null; jobRef: null; runId: null; generation: null }
+> {
+  const requested = result.continuation !== null && body.continue === true;
+  if (!requested) {
+    return { owner: 'output', requested: false, issued: false, refusal: null, jobRef: null, runId: null, generation: null };
+  }
+  if (env.ROUTER_CONTINUATION_ENABLED !== 'true') {
+    return { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled', jobRef: null, runId: null, generation: null };
+  }
+  const request = result.continuation;
+  if (!request) {
+    return { owner: 'output', requested: false, issued: false, refusal: null, jobRef: null, runId: null, generation: null };
+  }
+  const outcome = await continueFastPathEscalation(request, {
+    port: portContinuationPort(port),
+    store: taskStoreContinuationStore(store),
+    agentAllowed: env.ROUTER_AGENT_ALLOWED !== 'false',
+  });
+  if (!outcome.created) {
+    logStructured({
+      event: CONTINUATION_EVENT,
+      level: 'info',
+      profileId: request.profileId,
+      userTaskId: request.userTaskId,
+      runId: null,
+      decisionId: request.decisionId,
+      owner: outcome.owner,
+      issued: false,
+      refusal: outcome.refusal.reason,
+    });
+    return { owner: 'output', requested: true, issued: false, refusal: outcome.refusal.reason, jobRef: null, runId: null, generation: null };
+  }
+  logStructured({
+    event: CONTINUATION_EVENT,
+    level: 'info',
+    profileId: request.profileId,
+    userTaskId: request.userTaskId,
+    runId: outcome.runId,
+    decisionId: request.decisionId,
+    owner: outcome.owner,
+    issued: true,
+    jobRef: outcome.jobRef,
+    generation: outcome.generation,
+    executor: outcome.executor,
+    reasonCode: request.reasonCode,
+    continuationOwner: outcome.owner,
+  });
+  return {
+    owner: 'output',
+    requested: true,
+    issued: true,
+    jobRef: outcome.jobRef,
+    runId: outcome.runId,
+    generation: outcome.generation,
+    executor: outcome.executor,
+  };
+}
+
+/** Сценарий решений скриптованной модели: массив строк, по одной на вызов. */
+function parseScript(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Разбор JSON-поля binding'а: мусорный конфиг не должен ронять маршрут. */
@@ -335,8 +460,23 @@ function parseJsonObject<T>(raw: string | undefined): T {
   }
 }
 
-function readSandboxFault(raw: string | undefined): SandboxFault {
-  return raw === 'refused' || raw === 'timeout' || raw === 'invalid_json' || raw === 'truncated' ? raw : 'none';
+const SANDBOX_MODEL_FAULTS: SandboxModelFault[] = [
+  'none',
+  'refused',
+  'timeout',
+  'invalid_json',
+  'truncated',
+  'provider_failure',
+  'budget_denied',
+  'semantic_invalid',
+  'needs_executor',
+  'clarify',
+  'awaiting_input',
+  'insufficient_context',
+];
+
+function readSandboxFault(raw: string | undefined): SandboxModelFault {
+  return SANDBOX_MODEL_FAULTS.includes(raw as SandboxModelFault) ? (raw as SandboxModelFault) : 'none';
 }
 
 /**
@@ -1043,7 +1183,7 @@ const store = new TaskStore(env.DB);
 
       // ── Task Router (P16, этап I05): решение маршрута по принятой задаче ──
       if (url.pathname === '/route') {
-        return await handleRouteRoute(req, body, env, store, auth);
+        return await handleRouteRoute(req, body, env, store, port, auth);
       }
 
       if (url.pathname === '/receipt') {

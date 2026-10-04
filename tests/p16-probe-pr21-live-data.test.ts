@@ -232,7 +232,15 @@ describe('PR-21: живой вопрос о данных уходит испол
           tasksYesterday: [],
         },
       },
-      { recipe: async () => ({ kind: 'ok', text: 'страница прочитана', modelCalls: 1 }) },
+      {
+        replyOrRoute: async () => ({
+          kind: 'reply',
+          text: 'страница прочитана',
+          evidenceRefs: ['host:web.page_read'],
+          modelCalls: 1,
+          assessment: { contextSufficient: true, needsFreshData: false, needsActions: false, needsAdaptiveTools: false },
+        }),
+      },
     );
 
     expect(result.decision.route).toBe('deterministic');

@@ -1,5 +1,5 @@
 /**
- * Исполнители fast path в песочнице (P16).
+ * Исполнители fast path в песочнице (P16) + заявка исполнителю (P17).
  *
  * Три разные вещи, и их нельзя смешивать:
  *  - `deterministic-handler` — код по данным системы (Task Store, часы,
@@ -7,13 +7,13 @@
  *  - `template-handler` — готовый ответ из каталога/политики, включая честный
  *    отказ: «сейчас не подключено», «нужен email», «лимит исчерпан».
  *  - `llm-recipe-job` — ОДИН ограниченный вызов модели без инструментов.
- *    Сам recipe вызывает P17; здесь он внедряется, чтобы песочница P16 могла
- *    проверить границы (валидный ответ / отказ / таймаут / обрезка) и чтобы
- *    отказ модели НЕ записывался как успех (PR-15, AC-129).
+ *    Сам рецепт живёт в `src/router/recipe/` (P17): контракт решения, модель без
+ *    инструментов, host-обработчик данных и bounded termination.
  *
- * Агентский исполнитель НЕ вызывается из этого модуля: `agentDispatch` только
- * СОБИРАЕТ заявку (AgentWorkOrder §11.5). Реальную отправку в Runner делает
- * M1.3/P17 — и только после host-проверки прав и бюджета.
+ * Агентский исполнитель НЕ вызывается из этого модуля: `agentWorkOrder` только
+ * СОБИРАЕТ заявку (§11.5). Продолжение (новый job/run) выдаёт единственный
+ * владелец — Output (`src/output/continuation.ts`), после host-проверки прав,
+ * бюджета и подтверждения.
  */
 import type { CapabilityEntry, HostFacts, PreparedInput } from './router-types';
 
@@ -27,23 +27,6 @@ export interface DeterministicResult {
 export interface TemplateResult {
   text: string;
   evidenceRefs: string[];
-}
-
-/** Исход recipe: валидный ответ или ТИПИЗИРОВАННЫЙ технический сбой. */
-export type RecipeOutcome =
-  | { kind: 'ok'; text: string; modelCalls: number }
-  | { kind: 'refused'; text: string; modelCalls: number }
-  | { kind: 'timeout'; modelCalls: number }
-  | { kind: 'invalid_json'; modelCalls: number }
-  | { kind: 'truncated'; modelCalls: number };
-
-/** Рецепт P17: одна модель без инструментов по уже подготовленным данным. */
-export interface RecipeRunner {
-  (params: {
-    decisionId: string;
-    text: string;
-    preparedData: Record<string, unknown> | null;
-  }): Promise<RecipeOutcome>;
 }
 
 const fmtDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
@@ -183,36 +166,4 @@ export function agentWorkOrder(params: {
   };
 }
 
-/** Управляемые сбои recipe в песочнице (SANDBOX I05, §11.9 fault fixtures). */
-export type SandboxFault = 'none' | 'refused' | 'timeout' | 'invalid_json' | 'truncated';
 
-/**
- * Recipe-заглушка песочницы. Модели здесь нет и не подменяется: ответ —
- * помеченный черновик из переданного текста, а при `fault` возвращается
- * ТИПИЗИРОВАННЫЙ технический сбой, чтобы проверить, что отказ модели не
- * записывается как успех (PR-15) и не включает исполнителя (§11.3).
- *
- * Настоящий recipe (P17) — один вызов модели без инструментов; заглушка
- * существует, чтобы замкнуть пользовательский поток песочницы и не выдавать
- * «техническую ошибку» вместо ответа там, где ошибки нет.
- */
-export function sandboxRecipe(fault: SandboxFault = 'none'): RecipeRunner {
-  return async ({ text }) => {
-    switch (fault) {
-      case 'refused':
-        return { kind: 'refused', text: 'Извините, я не могу выполнить эту просьбу.', modelCalls: 1 };
-      case 'timeout':
-        return { kind: 'timeout', modelCalls: 1 };
-      case 'invalid_json':
-        return { kind: 'invalid_json', modelCalls: 2 };
-      case 'truncated':
-        return { kind: 'truncated', modelCalls: 2 };
-      default:
-        return {
-          kind: 'ok',
-          text: `[песочница: recipe-заглушка без модели] Черновик по вашему тексту (${text.length} симв.): «${text.slice(0, 120)}»`,
-          modelCalls: 1,
-        };
-    }
-  };
-}
