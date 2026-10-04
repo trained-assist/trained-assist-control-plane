@@ -42,6 +42,9 @@ import {
 import { createReplyOrRouteRunner } from './router/recipe/recipe';
 import { sandboxHostCapabilityHandler } from './router/recipe/host-data';
 import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixed-model';
+import { ScopedBriefCache } from './router/brief/cache';
+import { briefBuildSummaryOf } from './router/brief/service';
+import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
 import {
   continueFastPathEscalation,
   portContinuationPort,
@@ -98,12 +101,38 @@ export interface Env {
   ROUTER_RECIPE_DEADLINE_MS?: string;
   /** 'true' — разрешить выдачу продолжения (новый job/run) на POST /route. */
   ROUTER_CONTINUATION_ENABLED?: string;
+  /**
+   * Brief builder (P20, этап I06). Проекция проверенного каталога для рецепта и
+   * исполнителя: Tier-1 для всех разрешённых, Tier-2 только для кандидатов.
+   * Размер измеряется в байтах и укладывается в бюджет; кэш ключуется по области
+   * (profile/права/связывания/каталог/политика/контекст).
+   */
+  /** Бюджет размера brief'а в байтах (по умолчанию 24576). */
+  ROUTER_BRIEF_MAX_BYTES?: string;
+  /** Максимум кандидатов с Tier-2 (по умолчанию 12). */
+  ROUTER_BRIEF_MAX_CANDIDATES?: string;
+  /** Максимум записей в кэше brief'а (по умолчанию 64). */
+  ROUTER_BRIEF_CACHE_MAX_ENTRIES?: string;
 }
 
 const isPermanent = (e: unknown): boolean =>
   e instanceof FencedError ||
   e instanceof TerminalStateError ||
   /fenced|terminal state/i.test(String((e as Error)?.message ?? e));
+
+/**
+ * Кэш brief'а (P20): один экземпляр на изолят, поэтому повторные запросы той
+ * же области не пересобирают проекцию каталога. Ключ кэша включает профиль,
+ * права, связывания, версии каталога/политики и контекст — чужая область не
+ * получает чужой brief.
+ */
+let briefCacheInstance: ScopedBriefCache | null = null;
+const briefCacheOf = (env: Env): ScopedBriefCache => {
+  if (!briefCacheInstance) {
+    briefCacheInstance = new ScopedBriefCache({ maxEntries: Number(env.ROUTER_BRIEF_CACHE_MAX_ENTRIES ?? 64) });
+  }
+  return briefCacheInstance;
+};
 
 export class TaskWorkflow extends WorkflowEntrypoint<Env, PlanParams> {
   override async run(event: WorkflowEvent<PlanParams>, step: WorkflowStep): Promise<PlanOutcome> {
@@ -313,6 +342,13 @@ async function handleRouteRoute(
       }),
       modelId: 'sandbox-scripted-fixed-model',
       handler: sandboxHostCapabilityHandler(),
+      brief: {
+        cache: briefCacheOf(env),
+        budget: {
+          maxBytes: Number(env.ROUTER_BRIEF_MAX_BYTES ?? DEFAULT_BRIEF_MAX_BYTES),
+          maxCandidates: Number(env.ROUTER_BRIEF_MAX_CANDIDATES ?? DEFAULT_BRIEF_MAX_CANDIDATES),
+        },
+      },
     },
   );
 
@@ -363,6 +399,11 @@ async function handleRouteRoute(
     execution: result.execution,
     evidence: result.decision.evidence,
     continuation,
+    brief: {
+      ...briefBuildSummaryOf(result.brief),
+      tier1: result.brief?.brief?.tier1 ?? null,
+      tier2: result.brief?.brief?.tier2 ?? null,
+    },
   });
 }
 

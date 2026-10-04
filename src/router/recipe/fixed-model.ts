@@ -12,8 +12,43 @@
  * технические исходы (§11.3), по которым исполнитель не включается.
  */
 import type { Coverage } from '../router-types';
+import type { BriefAvailability, BriefDataNeed, BriefEffect, BriefTier1Entry, BriefTier2Entry } from '../brief/brief-types';
 import { DECISION_SCHEMA_VERSION, RECIPE_ID, type DecisionKind } from './decision-contract';
 import type { PreparedCapabilityData } from './host-data';
+
+/** Проекция brief'а для модели: только разрешённые возможности и факты снимка. */
+export interface BriefCatalogPayload {
+  version: string;
+  briefId: string;
+  schemaVersion: string;
+  capabilities: Array<{
+    id: string;
+    version: number;
+    routingName: string;
+    nativeToolName: string | null;
+    summary: string;
+    modes: BriefTier1Entry['modes'];
+    preferredMode: BriefTier1Entry['preferredMode'];
+    effect: BriefEffect;
+    data: BriefDataNeed;
+    required: string[];
+    availability: BriefAvailability;
+    executable: boolean;
+    definitionRef: string;
+    docsRefs: string[];
+  }>;
+  candidates: string[];
+  tier2: Array<{
+    id: string;
+    definitionRef: string;
+    inputSchema: BriefTier2Entry['inputSchema'];
+    outputSchema: BriefTier2Entry['outputSchema'];
+    constraints: BriefTier2Entry['constraints'];
+    implementation: BriefTier2Entry['implementation'];
+  }>;
+  budget: { maxBytes: number; measuredBytes: number; withinBudget: boolean };
+  cache: { key: string; hit: boolean };
+}
 
 /** Схема решения, которую провайдер получает как контракт (не как подсказку). */
 export type FixedModelSchema = Record<string, unknown>;
@@ -27,18 +62,7 @@ export interface FixedModelPayload {
     lastAssistantText: string | null;
   };
   /** Компактный снимок каталога: только разрешённые и готовые возможности. */
-  catalogBrief: {
-    version: string;
-    capabilities: Array<{
-      id: string;
-      version: number;
-      title: string;
-      supportedModes: string[];
-      requiredInputs: string[];
-      integrationId: string | null;
-      ready: boolean;
-    }>;
-  };
+  catalogBrief: BriefCatalogPayload;
   coverage: Coverage;
   /** Данные, подготовленные ХОСТОМ (handler'ом), а не добытые моделью. */
   preparedData: PreparedCapabilityData | null;

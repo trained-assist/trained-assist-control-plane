@@ -19,6 +19,7 @@
  * host-owned обработчик, исполнителя назначает хост.
  */
 import type { Coverage, RoutingDecision, RoutingInput } from '../router-types';
+import type { CatalogBrief } from '../brief/brief-types';
 import {
   DECISION_SCHEMA_VERSION,
   RECIPE_ID,
@@ -30,7 +31,7 @@ import {
   type RecipeDecision,
 } from './decision-contract';
 import type { PreparedCapabilityData } from './host-data';
-import { MAX_RECIPE_CALLS, RECIPE_SYSTEM_PROMPT, type FixedModelPort, type FixedModelRequest, type FixedModelResponse } from './fixed-model';
+import { MAX_RECIPE_CALLS, RECIPE_SYSTEM_PROMPT, type BriefCatalogPayload, type FixedModelPort, type FixedModelRequest, type FixedModelResponse } from './fixed-model';
 
 export type RecipeResult =
   | { kind: 'reply'; text: string; evidenceRefs: string[]; modelCalls: number; assessment: RecipeDecision['assessment'] }
@@ -76,6 +77,8 @@ export interface RecipeRunParams {
   requiresExternalAction: boolean;
   /** Покрытие входа на момент решения: видно модели и в журнале. */
   coverage: Coverage;
+  /** Brief каталога (P20): проекция проверенного каталога, а не весь каталог. */
+  brief: CatalogBrief | null;
   deadlineMs: number;
   maxOutputTokens?: number;
 }
@@ -91,6 +94,7 @@ export type ReplyOrRouteRunner = (params: {
   input: RoutingInput;
   decision: RoutingDecision;
   preparedData: PreparedCapabilityData | null;
+  brief: CatalogBrief | null;
 }) => Promise<RecipeResult>;
 
 export function createReplyOrRouteRunner(deps: {
@@ -101,12 +105,13 @@ export function createReplyOrRouteRunner(deps: {
 }): ReplyOrRouteRunner {
   const deadlineMs = deps.deadlineMs ?? 15_000;
   const maxOutputTokens = deps.maxOutputTokens ?? 1200;
-  return async ({ input, decision, preparedData }) =>
+  return async ({ input, decision, preparedData, brief }) =>
     runReplyOrRoute(
       {
         input,
         decision,
         preparedData,
+        brief: brief ?? null,
         knownProfileFields: Object.keys(input.hostFacts.profileFields),
         requiresExternalAction: decision.requiresExternalAction,
         coverage: decision.coverage,
@@ -139,7 +144,7 @@ export async function runReplyOrRoute(params: RecipeRunParams, deps: RecipeDeps)
 
 /** Запрос модели: фиксированная система + подготовленные данные, без инструментов. */
 function buildRequest(params: RecipeRunParams, decisionId: string): FixedModelRequest {
-  const { input, preparedData } = params;
+  const { input, preparedData, brief } = params;
   const catalog = input.catalog;
   return {
     decisionId,
@@ -154,24 +159,86 @@ function buildRequest(params: RecipeRunParams, decisionId: string): FixedModelRe
         pendingProposal: input.prepared.context.pendingProposal,
         lastAssistantText: input.prepared.context.lastAssistantText,
       },
-      catalogBrief: {
-        version: catalog.version,
-        capabilities: catalog.capabilities.map((c) => ({
-          id: c.id,
-          version: c.version,
-          title: c.title,
-          supportedModes: c.supportedModes,
-          requiredInputs: c.requiredInputs,
-          integrationId: c.integrationId,
-          ready: c.integrationId === null || input.hostFacts.connections[c.integrationId] === true,
-        })),
-      },
+      catalogBrief: brief ? briefCatalogPayload(brief) : fallbackCatalogPayload(catalog, input.hostFacts),
       coverage: params.coverage,
       preparedData,
       coverageFlags: coverageFlagsOf(input),
     },
     deadlineMs: params.deadlineMs,
     maxOutputTokens: params.maxOutputTokens ?? 1200,
+  };
+}
+
+/**
+ * Проекция brief'а в запрос модели (P20). Модель видит явные имена, mode tags,
+ * ограничения по данным/задаче, факты доступности и ссылки на оригинальные
+ * определения — и не видит того, что не разрешено снимком прав.
+ */
+function briefCatalogPayload(brief: CatalogBrief): BriefCatalogPayload {
+  return {
+    version: brief.catalogVersion,
+    briefId: brief.briefId,
+    schemaVersion: brief.schemaVersion,
+    capabilities: brief.tier1.map((entry) => ({
+      id: entry.id,
+      version: entry.version,
+      routingName: entry.routingName,
+      nativeToolName: entry.nativeToolName,
+      summary: entry.summary,
+      modes: entry.modes,
+      preferredMode: entry.preferredMode,
+      effect: entry.effect,
+      data: entry.data,
+      required: entry.required,
+      availability: entry.availability,
+      executable: entry.executable,
+      definitionRef: entry.definitionRef,
+      docsRefs: entry.docsRefs,
+    })),
+    candidates: [...brief.candidates],
+    tier2: brief.tier2.map((entry) => ({
+      id: entry.id,
+      definitionRef: entry.definitionRef,
+      inputSchema: entry.inputSchema,
+      outputSchema: entry.outputSchema,
+      constraints: entry.constraints,
+      implementation: entry.implementation,
+    })),
+    budget: { ...brief.budget },
+    cache: { key: brief.cache.key, hit: brief.cache.hit },
+  };
+}
+
+/**
+ * Запасная проекция, если brief не собран (вызывающий не внедрил P20). Она
+ * НЕ источник истины: без снимка прав и готовости модель получает только имена
+ * каталога, а семантическая проверка всё равно идёт против снимка хоста.
+ */
+function fallbackCatalogPayload(catalog: RoutingInput['catalog'], hostFacts: RoutingInput['hostFacts']): BriefCatalogPayload {
+  return {
+    version: catalog.version,
+    briefId: 'fallback',
+    schemaVersion: 'fallback',
+    capabilities: catalog.capabilities.map((c) => ({
+      id: c.id,
+      version: c.version,
+      routingName: c.id,
+      nativeToolName: null,
+      summary: c.title,
+      modes: c.supportedModes,
+      preferredMode: c.supportedModes[0] ?? 'deterministic',
+      effect: c.effect,
+      data: c.dataSource === 'external_live' ? 'live' : c.dataSource === 'none' ? 'none' : 'prepared',
+      required: c.requiredInputs,
+      availability: 'enabled',
+      executable: true,
+      definitionRef: `capabilities:${catalog.version}:${c.id}@${c.version}`,
+      docsRefs: [],
+    })),
+    candidates: catalog.capabilities.map((c) => c.id),
+    tier2: [],
+    budget: { maxBytes: 0, measuredBytes: 0, withinBudget: true },
+    cache: { key: 'fallback', hit: false },
   };
 }
 

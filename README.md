@@ -305,6 +305,72 @@ npm run check:evidence                     # негативные проверк
   обслужена объявленной capability, если её алиас покрывает запрос целиком; ловится это эскалацией
   только при наличии соответствующих признаков.
 
+## Brief builder и retrieval (P20, этап I06)
+
+Карточка [trained-agent-architecture#59](https://github.com/trained-assist/trained-agent-architecture/issues/59),
+контракт — [CAPABILITY-CATALOG-AND-FAST-REPLIES](https://github.com/trained-assist/trained-agent-architecture/blob/main/CAPABILITY-CATALOG-AND-FAST-REPLIES.md),
+сборка контекста — [TASK-ROUTER-AND-MCP §6 и §11.1](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-ROUTER-AND-MCP.md).
+Песочница и transcript — [`docs/evidence/P20-BRIEF-TRANSCRIPT.md`](docs/evidence/P20-BRIEF-TRANSCRIPT.md).
+
+- **Brief — проекция проверенного каталога, а не новый источник истины** (`src/router/brief/`).
+  Tier-1 (`compiler.ts`) несёт явное читаемое имя, mode tags, эффект, потребность в данных
+  (`none/prepared/live`), обязательные входы и факт доступности для РАЗРЕШЁННЫХ возможностей;
+  Tier-2 — полные input/output schemas и ограничения ТОЛЬКО для выбранных кандидатов. Каждое entry
+  ссылается на оригинальное определение (`definitionRef`), а `catalogDigest` показывает, что
+  каталог не менялся.
+- **Summary не придумывает права** (`summary.ts`). Строка собирается детерминированно из проверенных
+  полей; единственное утверждение о доступе — факт снимка в поле `availability`. Если заголовок
+  каталога сам обещает доступ («Подключено: …»), компилятор вырезает обещание и пишет
+  `access_claim_in_title:<id>` в `gaps`. Невыданная возможность в Tier-1 не попадает вовсе
+  (`excludedByScope`), неподключённая — остаётся фактом `not_connected` с `executable=false`.
+- **Нативные имена MCP не переименовываются.** `routingName` — явная аннотация маршрутизации,
+  `nativeToolName` публикуется как отображение; коллизии имён и режим вне `supportedModes`
+  отлавливает `validateCatalog` до решения.
+- **Кэш ключуется по области, а не по тексту** (`cache.ts`): tenant/profile, снимок прав,
+  связывания профиля, версии каталога/политики, версия контекста, назначение и версия схемы.
+  Одинаковый текст разных профилей не смешивается; в ключ и в значение не попадают текст запроса,
+  вложения и секреты (проверяется тестом).
+- **Размер измеряется в байтах UTF-8** (`TextEncoder`), а не в «токенах». Бюджет применяется
+  детерминированно и видно по шагам: `full` → `tier1-only` → `tier1-minimal` →
+  `tier1-minimal+tier2:N`. Если минимальный Tier-1 не влезает — технический исход
+  `BRIEF_BUDGET_EXCEEDED`: модель не зовётся, исполнитель не включается. Невалидный снимок
+  каталога — `BRIEF_METADATA_INVALID` до решения политики.
+- **Модель получает brief, а не весь каталог** (`recipe.ts`): в запросе рецепта — имена, mode tags,
+  ограничения, факты доступности, ссылки на оригинал, кандидаты и их схемы, бюджет и ключ кэша.
+  Discovery-индекс исполнителя содержит только разрешённые возможности (§12).
+- **HTTP**: `POST /route` возвращает блок `brief` (статус, briefId, размер, бюджет, кэш, Tier-1 и
+  Tier-2). Журнал: событие `routing.brief` с `profileId`, `userTaskId`, `runId`, `requestId`,
+  ключом кэша, попаданием, байтами, числом entries/кандидатов и причиной деградации.
+
+### Проверка
+
+```bash
+npm test                                   # 285 тестов, из них P20: brief, кэш, бюджет, интеграция
+./tools/p20-brief-probe.sh                 # изолированная песочница + sanitized evidence
+npm run check:evidence                     # негативные проверки санитизации evidence (P16+P20)
+```
+
+- **Кэш проверен на изоляцию:** смена профиля, прав, связываний, каталога, политики, контекста и
+  назначения даёт другой ключ; запись с `maxEntries=1` вытесняется детерминированно.
+- **Управляемые сбои — в песочнице и в тестах:** `ROUTER_BRIEF_MAX_BYTES=32` →
+  `BRIEF_BUDGET_EXCEEDED` при `modelCalls=0` и `agentDispatchAttempts=0`; `refused` модели →
+  `technical_error` без эскалации. `run_started` = 0 в журнале задачи и на Runner VM2.
+- **Evidence собирается fail closed** тем же принципом, что у P16: секрет прогона, e-mail вне
+  RFC 2606, телефон или домашний путь в сырых логах останавливают сборку транскрипта.
+
+### Чего эта карточка не доказывает
+
+- Каталог по-прежнему песочничный (12 capability) и выдаётся binding'ом `ROUTER_GRANTS`: компилятор
+  читает версионированные манифесты доменов, а не этот снимок; чтение реальных данных capability
+  (P14/P19) и credential broker прав (P13) — отдельные карточки.
+- Размер brief'а измерен на песочном каталоге; на реальном каталоге (десятки доменов и сотни
+  инструментов) бюджет и число кандидатов надо перемерить — это измеряемые гипотезы (§11.10),
+  а не доказанные константы.
+- Кандидаты выбираются по явным именам/алиасам каталога; семантический retrieval по смыслу
+  (векторный/BM25) не делался — в контракте каталога его нет, а «угадывание» кандидатов по
+  названию запрещено.
+- Исполнитель по-прежнему не запускается: discovery-индекс собирается, запуск — за M1.3/P17.
+
 ## Контрактные решения
 
 - **Терминальные статусы неизменяемы** (`done/failed/cancelled`): статусный апдейт идёт с `AND status NOT IN ('done','failed','cancelled')`; поздняя запись даёт `TerminalStateError` и событие в `task_events` с `status_after = NULL, payload.rejected = terminal_state`. Закрывает суть [issue #90](https://github.com/trained-assist/trained-agent-architecture/issues/90) на двух уровнях: guard в репозитории (тест `taskstore-terminal-guard`) + «catch» в плане (тест `workflow-port`, «поздний wait_timeout»).

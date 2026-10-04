@@ -22,10 +22,14 @@ import { logStructured } from '../logging/structured-log';
 import { agentWorkOrder, deterministicAnswer, templateAnswer, type AgentWorkOrder } from './handlers';
 import { ROUTING_BLOCKED_EVENT, ROUTING_ESCALATED_EVENT, ROUTING_TECHNICAL_ERROR_EVENT, routingLogFields } from './events';
 import { decideRoute, MAX_DECISION_ATTEMPTS } from './policy';
+import { validateCatalog } from './catalog';
 import { RECIPE_ID } from './recipe/decision-contract';
 import type { HostCapabilityHandler, PreparedCapabilityData } from './recipe/host-data';
 import { hostConstraintsOf, hostRequiresExternalAction, partialResultRefOf } from './recipe/host-data';
 import type { RecipeResult, ReplyOrRouteRunner } from './recipe/recipe';
+import { buildScopedBrief, logBrief, type BriefBuildResult, type BriefServiceDeps } from './brief/service';
+import { discoveryCapabilityIds } from './brief/compiler';
+import type { CatalogBrief } from './brief/brief-types';
 import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
 import type { FastPathContinuationRequest } from '../output/continuation';
 
@@ -38,6 +42,8 @@ export interface RouteServiceDeps {
   handler?: HostCapabilityHandler;
   /** Источник решений для eval-стенда P18. */
   source?: string;
+  /** Brief builder (P20): scoped cache и бюджет размера проекции каталога. */
+  brief?: BriefServiceDeps;
   now?: () => number;
 }
 
@@ -62,6 +68,8 @@ export interface RouteResult {
     recipeCalls: number;
     modelCalls: number | null;
   };
+  /** Brief каталога (P20): проекция, которую получил рецепт, и его метрики. */
+  brief: BriefBuildResult;
 }
 
 const clarifyQuestion = 'Уточните, пожалуйста, что именно сделать: сейчас в сообщении нет задачи.';
@@ -74,8 +82,88 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
   const now = deps.now ?? (() => Date.now());
   const startedAt = now();
   const decisionId = `${input.envelope.userTaskId}:${input.envelope.requestId ?? 'no-request'}:${input.envelope.catalogVersion}`;
+
+  // Каталог — проверенный источник метаданных (P20): невалидный снимок не
+  // исполняется и не передаётся модели. Проверка идёт ДО решения, поэтому
+  // причина отказа называется точнее, чем общий NO_ENABLED_CANDIDATES.
+  if (deps.brief) {
+    const catalogCheck = validateCatalog(input.catalog);
+    if (!catalogCheck.ok) {
+      const brief: BriefBuildResult = { status: 'invalid', brief: null, errors: catalogCheck.errors, cache: { key: null, hit: false, stored: false } };
+      const decision = decideRoute(input);
+      decision.decisionId = decisionId;
+      decision.outcome = 'technical_error';
+      decision.reasonCode = 'BRIEF_METADATA_INVALID';
+      decision.replyAllowed = false;
+      decision.needsExecutor = false;
+      decision.executor = null;
+      decision.escalation = 'none';
+      decision.escalationAttempt = false;
+      decision.semanticOutcome = 'not_evaluated';
+      decision.modelCalls = 0;
+      logBrief(brief, {
+        profileId: input.envelope.profileId,
+        userTaskId: input.envelope.userTaskId,
+        runId: input.envelope.runId,
+        requestId: input.envelope.requestId,
+        decisionId,
+      });
+      return {
+        decision,
+        decisionId,
+        reply: null,
+        askUser: null,
+        workOrder: null,
+        continuation: null,
+        execution: { capabilityExecutions: 0, agentDispatchAttempts: 0, recipeCalls: 0, modelCalls: 0 },
+        brief,
+      };
+    }
+  }
+
   const decision = decideRoute(input);
   decision.decisionId = decisionId;
+
+  // Brief каталога (P20): собирает хост до рецепта. Детерминированные и
+  // шаблонные пути от него не зависят, поэтому сборка идёт только для путей,
+  // которые brief используют. Технический исход сборки не включает исполнителя.
+  const briefNeeded = decision.mode === 'llm-recipe-job' || decision.route === 'agent';
+  const brief: BriefBuildResult = briefNeeded
+    ? await buildScopedBrief(input, {
+        cache: deps.brief?.cache,
+        budget: deps.brief?.budget,
+        purpose: decision.route === 'agent' ? 'agent-work-order' : 'reply-or-route',
+      })
+    : { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } };
+  if (briefNeeded && brief.status !== 'ok') {
+    decision.outcome = 'technical_error';
+    decision.reasonCode = brief.status === 'over_budget' ? 'BRIEF_BUDGET_EXCEEDED' : 'BRIEF_METADATA_INVALID';
+    decision.replyAllowed = false;
+    decision.needsExecutor = false;
+    decision.executor = null;
+    decision.escalation = 'none';
+    decision.escalationAttempt = false;
+    decision.semanticOutcome = 'not_evaluated';
+    decision.modelCalls = 0;
+    logBrief(brief, {
+      profileId: input.envelope.profileId,
+      userTaskId: input.envelope.userTaskId,
+      runId: input.envelope.runId,
+      requestId: input.envelope.requestId,
+      decisionId,
+    });
+    return {
+      decision,
+      decisionId,
+      reply: null,
+      askUser: null,
+      workOrder: null,
+      continuation: null,
+      execution: { capabilityExecutions: 0, agentDispatchAttempts: 0, recipeCalls: 0, modelCalls: 0 },
+      brief,
+    };
+  }
+  const briefForModel: CatalogBrief | null = brief.brief;
 
   const capability = decision.capabilityId
     ? input.catalog.capabilities.find((c) => c.id === decision.capabilityId && c.version === decision.capabilityVersion) ?? null
@@ -110,6 +198,8 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
       requiresExternalAction: decision.requiresExternalAction,
       hostConstraints: hostConstraintsOf(input.prepared.text),
       partialResultRef: null,
+      // Discovery-индекс исполнителя: только РАЗРЕШЁННЫЕ возможности (§12).
+      discoveryIds: discoveryCapabilityIds(briefForModel, input),
     }));
     // Счётчик попыток эскалации: он остаётся 0 для любого не-агентского пути.
     execution.agentDispatchAttempts = 1;
@@ -168,7 +258,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
     }
   } else if (decision.mode === 'llm-recipe-job') {
     const result: RecipeResult = deps.replyOrRoute
-      ? await deps.replyOrRoute({ input, decision, preparedData })
+      ? await deps.replyOrRoute({ input, decision, preparedData, brief: briefForModel })
       : // Рецепт не внедрён: платный вызов невозможен, и это видно, а не
         // «ответ по умолчанию» (P16 → P17: тот же честный технический исход).
         { kind: 'timeout', modelCalls: 0 };
@@ -185,6 +275,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
       preparedData,
       handler: deps.handler ?? null,
       hostConstraints: hostConstraintsOf(input.prepared.text),
+      briefForModel,
       now,
       startedAt,
       execution,
@@ -210,6 +301,13 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
   decision.modelCalls = execution.modelCalls ?? decision.modelCalls;
   execution.modelCalls = decision.modelCalls;
 
+  logBrief(brief, {
+    profileId: input.envelope.profileId,
+    userTaskId: input.envelope.userTaskId,
+    runId: input.envelope.runId,
+    requestId: input.envelope.requestId,
+    decisionId,
+  });
   logRouting(input, decision, decisionId, latencyMs, deps.source ?? 'route-service');
   if (decision.outcome === 'technical_error') {
     logStructured({
@@ -253,7 +351,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
     });
   }
 
-  return { decision, decisionId, reply, askUser, workOrder, continuation, execution };
+  return { decision, decisionId, reply, askUser, workOrder, continuation, execution, brief };
 }
 
 function coverageWaits(coverage: RoutingDecision['coverage']): boolean {
@@ -274,6 +372,8 @@ interface EscalationParams {
   partialResultRef: string | null;
   /** Возможности, названные решением; null — хост не знает ни одной (policy-эскалация). */
   requiredCapabilities?: string[] | null;
+  /** Discovery-индекс: разрешённые возможности из brief'а (§12). */
+  discoveryIds: string[];
 }
 
 /**
@@ -283,10 +383,12 @@ interface EscalationParams {
 function escalate(params: EscalationParams): { workOrder: AgentWorkOrder; continuation: FastPathContinuationRequest } {
   const { input, decision, reasonCode, requiresExternalAction, hostConstraints, partialResultRef } = params;
   // Нужные capability — названные решением, а не весь каталог: «нужен веб» не
-  // значит «дай весь список возможностей» (§11.3).
-  const requiredCapabilities = params.requiredCapabilities && params.requiredCapabilities.length > 0
-    ? params.requiredCapabilities
-    : input.catalog.capabilities.map((c) => c.id);
+  // значит «дай весь список возможностей» (§11.3). Если решение их не назвало —
+  // discovery-индекс из brief'а: только разрешённые, без невыданных прав.
+  const requiredCapabilities =
+    params.requiredCapabilities && params.requiredCapabilities.length > 0
+      ? params.requiredCapabilities
+      : params.discoveryIds;
   const workOrder = agentWorkOrder({
     envelope: input.envelope,
     prepared: input.prepared,
@@ -322,6 +424,8 @@ interface RecipeApplyState {
   /** Host-owned обработчик: он и приносит данные для предложенной capability. */
   handler: HostCapabilityHandler | null;
   hostConstraints: string[];
+  /** Brief каталога (P20): discovery-индекс для исполнителя. */
+  briefForModel: CatalogBrief | null;
   now: () => number;
   startedAt: number;
   /** Счётчики исполнения: доказательство «агент не запускался». */
@@ -400,6 +504,7 @@ async function applyRecipeResult(result: RecipeResult, state: RecipeApplyState):
         hostConstraints: state.hostConstraints,
         partialResultRef: result.partialResultRef,
         requiredCapabilities: result.requiredCapabilities,
+        discoveryIds: discoveryCapabilityIds(state.briefForModel, state.input),
       });
       state.setEscalation({ workOrder, continuation });
       // Исполнителя назначает хост, а не модель: терминальный и только он (§11.3).
@@ -504,6 +609,7 @@ async function executeCapability(
         hostConstraints: state.hostConstraints,
         partialResultRef: partialResultRefOf(data),
         requiredCapabilities: [entry.id],
+        discoveryIds: discoveryCapabilityIds(state.briefForModel, input),
       });
       state.setEscalation({ workOrder, continuation });
       decision.requiresFreshData = true;

@@ -9,4 +9,5 @@ export * from './recipe/decision-contract';
 export * from './recipe/fixed-model';
 export * from './recipe/host-data';
 export * from './recipe/recipe';
+export * from './brief';
 export * from './service';
