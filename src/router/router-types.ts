@@ -93,6 +93,9 @@ export const REASON_CODES = [
   // покрытие входа
   'ATTACHMENT_EXTRACTION_PENDING',
   'MIDDLE_COVERAGE_MISSING',
+  // brief builder (P20): технические исходы проекции каталога
+  'BRIEF_BUDGET_EXCEEDED',
+  'BRIEF_METADATA_INVALID',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -246,6 +249,9 @@ export interface AuthorizationSnapshot {
   snapshotRef: string;
 }
 
+/** Режим возможности (P19/P20 supportedModes). Не тип Job. */
+export type CapabilityMode = 'deterministic' | 'template' | 'llm' | 'agent';
+
 export interface CapabilityEntry {
   id: string;
   version: number;
@@ -263,9 +269,33 @@ export interface CapabilityEntry {
   /** Что маршрут делает при совпадении. */
   routeHint: 'deterministic' | 'template' | 'capability_dispatch';
   /** Поддерживаемые режимы (P19 supportedModes). */
-  supportedModes: Array<'deterministic' | 'template' | 'llm' | 'agent'>;
+  supportedModes: CapabilityMode[];
+  /** Предпочтительный режим: обязан входить в supportedModes и иметь привязку. */
+  preferredMode?: CapabilityMode;
+  /** Явное читаемое имя маршрутизации (snake_case). Не переименование MCP. */
+  routingName?: string;
+  /** Нативное имя MCP-инструмента: brief его отображает, но не переименовывает. */
+  nativeToolName?: string | null;
   /** Шаблонный ответ (для routeHint=template). */
   templateId: string | null;
+  /** Привязка host-owned обработчика (deterministic-режим). */
+  handlerRef?: string | null;
+  /** Привязка фиксированного рецепта (llm-режим). */
+  recipeId?: string | null;
+  /** Полная input-схема: публикуется в Tier-2 только для кандидатов. */
+  inputSchema?: BriefFieldSpec[];
+  /** Полная output-схема: публикуется в Tier-2 только для кандидатов. */
+  outputSchema?: BriefFieldSpec[];
+  /** Ссылки на документацию и оригинальное определение. */
+  docsRefs?: string[];
+}
+
+/** Поле схемы каталога (verified metadata, не вывод из названия). */
+export interface BriefFieldSpec {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
 }
 
 export interface CapabilityCatalog {
