@@ -25,7 +25,9 @@ import {
 } from './errors';
 import { kindForPurpose } from '../awaiting/purpose';
 import {
+  DEFAULT_PENDING_INPUT_DEADLINE_MS,
   DEFAULT_START_DEADLINE_MS,
+  PREP_STATES,
   PRE_START_STAGES,
   TERMINAL_STATUS_SQL,
   isTerminalStatus,
@@ -36,6 +38,8 @@ import {
   type AwaitingPurpose,
   type ConversationRow,
   type EventSource,
+  type PendingInputRow,
+  type PrepState,
   type PrincipalRow,
   type RunAttemptRow,
   type SignalSource,
@@ -461,6 +465,123 @@ export class TaskStore {
       )
       .bind(now, ...PRE_START_STAGES, limit)
       .all<TaskRow>();
+    return res.results;
+  }
+
+  // ------------------------------------- принятый вход до запуска (arch#132 R9)
+
+  /**
+   * Регистрация пакета, принятого шлюзом, ДО создания задачи.
+   *
+   * `first_message_at` пишется только при первом приёме пакета: повторные вызовы
+   * (новое сообщение в том же пакете) двигают лишь message_count/updated_at.
+   * Иначе активный чат постоянно подставлял бы свежие сообщения, и возраст самого
+   * старого непродвинувшегося ввода стал бы невидимым.
+   */
+  async recordPendingInput(input: {
+    batchId: string;
+    version: number;
+    profileId: string;
+    channel?: string | null;
+    conversationId?: string | null;
+    audienceId?: string | null;
+    destinationId?: string | null;
+    firstMessageAt: number;
+    deadlineMs?: number;
+  }): Promise<PendingInputRow> {
+    const now = Date.now();
+    const existing = await this.db
+      .prepare('SELECT * FROM pending_inputs WHERE batch_id = ?')
+      .bind(input.batchId)
+      .first<PendingInputRow>();
+    const firstMessageAt = existing?.first_message_at ?? input.firstMessageAt;
+    const deadlineAt = existing?.deadline_at ?? (input.deadlineMs ? now + input.deadlineMs : null);
+    const messageCount = (existing?.message_count ?? 0) + 1;
+    await this.db
+      .prepare(
+        `INSERT INTO pending_inputs(
+           batch_id, version, profile_id, channel, conversation_id, audience_id, destination_id,
+           first_message_at, message_count, prep_state, deadline_at, user_task_id, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(batch_id) DO UPDATE SET
+           message_count = excluded.message_count,
+           prep_state = excluded.prep_state,
+           deadline_at = COALESCE(pending_inputs.deadline_at, excluded.deadline_at),
+           updated_at = excluded.updated_at`,
+      )
+      .bind(
+        input.batchId,
+        input.version,
+        input.profileId,
+        input.channel ?? null,
+        input.conversationId ?? null,
+        input.audienceId ?? null,
+        input.destinationId ?? null,
+        firstMessageAt,
+        messageCount,
+        existing?.prep_state ?? 'collecting',
+        deadlineAt,
+        existing?.user_task_id ?? null,
+        existing?.created_at ?? now,
+        now,
+      )
+      .run();
+    return this.requirePendingInput(input.batchId);
+  }
+
+  /** Состояние подготовки пакета (медиа, нормализация) до создания задачи. */
+  async setPendingInputPrep(
+    batchId: string,
+    prepState: PrepState,
+    opts: { deadlineMs?: number | null } = {},
+  ): Promise<PendingInputRow> {
+    const existing = await this.requirePendingInput(batchId);
+    const deadlineAt =
+      opts.deadlineMs === null ? null
+      : opts.deadlineMs !== undefined ? Date.now() + opts.deadlineMs
+      : existing.deadline_at;
+    await this.db
+      .prepare('UPDATE pending_inputs SET prep_state = ?, deadline_at = ?, updated_at = ? WHERE batch_id = ?')
+      .bind(prepState, deadlineAt, Date.now(), batchId)
+      .run();
+    return this.requirePendingInput(batchId);
+  }
+
+  /** Связь пакета с задачей после admitTask (вход перестал быть «до запуска»). */
+  async linkPendingInputToTask(batchId: string, userTaskId: string): Promise<PendingInputRow> {
+    await this.db
+      .prepare(`UPDATE pending_inputs SET user_task_id = ?, prep_state = 'admitted', updated_at = ? WHERE batch_id = ?`)
+      .bind(userTaskId, Date.now(), batchId)
+      .run();
+    return this.requirePendingInput(batchId);
+  }
+
+  async requirePendingInput(batchId: string): Promise<PendingInputRow> {
+    const row = await this.db
+      .prepare('SELECT * FROM pending_inputs WHERE batch_id = ?')
+      .bind(batchId)
+      .first<PendingInputRow>();
+    if (!row) throw new TaskStoreError(`pending input not found: ${batchId}`, batchId);
+    return row;
+  }
+
+  /**
+   * Детектор окна до admission: пакеты, у которых задачи ещё НЕТ (user_task_id IS
+   * NULL) и дедлайн прошёл. Порядок по first_message_at — самый старый первым,
+   * поэтому активный чат не может скрыть возраст самого старого ввода.
+   */
+  async sweepStuckPendingInputs(now: number = Date.now(), limit = 50): Promise<PendingInputRow[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM pending_inputs
+         WHERE user_task_id IS NULL
+           AND deadline_at IS NOT NULL
+           AND deadline_at < ?
+         ORDER BY first_message_at
+         LIMIT ?`,
+      )
+      .bind(now, limit)
+      .all<PendingInputRow>();
     return res.results;
   }
 

@@ -292,3 +292,39 @@ export interface ArtifactRow {
   run_id: string | null;
   created_at: number;
 }
+
+/**
+ * Принятый вход ДО запуска (arch#132 R9, миграция 0009).
+ *
+ * Лёгкая запись «штука, принятая шлюзом, ещё не ставшая задачей»: НЕ пользовательская
+ * задача (её lifecycle с попытками и результатом здесь не нужен), но достаточно,
+ * чтобы внешний детектор видел вход, застрявший между приёмом шлюзом и admitTask.
+ */
+export interface PendingInputRow {
+  batch_id: string;
+  version: number;
+  profile_id: string;
+  channel: string | null;
+  conversation_id: string | null;
+  audience_id: string | null;
+  destination_id: string | null;
+  /** Время ПЕРВОГО сообщения пакета; новые сообщения его НЕ перебивают. */
+  first_message_at: number;
+  message_count: number;
+  prep_state: 'collecting' | 'preparing' | 'ready' | 'failed' | 'admitted';
+  deadline_at: number | null;
+  /** Связь с задачей после admitTask; NULL пока задачи нет. */
+  user_task_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Состояния подготовки пакета до admitTask. */
+export const PREP_STATES = ['collecting', 'preparing', 'ready', 'failed', 'admitted'] as const;
+export type PrepState = (typeof PREP_STATES)[number];
+
+/**
+ * Граница ожидания для ещё не принятой задачи. Короче, чем у задачи: пока задачи
+ * нет, пользователь ещё ничего не видит, и молчание тут заметнее.
+ */
+export const DEFAULT_PENDING_INPUT_DEADLINE_MS = 5 * 60_000;
