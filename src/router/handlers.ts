@@ -182,3 +182,37 @@ export function agentWorkOrder(params: {
     requiresConfirmation: params.requiresExternalAction,
   };
 }
+
+/** Управляемые сбои recipe в песочнице (SANDBOX I05, §11.9 fault fixtures). */
+export type SandboxFault = 'none' | 'refused' | 'timeout' | 'invalid_json' | 'truncated';
+
+/**
+ * Recipe-заглушка песочницы. Модели здесь нет и не подменяется: ответ —
+ * помеченный черновик из переданного текста, а при `fault` возвращается
+ * ТИПИЗИРОВАННЫЙ технический сбой, чтобы проверить, что отказ модели не
+ * записывается как успех (PR-15) и не включает исполнителя (§11.3).
+ *
+ * Настоящий recipe (P17) — один вызов модели без инструментов; заглушка
+ * существует, чтобы замкнуть пользовательский поток песочницы и не выдавать
+ * «техническую ошибку» вместо ответа там, где ошибки нет.
+ */
+export function sandboxRecipe(fault: SandboxFault = 'none'): RecipeRunner {
+  return async ({ text }) => {
+    switch (fault) {
+      case 'refused':
+        return { kind: 'refused', text: 'Извините, я не могу выполнить эту просьбу.', modelCalls: 1 };
+      case 'timeout':
+        return { kind: 'timeout', modelCalls: 1 };
+      case 'invalid_json':
+        return { kind: 'invalid_json', modelCalls: 2 };
+      case 'truncated':
+        return { kind: 'truncated', modelCalls: 2 };
+      default:
+        return {
+          kind: 'ok',
+          text: `[песочница: recipe-заглушка без модели] Черновик по вашему тексту (${text.length} симв.): «${text.slice(0, 120)}»`,
+          modelCalls: 1,
+        };
+    }
+  };
+}

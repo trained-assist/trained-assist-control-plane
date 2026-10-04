@@ -227,8 +227,10 @@ function chooseDraft(input: RoutingInput, features: TextFeatures): Draft {
   if (templateMatch) return draftFor(templateMatch.entry, templateMatch.alias, 'TEMPLATE_CAPABILITY');
 
   // ── 5. Объявленная capability ──
-  const liveDataAsk = (features.freshnessIntent || urlRead) && !dataGivenInInput(input, features);
-  const dispatchMatch = bestMatch(dispatchEntries, normalized, features.effectIntent || features.adaptiveIntent || liveDataAsk);
+  // Заранее заданный fetch обслуживается объявленной capability, а не агентом
+  // (§4: «заранее заданный query можно исполнить детерминированно»). Эскалация
+  // за живыми данными остаётся для случая, когда capability не объявлена.
+  const dispatchMatch = bestMatch(dispatchEntries, normalized, features.effectIntent || features.adaptiveIntent);
   if (dispatchMatch) {
     const entry = dispatchMatch.entry;
     const integrationId = entry.integrationId;

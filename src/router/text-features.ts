@@ -22,7 +22,24 @@ export function normalizeText(text: string): string {
     .trim();
 }
 
-const URL_RE = /https?:\/\/[^\s«»„“"'<>)\]]+/gi;
+const URL_PATTERN = String.raw`https?:\/\/[^\s«»„“"'<>)\]]+`;
+
+/** Регэксп с флагом g хранит lastIndex: каждый прогон начинается с нуля. */
+function matchesUrl(text: string): boolean {
+  URL_RE.lastIndex = 0;
+  return URL_RE.test(text);
+}
+
+function collectUrls(text: string): string[] {
+  URL_RE.lastIndex = 0;
+  const found: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = URL_RE.exec(text)) !== null) found.push(m[0]);
+  URL_RE.lastIndex = 0;
+  return found;
+}
+
+const URL_RE = new RegExp(URL_PATTERN, 'gi');
 
 /** Цитаты: «…», "…", „…“ — вложенный текст пользователя. */
 function quotedSpansOf(text: string): Array<{ start: number; end: number; content: string }> {
@@ -185,12 +202,19 @@ function readIntentOutsideQuote(quoted: Array<{ start: number; end: number }>, t
   }
   const head = outside.split(' ').slice(0, 5).join(' ');
   if (hits.some((hit) => head.includes(hit))) return true;
-  return READ_OBJECT_RE.test(outside) || URL_RE.test(text);
+  // Ссылка считается объектом чтения только ВНЕ цитаты: «см. <url>» внутри
+  // цитаты — это данные, а не просьба открыть страницу.
+  return READ_OBJECT_RE.test(outside) || matchesUrl(outsideTextRaw(text, quoted));
 }
 
 const READ_OBJECT_RE = new RegExp(
   `(${READ_VERBS.join('|')})\\s+(страниц\\w*|сайт\\w*|документ\\w*|стать\\w+|файл\\w*|ссылк\\w*)`,
 );
+
+/** Текст запроса без цитат (сырой, до нормализации). */
+function outsideTextRaw(text: string, quoted: Array<{ start: number; end: number }>): string {
+  return textOutsideQuotes(text, quoted);
+}
 
 /** Текст запроса без цитат: только authored-by-user часть участвует в намерениях. */
 export function textOutsideQuotes(text: string, quoted: Array<{ start: number; end: number }>): string {
@@ -206,11 +230,9 @@ export function textOutsideQuotes(text: string, quoted: Array<{ start: number; e
 
 function urlFeatures(text: string, quoted: Array<{ start: number; end: number }>, readIntent: boolean): UrlFeature[] {
   const features: UrlFeature[] = [];
-  URL_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = URL_RE.exec(text)) !== null) {
-    const raw = m[0];
-    const inQuote = quoted.some((span) => m!.index >= span.start && m!.index < span.end);
+  for (const raw of collectUrls(text)) {
+    const index = text.indexOf(raw);
+    const inQuote = quoted.some((span) => index >= span.start && index < span.end);
     let host = raw;
     try {
       host = new URL(raw).host;

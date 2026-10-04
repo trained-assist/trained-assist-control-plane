@@ -106,19 +106,31 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
     askUser = null;
     reply = null;
   } else if (decision.mode === 'deterministic-handler') {
-    const answer = capability ? deterministicAnswer(capability.id, input.hostFacts, input.prepared) : null;
-    if (answer) {
-      execution.capabilityExecutions = 1;
-      decision.capabilityExecutions = 1;
-      reply = { ...answer, mode: 'deterministic-handler' };
+    if (decision.reasonCode === 'AWAITING_ANSWER_CONTINUATION') {
+      // Ответ на открытое ожидание: истина ответа лежит в Task Store, а не в
+      // роутере. Роутер подтверждает приём и передаёт продолжение владельцу
+      // задачи; новой задачи и нового исполнителя здесь не появляется.
+      reply = {
+        text: 'Ответ принят — продолжаю работу по этой задаче.',
+        evidenceRefs: [`awaiting:${input.prepared.typedSignal?.ref ?? 'unknown'}`],
+        mode: 'deterministic-handler',
+      };
       decision.firstUsefulReplyMs = now() - startedAt;
     } else {
-      // Данных нет: честный clarify, а не ответ «примерно».
-      decision.semanticOutcome = 'invalid_missing_arg';
-      decision.reasonCode = 'MISSING_REQUIRED_INPUT';
-      decision.outcome = 'clarify';
-      askUser = { question: clarifyQuestion, missingFields: [] };
-      reply = null;
+      const answer = capability ? deterministicAnswer(capability.id, input.hostFacts, input.prepared) : null;
+      if (answer) {
+        execution.capabilityExecutions = 1;
+        decision.capabilityExecutions = 1;
+        reply = { ...answer, mode: 'deterministic-handler' };
+        decision.firstUsefulReplyMs = now() - startedAt;
+      } else {
+        // Данных нет: честное уточнение, а не ответ «примерно».
+        decision.semanticOutcome = 'invalid_missing_arg';
+        decision.reasonCode = 'MISSING_REQUIRED_INPUT';
+        decision.outcome = 'clarify';
+        askUser = { question: clarifyQuestion, missingFields: [] };
+        reply = null;
+      }
     }
   } else if (decision.mode === 'template-handler') {
     const answer = capability
