@@ -252,6 +252,28 @@ describe('P17 · технические исходы не становятся �
     expect(result.reply).toBeNull();
   });
 
+  // Приоритет 4: технический отказ маршрутизации — НЕ тишина и НЕ «успешный быстрый
+  // ответ». Дорогого агента молча не включаем, но хост обязан получить видимый
+  // контролируемый исход с причиной и разрешённым действием.
+  it('технические отказы дают degraded с видимым сообщением, а не тишину', async () => {
+    // Технические отказы: таймаут, провайдер, отказ модели, обрезка, невалидный
+    // JSON (чинится ремонтом до schema_invalid). budget_denied — это 'blocked',
+    // законный отказ бюджета, а не техническая деградация, поэтому его здесь нет.
+    for (const fault of ['timeout', 'provider_failure', 'refused', 'truncated', 'invalid_json'] as const) {
+      const model = scriptedFixedModel({ fault });
+      const result = await routeWith(TEXT_WORK, model);
+      expect(result.decision.degraded).toBe(true);
+      expect(result.decision.degradedNotice?.text.length).toBeGreaterThan(0);
+      expect(result.decision.degradedNotice?.actions.length).toBeGreaterThan(0);
+      // Ни тихого ответа, ни скрытой эскалации.
+      expect(result.reply).toBeNull();
+      expect(result.decision.replyAllowed).toBe(false);
+      expect(result.decision.needsExecutor).toBe(false);
+      expect(result.decision.escalation).toBe('none');
+      expect(result.execution.agentDispatchAttempts).toBe(0);
+    }
+  });
+
   it('provider failure — причина и код провайдера в решении', async () => {
     const model = scriptedFixedModel({ fault: 'provider_failure' });
     const result = await routeWith(TEXT_WORK, model);

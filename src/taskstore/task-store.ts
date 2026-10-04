@@ -409,36 +409,32 @@ export class TaskStore {
     const now = Date.now();
     const runId = crypto.randomUUID();
     const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
-    await this.db
-      .prepare(
-        `INSERT INTO executions(id, task_id, session_id, engine, model, status, generation, started_at, last_heartbeat_at, lease_until)
-         VALUES(?,?,?,?,?,'running',?,?,?,?)`,
-      )
-      .bind(
-        runId,
-        task.id,
-        opts.sessionId ?? null,
-        opts.engine ?? null,
-        null,
-        opts.generation,
-        now,
-        now,
-        leaseUntil,
-      )
-      .run();
-    await this.logEvent({
-      taskId: task.id,
-      kind: 'run_started',
-      generation: opts.generation,
-      source: 'executor',
-      payload: { runId, engine: opts.engine ?? null, sessionId: opts.sessionId ?? null, leaseUntil },
-    });
-    // Старт состоялся — верхняя граница ожидания старта больше не действует.
-    // Сбрасываем в той же точке, где задача перестаёт быть «принято, но не начато».
-    await this.db
-      .prepare(`UPDATE durable_tasks SET start_deadline_at = NULL, updated_at = ? WHERE id = ? AND start_deadline_at IS NOT NULL`)
-      .bind(Date.now(), task.id)
-      .run();
+    // Атомарная граница старта: попытка, событие и сброс дедлайна — ОДНА транзакция.
+    //
+    // До этого были три отдельных .run(). Падение между ними давало два дефекта:
+    //   • попытка есть, события нет, дедлайн не сброшен → задача УЖЕ идёт, а
+    //     watchdog видит «принято, но не начато» и алертит вечно (false stuck);
+    //   • попытка и событие есть, дедлайн не сброшен → то же самое, но уже после
+    //     успешного старта.
+    // D1 batch — одна транзакция: либо всё, либо ничего.
+    const payload = JSON.stringify({ runId, engine: opts.engine ?? null, sessionId: opts.sessionId ?? null, leaseUntil });
+    await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO executions(id, task_id, session_id, engine, model, status, generation, started_at, last_heartbeat_at, lease_until)
+           VALUES(?,?,?,?,?,'running',?,?,?,?)`,
+        )
+        .bind(runId, task.id, opts.sessionId ?? null, opts.engine ?? null, null, opts.generation, now, now, leaseUntil),
+      this.db
+        .prepare(
+          `INSERT INTO task_events(user_task_id, execution_id, kind, generation, source, payload_json, created_at)
+           VALUES(?,?,'run_started',?,'executor',?,?)`,
+        )
+        .bind(task.id, runId, opts.generation, payload, now),
+      this.db
+        .prepare(`UPDATE durable_tasks SET start_deadline_at = NULL, updated_at = ? WHERE id = ? AND start_deadline_at IS NOT NULL`)
+        .bind(now, task.id),
+    ]);
     return this.requireRun(runId);
   }
 
@@ -913,8 +909,18 @@ export class TaskStore {
       // Проекция доставки обновляется и на терминальной задаче: результат
       // доставляют ПОСЛЕ done (C02: исполнение и доставка — разные статусы).
       // Терминальный guard защищает status/result, а не delivery_state.
+      //
+      // Дедуп не должен УХУДШАТЬ подтверждённое состояние: повтор того же
+      // logicalMessage_id не создаёт вторую доставку (changes === 0), но UPDATE
+      // в этом же batch выполнялся всегда и возвращал задачу в 'pending' даже
+      // после того, как та же доставка уже была accepted/delivered. Теперь
+      // подтверждённые состояния не трогаются: повтор может только начать
+      // доставку заново, но не отменять факт, что её уже приняли.
       this.db
-        .prepare(`UPDATE durable_tasks SET delivery_state = 'pending', updated_at = ?, revision = revision + 1 WHERE id = ?`)
+        .prepare(
+          `UPDATE durable_tasks SET delivery_state = 'pending', updated_at = ?, revision = revision + 1
+           WHERE id = ? AND delivery_state IN ('not_required','pending','failed','unknown')`,
+        )
         .bind(now, input.taskId),
     ]);
 

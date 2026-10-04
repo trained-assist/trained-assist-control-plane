@@ -117,6 +117,9 @@ function blocked(input: RoutingInput, reasonCode: ReasonCode, outcome: DecisionO
     executor: null,
     escalation: 'none',
     replyAllowed: false,
+    // Дефолт — не деградация; выставляется в mark() для технических исходов.
+    degraded: false,
+    degradedNotice: null,
     requiresFreshData: false,
     requiresExternalAction: false,
     evidence: {
@@ -412,6 +415,10 @@ function finalize(input: RoutingInput, features: TextFeatures, draft: Draft, cov
     {
       policyVersion: ROUTE_POLICY_VERSION,
       decisionId: '',
+      // Деградация ставится сервисом на технических исходах; чистая политика
+      // решения отказа не объявляет (arch#132, Приоритет 4).
+      degraded: false,
+      degradedNotice: null,
       route: effective.route,
       mode: needsExecutor ? 'ai-agent-job' : effective.mode,
       reasonCode: effective.reasonCode,

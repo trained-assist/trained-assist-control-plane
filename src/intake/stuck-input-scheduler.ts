@@ -25,7 +25,7 @@ import type { DeliveryAdapter } from '../workflow-port/delivery-worker';
 import { deliverOnce } from '../workflow-port/delivery-worker';
 import type { PendingInputRow, TaskRow, TaskStore } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
-import { enqueueStuckInputNotification, runStuckInputWatchdog, type StuckInputNotifier } from './stuck-input-watchdog';
+import { classifyWait, enqueueStuckInputNotification, needsOperatorAlert, type StuckInputNotifier } from './stuck-input-watchdog';
 
 export interface StuckInputSchedulerOptions {
   /** Адаптер канала. По умолчанию — локальный (песочница); прод внедряет реальный. */
@@ -121,9 +121,12 @@ export async function runStuckInputSweep(
 
     // ── 3. Уведомление пользователю (идемпотентно через outbox) ────────────
     const pending = entry.pendingInput;
+    // Классификация одна и та же для детектора, уведомления и алерта: нормальное
+    // ожидание (медиа, полоса) не алертится, настоящее зависание и сбой — да.
+    const wait = classifyWait({ task: entry.task, pendingInput: entry.pendingInput });
     const ctx = entry.task
-      ? { task: entry.task, pendingInput: null, ageMs, deadlineAt: entry.task.start_deadline_at! }
-      : { task: null, pendingInput: pending, ageMs, deadlineAt: pending!.deadline_at! };
+      ? { task: entry.task, pendingInput: null, ageMs, deadlineAt: entry.task.start_deadline_at!, wait }
+      : { task: null, pendingInput: pending, ageMs, deadlineAt: pending!.deadline_at!, wait };
     try {
       if (await notify(ctx)) queued++;
     } catch (err) {
@@ -139,8 +142,12 @@ export async function runStuckInputSweep(
 
     // ── 4. Операторский алерт: один инцидент = один алерт ──────────────────
     const incidentId = entry.task ? `task:${entry.task.id}` : `batch:${entry.id}`;
-    // Операторский алерт: ОДИН на инцидент. Каждое обнаружение увеличивает count
-    // (инцидент виден как накопленный), но сам алерт уходит только на первом.
+    // Операторский алерт: ОДИН на инцидент, и только для записей, которые
+    // действительно требуют внимания. Нормальное ожидание (сбор медиа, очередь
+    // за полосой) НЕ попадает в таблицу инцидентов: иначе «инцидент» перестаёт
+    // значить инцидент. Для алертуемых каждое обнаружение увеличивает count
+    // (инцидент виден как накопленный), сам алерт уходит только на первом.
+    if (!needsOperatorAlert(wait, ageMs)) continue;
     const alertedAt = await store.getAlertedAt(incidentId);
     await store.markAlertSeen(incidentId, now);
     if (!alertedAt) {
@@ -151,6 +158,7 @@ export async function runStuckInputSweep(
         profileId: entry.task?.profile_id ?? entry.pendingInput?.profile_id ?? null,
         userTaskId: entry.task?.id ?? null,
         reason: 'operator_alert',
+        waitKind: wait.kind,
         incidentId,
         ageMs,
       });
