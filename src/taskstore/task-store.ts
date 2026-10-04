@@ -39,6 +39,7 @@ import {
   type ConversationRow,
   type EventSource,
   type PendingInputRow,
+  type WatchdogHealthRow,
   type StuckInputAlertRow,
   type PrepState,
   type PrincipalRow,
@@ -597,6 +598,32 @@ export class TaskStore {
       )
       .bind(incidentId, now, now)
       .run();
+  }
+
+  /**
+   * Отметка работоспособности планировщика. Пишется ТОЛЬКО после успешного
+   * прохода: сбой не должен выглядеть как «всё в порядке» (arch#132 П3c).
+   */
+  async markWatchdogRun(r: {
+    at: number; scanned: number; queued: number; delivered: number;
+    skippedStale: number; alerts: number; oldestAgeMs: number | null;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO watchdog_health(id, last_run_at, scanned, queued, delivered, skipped_stale, alerts, oldest_age_ms)
+         VALUES(1,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET
+           last_run_at = excluded.last_run_at, scanned = excluded.scanned, queued = excluded.queued,
+           delivered = excluded.delivered, skipped_stale = excluded.skipped_stale,
+           alerts = excluded.alerts, oldest_age_ms = excluded.oldest_age_ms`,
+      )
+      .bind(r.at, r.scanned, r.queued, r.delivered, r.skippedStale, r.alerts, r.oldestAgeMs)
+      .run();
+  }
+
+  /** Последняя отметка планировщика; null — он не отработал ни разу. */
+  async lastWatchdogRun(): Promise<WatchdogHealthRow | null> {
+    return this.db.prepare('SELECT * FROM watchdog_health WHERE id = 1').first<WatchdogHealthRow>();
   }
 
   async listStuckInputAlerts(limit = 50): Promise<StuckInputAlertRow[]> {

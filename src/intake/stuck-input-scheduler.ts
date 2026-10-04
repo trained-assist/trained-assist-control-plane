@@ -182,17 +182,75 @@ export async function runStuckInputSweep(
 }
 
 /**
- * Разрешение адаптера канала. Песочница — локальный адаптер (НЕ доказательство
- * доставки); прод внедряет реальный адаптер через env/binding.
+ * Разрешение адаптера канала (arch#132 П3b).
+ *
+ * 'gateway' — РЕАЛЬНЫЙ адаптер: control plane отдаёт доставку шлюзу, который
+ * умеет говорить с каналом (Telegram Bot API) и умеет отрисовать кнопку запуска.
+ * 'local' (по умолчанию) — песочничная заглушка: возвращает искусственный
+ * providerMessageId и доставкой НЕ является.
+ *
+ * Если заявлен реальный адаптер, но не заданы его реквизиты — это ошибка
+ * настройки, и мы НЕ откатываемся молча к заглушке: тихая подмена означала бы,
+ * что доставка «успешна», а пользователь ничего не получил.
  */
-export function resolveDeliveryAdapter(env: {
+export async function resolveDeliveryAdapter(env: {
   DELIVERY_ADAPTER?: string | null;
-  localAdapter?: DeliveryAdapter | null;
-}): DeliveryAdapter {
-  if (env.localAdapter) return env.localAdapter;
-  // Локальный адаптер — заглушка песочницы. Возвращает искусственный
-  // providerMessageId, поэтому доставкой не является (arch#132, Приоритет 3).
+  GATEWAY_DELIVERY_URL?: string | null;
+  GATEWAY_DELIVERY_SECRET?: string | null;
+}): Promise<DeliveryAdapter> {
+  const mode = env.DELIVERY_ADAPTER ?? 'local';
+  if (mode === 'gateway') {
+    if (!env.GATEWAY_DELIVERY_URL) {
+      throw new Error('DELIVERY_ADAPTER=gateway требует GATEWAY_DELIVERY_URL (тихая подмена заглушкой запрещена)');
+    }
+    return gatewayDeliveryAdapter({
+      baseUrl: env.GATEWAY_DELIVERY_URL,
+      secret: env.GATEWAY_DELIVERY_SECRET ?? null,
+    });
+  }
+  return localDeliveryAdapter();
+}
+
+/** Заглушка песочницы: искусственный providerMessageId, доставкой не является. */
+export function localDeliveryAdapter(): DeliveryAdapter {
   return {
     send: async (delivery) => ({ providerMessageId: `local-${delivery.channel}-${delivery.id.slice(0, 8)}` }),
+  };
+}
+
+/**
+ * Реальный адаптер: control plane отдаёт доставку шлюзу канала.
+ *
+ * Канал, рендер кнопки и обработчик запуска принадлежат шлюзу (границы
+ * архитектуры), control plane владеет только outbox. Шлюз возвращает
+ * providerMessageId — только тогда доставка считается подтверждённой.
+ */
+export function gatewayDeliveryAdapter(opts: { baseUrl: string; secret: string | null }): DeliveryAdapter {
+  return {
+    send: async (delivery) => {
+      const res = await fetch(`${opts.baseUrl.replace(/\/$/, '')}/deliver`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(opts.secret ? { Authorization: `Bearer ${opts.secret}` } : {}),
+        },
+        body: JSON.stringify({
+          deliveryId: delivery.id,
+          userTaskId: delivery.user_task_id,
+          channel: delivery.channel,
+          destinationId: delivery.destination_id,
+          audienceId: delivery.audience_id,
+          conversationId: delivery.conversation_id,
+          message: JSON.parse(delivery.message_json || '{}'),
+        }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) throw new Error(`gateway delivery failed: ${res.status}`);
+      const body = (await res.json().catch(() => ({}))) as { providerMessageId?: string | null };
+      // Без providerMessageId доставка не подтверждена: доставка — это факт
+      // принятия каналом, а не «ответ 200».
+      if (!body.providerMessageId) throw new Error('gateway delivery not confirmed (no providerMessageId)');
+      return { providerMessageId: body.providerMessageId };
+    },
   };
 }

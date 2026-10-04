@@ -61,3 +61,21 @@ CREATE TABLE IF NOT EXISTS stuck_input_alerts (
     last_seen_at  INTEGER,                   -- последнее обнаружение
     count         INTEGER NOT NULL DEFAULT 1 -- сколько раз видели
 );
+
+-- Работоспособность планировщика watchdog (arch#132 П3c).
+--
+-- Детектор без планировщика — мёртвый код. Но и планировщик может умереть молча:
+-- достаточно, чтобы кто-то сломал триггер. Поэтому каждый УСПЕШНЫЙ проход
+-- планировщика оставляет отметку, а независимая проверка читает её и алертит при
+-- устаревании. Сбой прохода отметку НЕ обновляет: «всё в порядке» не должно
+-- выглядеть как успех.
+CREATE TABLE IF NOT EXISTS watchdog_health (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),  -- единственная строка-маркер
+    last_run_at    INTEGER NOT NULL,
+    scanned        INTEGER NOT NULL DEFAULT 0,
+    queued         INTEGER NOT NULL DEFAULT 0,
+    delivered      INTEGER NOT NULL DEFAULT 0,
+    skipped_stale  INTEGER NOT NULL DEFAULT 0,
+    alerts         INTEGER NOT NULL DEFAULT 0,
+    oldest_age_ms  INTEGER
+);
