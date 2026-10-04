@@ -5,4 +5,8 @@ export * from './catalog';
 export * from './policy';
 export * from './handlers';
 export * from './events';
+export * from './recipe/decision-contract';
+export * from './recipe/fixed-model';
+export * from './recipe/host-data';
+export * from './recipe/recipe';
 export * from './service';

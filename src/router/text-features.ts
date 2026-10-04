@@ -42,7 +42,8 @@ function collectUrls(text: string): string[] {
 const URL_RE = new RegExp(URL_PATTERN, 'gi');
 
 /** Цитаты: «…», "…", „…“ — вложенный текст пользователя. */
-function quotedSpansOf(text: string): Array<{ start: number; end: number; content: string }> {
+/** Цитаты в тексте: инструкции внутри них — данные, а не ограничения пользователя. */
+export function quotedSpansOf(text: string): Array<{ start: number; end: number; content: string }> {
   const spans: Array<{ start: number; end: number; content: string }> = [];
   const patterns: Array<[RegExp, number]> = [
     [/[«"]/g, 1],

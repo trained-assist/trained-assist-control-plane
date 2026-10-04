@@ -127,6 +127,8 @@ export interface WorkflowPortApi {
       reason?: string;
       instructions?: string;
       previousRunId?: string | null;
+      /** Движок новой попытки (P17): продолжение fast path фиксирует терминального исполнителя. */
+      engine?: string | null;
       awaitingPurpose?: AwaitingPurpose | null;
       awaitingOptions?: { id: string; label: string }[] | null;
       runnerPollSec?: number;
@@ -405,6 +407,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
       awaitingOptions?: { id: string; label: string }[] | null;
       runnerPollSec?: number;
       runnerTimeoutSec?: number;
+      /** Движок новой попытки (P17): продолжение fast path фиксирует терминального исполнителя. */
+      engine?: string | null;
       /** Свидетельство по критериям завершения управляемой работы ({criterionId: true}). */
       criteria?: Record<string, unknown> | null;
       /** Ссылка на внешнее условие (synthetic CI provider I07). */

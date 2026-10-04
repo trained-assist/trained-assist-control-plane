@@ -65,11 +65,16 @@ export const REASON_CODES = [
   'LIVE_DATA_NO_CAPABILITY',
   'EXTERNAL_EFFECT_NO_CAPABILITY',
   'ADAPTIVE_TOOL_LOOP',
+  // причины эскалации, которые называет рецепт (§11.3): узкий allowlist
+  'NEEDS_CURRENT_USER_DATA',
+  'CONTEXT_NOT_COVERED',
+  'ARTIFACT_WORKSPACE_REQUIRED',
   // уточнение
   'AMBIGUOUS_WITHOUT_CONTEXT',
   'AMBIGUOUS_URL_ONLY',
   // отказ по снимку/бюджету/праву — исполнитель не включается
   'BUDGET_EXHAUSTED',
+  'BUDGET_DENIED',
   'PERMISSION_DENIED',
   'AGENT_NOT_ALLOWED_BY_POLICY',
   'CONTEXT_SNAPSHOT_MISSING',
@@ -81,6 +86,10 @@ export const REASON_CODES = [
   'MODEL_TIMEOUT',
   'SCHEMA_INVALID',
   'SCHEMA_TRUNCATED',
+  'PROVIDER_FAILURE',
+  'SEMANTIC_INVALID',
+  'CONTEXT_NOT_SUFFICIENT',
+  'CAPABILITY_HANDLER_ERROR',
   // покрытие входа
   'ATTACHMENT_EXTRACTION_PENDING',
   'MIDDLE_COVERAGE_MISSING',
@@ -94,6 +103,7 @@ export const OUTCOMES = [
   'required_input',
   'blocked',
   'technical_error',
+  'insufficient_context',
   'wait_extraction',
   'dispatched',
   'escalated',
@@ -101,7 +111,16 @@ export const OUTCOMES = [
 ] as const;
 export type DecisionOutcome = (typeof OUTCOMES)[number];
 
-export const SCHEMA_OUTCOMES = ['not_run', 'valid', 'invalid', 'truncated', 'timeout', 'refused', 'budget_denied'] as const;
+export const SCHEMA_OUTCOMES = [
+  'not_run',
+  'valid',
+  'invalid',
+  'truncated',
+  'timeout',
+  'refused',
+  'budget_denied',
+  'provider_failure',
+] as const;
 export type SchemaOutcome = (typeof SCHEMA_OUTCOMES)[number];
 
 export const SEMANTIC_OUTCOMES = ['not_run', 'valid', 'invalid', 'coverage_pending', 'invalid_missing_arg', 'not_evaluated'] as const;
@@ -293,6 +312,12 @@ export interface RoutingDecision {
   schemaOutcome: SchemaOutcome;
   semanticOutcome: SemanticOutcome;
   modelCalls: number | null;
+  /** Идентификатор рецепта, который принял решение (P17). */
+  recipeId: string | null;
+  /** Идентификатор модели без инструментов; null — модели не было. */
+  modelId: string | null;
+  /** Код отказа провайдера, если вызов не удался. */
+  providerCode: string | null;
   usageSource: 'not_recorded' | 'measured';
   /** Попытка включить дорогого исполнителя по техническому исходу: всегда false. */
   escalationAttempt: boolean;

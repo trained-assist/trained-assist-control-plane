@@ -239,13 +239,13 @@ describe('bounded termination и исполнитель', () => {
   it('технический сбой recipe не превращается ни в ответ, ни в исполнителя', async () => {
     for (const fault of ['refused', 'timeout', 'invalid_json', 'truncated'] as const) {
       const result = await routeRequest(await inputFor('объясни, что такое NPS'), {
-        recipe: async () =>
+        replyOrRoute: async () =>
           fault === 'refused'
-            ? { kind: 'refused', text: 'Извините, не могу', modelCalls: 1 }
+            ? { kind: 'refused', modelCalls: 1 }
             : fault === 'timeout'
               ? { kind: 'timeout', modelCalls: 1 }
               : fault === 'invalid_json'
-                ? { kind: 'invalid_json', modelCalls: 2 }
+                ? { kind: 'schema_invalid', detail: 'not_json', modelCalls: 2, repairAttempts: 1 }
                 : { kind: 'truncated', modelCalls: 2 },
       });
       expect(result.reply, fault).toBeNull();

@@ -66,6 +66,8 @@ export const TASK_EVENT_KINDS = [
   'delivery_sent',
   'delivery_failed',
   'error',
+  /** Продолжение, выданное Output (P17): ключ идемпотентности — decisionId. */
+  'continuation.created',
 ] as const;
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number];
 
