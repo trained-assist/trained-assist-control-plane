@@ -175,10 +175,31 @@ export function scriptedFixedModel(options: ScriptedFixedModelOptions = {}): Fix
       if (fault === 'refused') return { kind: 'ok', text: 'Извините, я не могу выполнить эту просьбу.', finish: 'refusal', usage: { inputTokens: null, outputTokens: null } };
       if (fault === 'truncated') return { kind: 'ok', text: '{"schemaVersion":1,"kind":"reply","reply":{"text":"Ответ обрезан', finish: 'length', usage: { inputTokens: null, outputTokens: null } };
       if (fault === 'invalid_json') return { kind: 'ok', text: 'это не JSON вовсе', finish: 'stop', usage: { inputTokens: null, outputTokens: null } };
+      // Остальные режимы — не сбои, а заданные решения модели: песочница должна
+      // уметь показать каждый исход рецепта (AC-128), поэтому clarify, ожидание
+      // ввода, недостаточный контекст, эскалация и семантически невалидный ответ
+      // воспроизводятся тем же портом, а не отдельным вызовом.
+      if (fault === 'clarify') return sandboxOk(scriptedClarify('Что именно сделать?', ['goal']));
+      if (fault === 'awaiting_input') return sandboxOk(scriptedClarify('Нужен ваш email, чтобы отправить файл.', ['email']));
+      if (fault === 'insufficient_context') return sandboxOk(scriptedInsufficientContext());
+      if (fault === 'needs_executor') {
+        return sandboxOk(
+          scriptedAgentDecision({
+            nextGoal: 'найди пять конкурентов и сравни цены',
+            reasonCode: 'ADAPTIVE_TOOL_LOOP',
+            requiredCapabilities: ['web-search'],
+          }),
+        );
+      }
+      if (fault === 'semantic_invalid') return sandboxOk(scriptedUngroundedReply());
       const text = script.length > 0 ? script[Math.min(call.index, script.length - 1)]! : defaultReplyText(request);
-      return { kind: 'ok', text, finish: 'stop', usage: { inputTokens: null, outputTokens: null } };
+      return sandboxOk(text);
     },
   };
+}
+
+function sandboxOk(text: string): { kind: 'ok'; text: string; finish: 'stop'; usage: { inputTokens: null; outputTokens: null } } {
+  return { kind: 'ok', text, finish: 'stop', usage: { inputTokens: null, outputTokens: null } };
 }
 
 /** Ответ заглушки без модели: эхо по тексту запроса, без выдуманных данных. */
@@ -201,6 +222,28 @@ export function scriptedReply(text: string, refs: string[] = []): string {
     schemaVersion: DECISION_SCHEMA_VERSION,
     kind: 'reply',
     reply: { text, evidenceRefs: refs },
+    assessment: { contextSufficient: true, needsFreshData: false, needsActions: false, needsAdaptiveTools: false },
+  });
+}
+
+/** Ответ, который сам признаёт нехватку контекста: публиковать его нельзя. */
+export function scriptedInsufficientContext(
+  text = 'Ответ по неполному контексту',
+): string {
+  return JSON.stringify({
+    schemaVersion: DECISION_SCHEMA_VERSION,
+    kind: 'reply',
+    reply: { text, evidenceRefs: [] },
+    assessment: { contextSufficient: false, needsFreshData: true, needsActions: false, needsAdaptiveTools: false },
+  });
+}
+
+/** Ответ, ссылающийся на недопустимый источник: семантически невалидное решение. */
+export function scriptedUngroundedReply(text = 'Ответ со ссылкой не оттуда'): string {
+  return JSON.stringify({
+    schemaVersion: DECISION_SCHEMA_VERSION,
+    kind: 'reply',
+    reply: { text, evidenceRefs: ['куда-нибудь'] },
     assessment: { contextSufficient: true, needsFreshData: false, needsActions: false, needsAdaptiveTools: false },
   });
 }

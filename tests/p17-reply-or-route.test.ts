@@ -326,6 +326,57 @@ describe('P17 · бюджет, ожидание ввода и недостато
   });
 });
 
+describe('P17 · каждый объявленный режим песочницы даёт свой исход', () => {
+  // `SANDBOX_MODEL_FAULTS` в index.ts перечисляет эти режимы как контракт
+  // binding'а. Если режим не реализован, он молча уходит в ответ по умолчанию,
+  // и проба песочницы «проверяет» исход, которого не было.
+  const cases = [
+    { fault: 'refused', outcome: 'technical_error', reasonCode: 'MODEL_REFUSED' },
+    { fault: 'timeout', outcome: 'technical_error', reasonCode: 'MODEL_TIMEOUT' },
+    { fault: 'provider_failure', outcome: 'technical_error', reasonCode: 'PROVIDER_FAILURE' },
+    { fault: 'truncated', outcome: 'technical_error', reasonCode: 'SCHEMA_TRUNCATED' },
+    { fault: 'invalid_json', outcome: 'technical_error', reasonCode: 'SCHEMA_INVALID' },
+    { fault: 'semantic_invalid', outcome: 'blocked', reasonCode: 'SEMANTIC_INVALID' },
+    { fault: 'insufficient_context', outcome: 'insufficient_context', reasonCode: 'CONTEXT_NOT_SUFFICIENT' },
+    { fault: 'clarify', outcome: 'clarify', reasonCode: null },
+    { fault: 'awaiting_input', outcome: 'required_input', reasonCode: 'MISSING_REQUIRED_INPUT' },
+    { fault: 'needs_executor', outcome: 'escalated', reasonCode: 'ADAPTIVE_TOOL_LOOP' },
+  ] as const;
+
+  for (const testCase of cases) {
+    it(`${testCase.fault} → outcome=${testCase.outcome}`, async () => {
+      const result = await routeWith(TEXT_WORK, scriptedFixedModel({ fault: testCase.fault }));
+      expect(result.decision.outcome).toBe(testCase.outcome);
+      if (testCase.reasonCode) expect(result.decision.reasonCode).toBe(testCase.reasonCode);
+    });
+  }
+
+  it('бюджетный отказ модели не маскируется как исход режима', async () => {
+    const result = await routeWith(TEXT_WORK, scriptedFixedModel({ fault: 'budget_denied' }), {}, 2);
+    expect(result.decision.schemaOutcome).toBe('budget_denied');
+    expect(result.decision.reasonCode).toBe('BUDGET_DENIED');
+  });
+
+  it('clarify без известного хосту поля не становится ожиданием ввода', async () => {
+    const result = await routeWith(TEXT_WORK, scriptedFixedModel({ fault: 'clarify' }));
+    expect(result.decision.outcome).toBe('clarify');
+    expect(result.askUser?.missingFields).toEqual(['goal']);
+    expect(result.continuation).toBeNull();
+  });
+
+  it('режим эскалации запрашивает продолжение у Output и сам его не выдаёт', async () => {
+    const result = await routeWith(TEXT_WORK, scriptedFixedModel({ fault: 'needs_executor' }));
+    expect(result.decision.executor).toBe('opencode');
+    expect(result.continuation?.userTaskId).toBe('ut-1');
+    // Заявка выдана, но job у роутера нет: запуск задачи — только за владельцем
+    // продолжения. `agentDispatchAttempts` считает выданные заявки, а не старт
+    // исполнителя; доказывает отсутствие старта run_started в журнале задач.
+    expect(result.decision.jobRef).toBeNull();
+    expect(result.execution.agentDispatchAttempts).toBe(1);
+    expect(result.execution.capabilityExecutions).toBe(0);
+  });
+});
+
 describe('P17 · модель без инструментов и данные от хоста', () => {
   it('в запросе модели нет инструментов и нет исполнителя', async () => {
     const model = scriptedFixedModel({ script: [scriptedReply('ответ')] });
