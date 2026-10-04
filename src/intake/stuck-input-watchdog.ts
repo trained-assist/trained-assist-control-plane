@@ -48,7 +48,8 @@ export interface StuckInputNotifyContext {
   deadlineAt: number;
 }
 
-export type StuckInputNotifier = (ctx: StuckInputNotifyContext) => Promise<void>;
+/** Возвращает true, если доставка реально поставлена в outbox. */
+export type StuckInputNotifier = (ctx: StuckInputNotifyContext) => Promise<boolean>;
 
 export interface StuckInputWatchdogResult {
   /** Сколько записей просканировано детектором (найдено просроченных). */
@@ -168,7 +169,7 @@ export async function enqueueStuckInputNotification(
   store: TaskStore,
   ctx: { task: TaskRow | null; pendingInput: PendingInputRow | null },
   opts: { channel: string },
-): Promise<void> {
+): Promise<boolean> {
   if (!ctx.task) {
     // Пакет ещё не стал задачей: доставка привязывается к задаче, которой нет.
     // Связь появится, когда задача будет создана (linkPendingInputToTask), и тогда
@@ -181,7 +182,7 @@ export async function enqueueStuckInputNotification(
       reason: 'no_task_yet',
       batchId: ctx.pendingInput?.batch_id ?? null,
     });
-    return;
+    return false;
   }
   const task = ctx.task;
   await store.queueDelivery({
@@ -197,4 +198,5 @@ export async function enqueueStuckInputNotification(
     audienceId: task.audience_id,
     conversationId: task.conversation_id,
   });
+  return true;
 }
