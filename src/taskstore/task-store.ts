@@ -39,6 +39,7 @@ import {
   type ConversationRow,
   type EventSource,
   type PendingInputRow,
+  type StuckInputAlertRow,
   type PrepState,
   type PrincipalRow,
   type RunAttemptRow,
@@ -563,6 +564,51 @@ export class TaskStore {
       .first<PendingInputRow>();
     if (!row) throw new TaskStoreError(`pending input not found: ${batchId}`, batchId);
     return row;
+  }
+
+  // ------------------------------- операторские алерты: один инцидент = один алерт
+
+  /**
+   * Отметка «инцидент уже заалерчен». Считает, а не дублирует: повторные проходы
+   * планировщика по тому же зависшему входу не плодят алерты, но инцидент виден
+   * как накопленный count (arch#132, Приоритет 3).
+   */
+  async getAlertedAt(incidentId: string): Promise<number | null> {
+    const row = await this.db
+      .prepare('SELECT alerted_at FROM stuck_input_alerts WHERE incident_id = ?')
+      .bind(incidentId)
+      .first<{ alerted_at: number | null }>();
+    return row?.alerted_at ?? null;
+  }
+
+  /** Каждое обнаружение инцидента: count растёт, но нового алерта не порождает. */
+  async markAlertSeen(incidentId: string, now: number = Date.now()): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO stuck_input_alerts(incident_id, alerted_at, last_seen_at, count) VALUES(?,?,?,1)
+         ON CONFLICT(incident_id) DO UPDATE SET count = count + 1, last_seen_at = ?`,
+      )
+      .bind(incidentId, now, now, now)
+      .run();
+  }
+
+  /** Первое обнаружение: алерт уходит один раз (совместимость с markAlertSeen). */
+  async setAlertedAt(incidentId: string, now: number = Date.now()): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO stuck_input_alerts(incident_id, alerted_at, count) VALUES(?,?,1)
+         ON CONFLICT(incident_id) DO UPDATE SET count = count + 1, last_seen_at = ?`,
+      )
+      .bind(incidentId, now, now)
+      .run();
+  }
+
+  async listStuckInputAlerts(limit = 50): Promise<StuckInputAlertRow[]> {
+    const res = await this.db
+      .prepare('SELECT * FROM stuck_input_alerts ORDER BY last_seen_at DESC LIMIT ?')
+      .bind(limit)
+      .all<StuckInputAlertRow>();
+    return res.results;
   }
 
   /**

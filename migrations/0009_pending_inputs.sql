@@ -51,3 +51,13 @@ CREATE INDEX IF NOT EXISTS idx_pending_inputs_profile ON pending_inputs(profile_
 
 CREATE INDEX IF NOT EXISTS idx_pending_inputs_task ON pending_inputs(user_task_id)
     WHERE user_task_id IS NOT NULL;
+-- Операторские алерты по инциденту «принято, но не начато» (arch#132 R4,
+-- Приоритет 3). Один инцидент = один алерт: планировщик шлёт алерт на ПЕРВОЕ
+-- обнаружение, дальше инцидент только копит count. Иначе зависший вход шлёт
+-- алерт на каждом проходе планировщика и тревога перестаёт быть сигналом.
+CREATE TABLE IF NOT EXISTS stuck_input_alerts (
+    incident_id   TEXT PRIMARY KEY,          -- 'task:<id>' | 'batch:<id>'
+    alerted_at    INTEGER NOT NULL,          -- первое обнаружение
+    last_seen_at  INTEGER,                   -- последнее обнаружение
+    count         INTEGER NOT NULL DEFAULT 1 -- сколько раз видели
+);

@@ -328,3 +328,12 @@ export type PrepState = (typeof PREP_STATES)[number];
  * нет, пользователь ещё ничего не видит, и молчание тут заметнее.
  */
 export const DEFAULT_PENDING_INPUT_DEADLINE_MS = 5 * 60_000;
+
+/** Операторский алерт по инциденту «принято, но не начато» (arch#132 R4). */
+export interface StuckInputAlertRow {
+  incident_id: string;
+  alerted_at: number;
+  last_seen_at: number | null;
+  /** Сколько раз планировщик видел инцидент; сам алерт отправляется один раз. */
+  count: number;
+}

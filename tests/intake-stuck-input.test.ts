@@ -116,7 +116,7 @@ describe('принято, но не начато: дедлайн старта и
     const seen: { taskId: string | null; ageMs: number }[] = [];
     const result = await runStuckInputWatchdog(
       store,
-      { notify: async (ctx) => { seen.push({ taskId: ctx.task?.id ?? null, ageMs: ctx.ageMs }); } },
+      { notify: async (ctx) => { seen.push({ taskId: ctx.task?.id ?? null, ageMs: ctx.ageMs }); return true; } },
       Date.now(),
     );
 
@@ -290,9 +290,8 @@ describe('принятый вход до admitTask виден детектору
     console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
     try {
       await runStuckInputWatchdog(store, {
-        notify: async (ctx) => {
-          await enqueueStuckInputNotification(store, { task: ctx.task, pendingInput: ctx.pendingInput }, { channel: 'telegram' });
-        },
+        notify: async (ctx) =>
+          enqueueStuckInputNotification(store, { task: ctx.task, pendingInput: ctx.pendingInput }, { channel: 'telegram' }),
       }, Date.now());
     } finally {
       console.log = original;

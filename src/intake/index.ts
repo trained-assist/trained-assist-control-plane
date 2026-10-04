@@ -3,3 +3,4 @@ export * from './envelope';
 export * from './errors';
 export * from './intake-service';
 export * from './stuck-input-watchdog';
+export * from './stuck-input-scheduler';
