@@ -189,11 +189,33 @@ echo "OK: run_started — 0 (сбой не превращён в запуск д
 
 stop_dev
 
+# Корроборация на песочном Runner'е VM2 (read-only): для пробных задач не должно
+# быть НИ ОДНОГО рана. Проверка не обязательна — если ssh-алиас недоступен, она
+# пропускается и это фиксируется в evidence честно.
+VM2_NOTE="skipped"
+VM2_TOTAL="-"
+if ssh -o BatchMode=yes -o ConnectTimeout=10 vm2 'true' 2>/dev/null; then
+  VM2_TOTAL="$(ssh -o BatchMode=yes vm2 'ls /var/lib/agent-runner/runs 2>/dev/null | wc -l' | tr -d ' ')"
+  VM2_MISSING=""
+  for t in "$T_QUOTED" "$T_LIVE" "$T_PERM" "$T_FAULT"; do
+    n="$(ssh -o BatchMode=yes vm2 "grep -l '\"userTaskId\": \"$t\"' /var/lib/agent-runner/runs/*/state.json 2>/dev/null | wc -l" | tr -d ' ')"
+    [ "$n" = "0" ] || VM2_MISSING="$VM2_MISSING $t($n)"
+  done
+  if [ -n "$VM2_MISSING" ]; then
+    fail "на Runner VM2 есть раны для пробных задач:$VM2_MISSING"
+  fi
+  VM2_NOTE="ok"
+  echo "OK: на Runner VM2 (всего ранов: $VM2_TOTAL) ни одного рана для пробных задач"
+else
+  echo "SKIP: ssh-алиас vm2 недоступен — проверка Runner не выполнялась"
+fi
+
 cat > "$RUNTIME_DIR/runs.json" <<EOF
 {"pr23_quoted": {"userTaskId": "$T_QUOTED", "run_started": $RUNS_QUOTED},
  "pr21_live": {"userTaskId": "$T_LIVE", "run_started": $RUNS_LIVE},
  "permission": {"userTaskId": "$T_PERM", "run_started": $RUNS_PERM},
- "fault_refused": {"userTaskId": "$T_FAULT", "run_started": $RUNS_FAULT}}
+ "fault_refused": {"userTaskId": "$T_FAULT", "run_started": $RUNS_FAULT},
+ "vm2_runner": {"status": "$VM2_NOTE", "runs_total": "$VM2_TOTAL", "probe_runs_found": 0}}
 EOF
 
 echo

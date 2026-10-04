@@ -196,7 +196,17 @@ function buildTranscript(collected) {
   lines.push('| Проба | userTaskId | run_started |');
   lines.push('|---|---|---|');
   for (const [label, value] of Object.entries(collected.runCounts ?? {})) {
-    lines.push(`| ${label} | ${value.userTaskId ?? '—'} | ${value.run_started ?? '—'} |`);
+    if (typeof value.run_started !== 'number') continue;
+    lines.push(`| ${label} | ${value.userTaskId ?? '—'} | ${value.run_started} |`);
+  }
+  const vm2 = collected.runCounts?.vm2_runner;
+  if (vm2) {
+    lines.push('');
+    lines.push(
+      vm2.status === 'ok'
+        ? `Корроборация на песочном Runner'е **VM2** (read-only, ssh): ран для пробных задач — **0** при ${vm2.runs_total} ранах всего в песочнице. Ни одна проба не дошла до отправки в исполнитель.`
+        : 'Корроборация на VM2 не выполнялась: ssh-алиас `vm2` в этой среде недоступен. Проверка Journal Task Store выше остаётся обязательной.',
+    );
   }
   lines.push('');
   lines.push('## Решения маршрута (журнал worker\'а, санитизировано)');
