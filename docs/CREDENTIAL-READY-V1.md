@@ -78,6 +78,13 @@ port may submit the existing task using the answered wait. A failed wake retains
 the pending intent; `/recover` and scheduled recovery retry it. Duplicate wake
 hints do not create another task or generation.
 
+Initial submission requires the port constructor's third argument to supply
+trusted `runnerEngine`, `runnerTimeoutSec` and `runnerPollSec`. The deployment's
+existing runtime-policy/env factory must pass these settings to both HTTP and
+recovery ports. Without them, readiness is durable but initial work stays pending;
+it must not silently select the legacy `opencode` engine or default budgets.
+This patch intentionally does not introduce another runtime-policy owner.
+
 Credential readiness proceeds to outstanding Runner work rather than completing
 the demo `no_engine` branch. Missing Runner configuration leaves the task
 nonterminal. An existing Runner session, unknown/interrupted attempt or checkpoint
