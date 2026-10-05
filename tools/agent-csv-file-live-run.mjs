@@ -128,6 +128,7 @@ export async function runCsvFile(environment = process.env, fetchImpl = fetch) {
     assert.equal(status.taskStore.conversation_id, envelope.conversationRef);
     assert.ok(Array.isArray(status.runs) && status.runs.length <= 1);
     const attempt = status.runs[0];
+    if (phase === 'route' || report.runId !== undefined) assert.ok(attempt);
     if (attempt) {
       assert.ok(identity(attempt.id));
       assert.equal(attempt.generation, 1);

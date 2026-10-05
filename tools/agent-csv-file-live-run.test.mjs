@@ -16,7 +16,7 @@ function fixture(context) {
   const environment = { INTEGRATION_BINDINGS_FILE: bindingsPath, INTEGRATION_REPORT_FILE: reportPath,
     INTEGRATION_REQUEST_ID: 'csv-stable-fixture' };
   const state = { calls: [], tasks: new Map(), attempts: [], loseIntakeAck: false, loseRouteAck: false,
-    generation: 1, runStatus: 'running', malformedIds: false };
+    generation: 1, runStatus: 'running', engineStatus: 'running', malformedIds: false };
   const fetchImpl = async (url, options) => {
     assert.equal(options.redirect, 'error');
     const path = url.pathname;
@@ -30,7 +30,7 @@ function fixture(context) {
     }
     if (path === '/status') return Response.json({ taskStore: { id: 'fixture-task', generation: state.generation,
       conversation_id: 'csv-stable-fixture', status: 'active' }, runs: state.attempts.map(id => ({ id, generation: 1, status: state.runStatus })),
-      engine: { status: 'running' } });
+      engine: { status: state.engineStatus } });
     assert.equal(path, '/route');
     if (!state.attempts.length) state.attempts.push('fixture-attempt');
     if (state.loseRouteAck) { state.loseRouteAck = false; throw new Error('lost route ACK'); }
@@ -125,6 +125,35 @@ for (const unsafe of ['generation', 'unknown']) test(`refuses ${unsafe} executio
   assert.equal((await runCsvFile(fixtureData.environment, fixtureData.fetchImpl)).ok, false);
   assert.equal(fixtureData.state.calls.filter(call => call.path === '/route').length, routes);
 });
+
+for (const unsafe of ['empty-runs-unknown-engine', 'checkpoint-run-missing', 'mismatched-run', 'unknown-engine', 'errored-engine']) {
+  test(`route-phase resume refuses ${unsafe} before any route requests`, async context => {
+    const fixtureData = fixture(context);
+    let routeCalls = 0;
+    const lostReplayAck = async (url, options) => {
+      if (url.pathname === '/route' && ++routeCalls === 2) throw new Error('lost route replay ACK');
+      return fixtureData.fetchImpl(url, options);
+    };
+    assert.equal((await runCsvFile(fixtureData.environment, lostReplayAck)).ok, false);
+    const checkpoint = JSON.parse(readFileSync(fixtureData.reportPath, 'utf8'));
+    assert.equal(checkpoint.phase, 'route');
+    assert.equal(checkpoint.runId, 'fixture-attempt');
+    if (unsafe === 'empty-runs-unknown-engine') {
+      delete checkpoint.runId;
+      delete checkpoint.decisionId;
+      writeFileSync(fixtureData.reportPath, JSON.stringify(checkpoint));
+      fixtureData.state.attempts = [];
+      fixtureData.state.engineStatus = 'unknown';
+    } else if (unsafe === 'checkpoint-run-missing') fixtureData.state.attempts = [];
+    else if (unsafe === 'mismatched-run') fixtureData.state.attempts = ['different-attempt'];
+    else fixtureData.state.engineStatus = unsafe === 'unknown-engine' ? 'unknown' : 'errored';
+    const calls = fixtureData.state.calls.length;
+    fixtureData.environment.INTEGRATION_RESUME = 'true';
+    const resumed = await runCsvFile(fixtureData.environment, fixtureData.fetchImpl);
+    assert.equal(resumed.ok, false);
+    assert.deepEqual(fixtureData.state.calls.slice(calls).map(call => call.path), ['/status']);
+  });
+}
 
 test('missing replay IDs cannot satisfy undefined-equals-undefined or claim dispatch success', async context => {
   const fixtureData = fixture(context);
