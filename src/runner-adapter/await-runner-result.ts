@@ -92,7 +92,9 @@ export async function awaitRunnerResult(
 
     // Потеря связи с Runner'ом — отдельное состояние, не failed.
     if (status.connectionLost) {
-      await store.markConnectionLost(opts.runId, 'runner connection_lost');
+      if ((await store.getRun(opts.runId))?.status !== 'unknown') {
+        await store.markConnectionLost(opts.runId, 'runner connection_lost');
+      }
       return { ok: false, reason: 'connection_lost' };
     }
 
