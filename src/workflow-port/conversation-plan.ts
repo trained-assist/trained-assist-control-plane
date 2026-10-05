@@ -398,12 +398,32 @@ export async function conversationPlan(
   //  - ожидание открыто   -> продолжаем ждать ответа;
   //  - ответ уже durable  -> сразу к результату (ответ пережил смерть движка).
   const resumeAwaitingId = p.awaitingInputId ?? (current?.status === 'awaiting_input' ? (await store.getOpenAwaiting(taskId))?.awaiting_input_id ?? null : null);
+  let credentialContinued = false;
   if (resumeAwaitingId) {
     const row = await store.getAwaiting(resumeAwaitingId);
-    if (row?.status === 'answered' && row.answer_json !== null) {
+    if (row?.purpose === 'credential') {
+      if (row.user_task_id !== taskId || row.generation !== generation || row.checkpoint_ref
+        || (await store.listRuns(taskId)).some(run => run.session_id || run.status === 'unknown' || run.status === 'interrupted')) {
+        return { ok: false, reason: 'credential_checkpoint_resume_unavailable' };
+      }
+      if (row.status === 'open') {
+        const waited = await waitForAnswer({ store, ctx, taskId, awaitingInputId: resumeAwaitingId,
+          eventType: 'credential_ready', pollSec: p.waitPollSec ?? 60,
+          timeoutSec: p.waitTimeoutSec ?? 24 * 3600, step: 'credential-wait' });
+        if (waited.answer === null) return handleWaitTimeout(store, p);
+      }
+      const answered = await store.getAwaiting(resumeAwaitingId);
+      if (answered?.status !== 'answered' || !answered.answer_json
+        || JSON.parse(answered.answer_json).status !== 'ready') {
+        return { ok: false, reason: 'verified_credential_event_required' };
+      }
+      if (!adapter) return { ok: false, reason: 'credential_execution_unavailable' };
+      credentialContinued = true;
+    }
+    if (!credentialContinued && row?.status === 'answered' && row.answer_json !== null) {
       return finalizeRun(ctx, store, p, null, JSON.parse(row.answer_json));
     }
-    if (row?.status === 'open') {
+    if (!credentialContinued && row?.status === 'open') {
       const waited = await waitForAnswer({
         store,
         ctx,
@@ -584,7 +604,7 @@ export async function conversationPlan(
   // (`awaitingPurpose` задан в params, а не угадан планом). Обычный one-shot
   // запуск не требует ответа «да»: результат даёт движок. Нового цикла агента
   // здесь нет — тот же шаг `mark-awaiting`, просто не безусловный.
-  const awaitingInputId: string | null = p.awaitingPurpose
+  const awaitingInputId: string | null = p.awaitingPurpose && !credentialContinued
     ? await ctx.step('mark-awaiting', async () => {
         try {
           const opened = await store.openAwaiting({
