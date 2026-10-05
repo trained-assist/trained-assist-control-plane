@@ -11,7 +11,7 @@
  * (userTaskId, generation) — повтор доставки того же ключа возвращает тот же
  * receipt (deduplicated: true), второй Run не создаётся.
  */
-import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from './errors';
+import { RunnerArtifactManifestError, RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from './errors';
 import type { RunSpec } from '../run-spec/run-spec';
 import { toSubmitRequest } from '../run-spec/run-spec';
 
@@ -40,6 +40,7 @@ export interface RunnerReceipt {
 }
 
 export interface RunnerStatusView {
+  answer?: string | null;
   requestId: string;
   userTaskId: string;
   conversationId: string;
@@ -68,7 +69,7 @@ export interface RunnerResult {
   failure?: { code: string; failureClass: string; safeSummary: string; retryable: boolean };
   usage: { status: 'unknown' } | { status: 'known'; usd: number };
   outputRefs: string[];
-  persistence: 'pending' | 'persisted' | 'failed';
+  persistence: 'pending' | 'persisted' | 'failed' | 'not_required';
   cleanup: 'pending' | 'completed' | 'failed';
   logPath: string;
   /**
@@ -112,6 +113,23 @@ export interface RunnerArtifact {
   runId: string;
   userTaskId: string;
   profileId: string;
+}
+
+export interface RunnerArtifactSummary {
+  ref: string;
+  artifactId?: string;
+  name: string;
+  mime: string;
+  size: number;
+  sha256: string;
+}
+
+export function runnerArtifactRef(manifest: unknown): string {
+  if (!manifest || typeof manifest !== 'object') throw new RunnerArtifactManifestError();
+  const fields = manifest as Record<string, unknown>;
+  const ref = fields.ref ?? (fields.storageKey || fields.artifactId || fields.url);
+  if (typeof ref !== 'string' || !ref.trim() || ref !== ref.trim()) throw new RunnerArtifactManifestError();
+  return ref;
 }
 
 export class RunnerApiAdapter {
@@ -213,9 +231,10 @@ export class RunnerApiAdapter {
     return this.request<RunnerEventsPage>('GET', `/v1/runs/${runId}/events?cursor=${cursor}&limit=${limit}`);
   }
 
-  async artifacts(runId: string): Promise<RunnerArtifact[]> {
-    const res = await this.request<{ artifacts: RunnerArtifact[] }>('GET', `/v1/runs/${runId}/artifacts`);
-    return res.artifacts;
+  async artifacts(runId: string): Promise<RunnerArtifactSummary[]> {
+    const res = await this.request<{ artifacts: Array<RunnerArtifact | { path: string; name: string; mime: string; size: number; sha256: string; url: string }> }>('GET', `/v1/runs/${runId}/artifacts`);
+    if (!Array.isArray(res?.artifacts)) throw new RunnerArtifactManifestError();
+    return res.artifacts.map(manifest => ({ ...manifest, ref: runnerArtifactRef(manifest) }));
   }
 
   /**

@@ -32,8 +32,10 @@ import { discoveryCapabilityIds } from './brief/compiler';
 import type { CatalogBrief } from './brief/brief-types';
 import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
 import type { FastPathContinuationRequest } from '../output/continuation';
+import { routeCommunicationV1, type CommunicationV1Deps } from './communication-v1';
 
 export interface RouteServiceDeps {
+  communicationV1?: CommunicationV1Deps;
   /** Рецепт P17: один вызов модели без инструментов → одно решение. */
   replyOrRoute?: ReplyOrRouteRunner;
   /** Идентификатор модели для журнала (без инструментов). */
@@ -48,6 +50,8 @@ export interface RouteServiceDeps {
 }
 
 export interface RouteResult {
+  agentInstructions?: string;
+  rendering?: { source: 'communication_writer' | 'deterministic'; failure: string | null };
   decision: RoutingDecision;
   decisionId: string;
   /** Пользовательский ответ, если он разрешён решением. */
@@ -79,6 +83,7 @@ const clarifyQuestion = 'Уточните, пожалуйста, что имен
  * OpenCode (§ policy 30.09) и никаких скрытых повторов.
  */
 export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps = {}): Promise<RouteResult> {
+  if (deps.communicationV1 && !input.prepared.typedSignal) return routeCommunicationV1(input, deps.communicationV1);
   const now = deps.now ?? (() => Date.now());
   const startedAt = now();
   const decisionId = `${input.envelope.userTaskId}:${input.envelope.requestId ?? 'no-request'}:${input.envelope.catalogVersion}`;

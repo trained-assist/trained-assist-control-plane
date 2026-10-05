@@ -24,6 +24,8 @@ import {
   TaskStoreError,
 } from './errors';
 import { kindForPurpose } from '../awaiting/purpose';
+import { validateCredentialReadyEvent, validateCredentialRequirement } from '../awaiting/credential-ready';
+import type { CredentialCompletionRow, CredentialReadyEvent, CredentialRequirement } from '../awaiting/credential-ready';
 import {
   DEFAULT_PENDING_INPUT_DEADLINE_MS,
   DEFAULT_START_DEADLINE_MS,
@@ -37,7 +39,11 @@ import {
   type AwaitingKind,
   type AwaitingPurpose,
   type ConversationRow,
+  type CpStopTarget,
+  type CpStopTargetResolution,
+  type CpStopWindowRow,
   type EventSource,
+  type NativeStopEvidence,
   type PendingInputRow,
   type WatchdogHealthRow,
   type StuckInputAlertRow,
@@ -141,6 +147,19 @@ export interface AnswerAwaitingInput {
   step?: string | null;
   source?: EventSource;
 }
+
+export interface OpenCpStopWindowInput {
+  profileId: string;
+  conversationId: string;
+  windowId: string;
+  admissionRequestIds: string[];
+  targets: CpStopTarget[];
+  restart: boolean;
+}
+
+export type OpenCpStopWindowResult =
+  | { ok: true; window: CpStopWindowRow; created: boolean }
+  | { ok: false; reason: 'snapshot_conflict' };
 
 interface StatePatch {
   status?: TaskStatus;
@@ -366,6 +385,25 @@ export class TaskStore {
     return res.results;
   }
 
+  async routingSelection(taskId: string, generation: number): Promise<unknown | null> {
+    const row = await this.db.prepare('SELECT payload_json FROM task_events WHERE event_id = ?')
+      .bind(`routing:${taskId}:${generation}`).first<{ payload_json: string }>();
+    return row ? JSON.parse(row.payload_json) : null;
+  }
+
+  async saveRoutingSelection(taskId: string, generation: number, selection: unknown): Promise<unknown> {
+    await this.db.prepare(
+      `INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+       SELECT ?, id, 'routing.selected', generation, 'router', ?, ? FROM durable_tasks
+       WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+    ).bind(`routing:${taskId}:${generation}`, JSON.stringify(selection), Date.now(), taskId, generation).run();
+    const saved = await this.routingSelection(taskId, generation);
+    const task = await this.requireTask(taskId);
+    if (task.generation !== generation) throw new FencedError(taskId, generation, task.generation);
+    if (saved !== null) return saved;
+    throw new TerminalStateError(taskId, task.status);
+  }
+
   /**
    * Нетерминальные задачи ПРОФИЛЯ: снимок «своих» данных для быстрых ответов
    * (`/status`, «что сейчас в работе»). Чужие задачи не выдаются никогда
@@ -401,13 +439,31 @@ export class TaskStore {
    */
   async startRun(
     taskId: string,
-    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number } = { generation: 1 },
+    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number; idempotent?: boolean } = { generation: 1 },
   ): Promise<RunAttemptRow> {
     const task = await this.requireTask(taskId);
     if (isTerminalStatus(task.status)) {
       throw new TaskStoreError(`cannot start run on terminal task ${taskId} (${task.status})`, taskId);
     }
     const now = Date.now();
+    if (opts.idempotent) {
+      const runId = `routing-run:${taskId}:${opts.generation}`;
+      await this.db.batch([
+        this.db.prepare(
+          `INSERT OR IGNORE INTO executions(id, task_id, engine, status, generation, started_at, last_heartbeat_at)
+           SELECT ?, id, ?, 'running', generation, ?, ? FROM durable_tasks WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+        ).bind(runId, opts.engine ?? null, now, now, taskId, opts.generation),
+        this.db.prepare(
+          `INSERT OR IGNORE INTO task_events(event_id, user_task_id, execution_id, kind, generation, source, payload_json, created_at)
+           SELECT ?, task_id, id, 'run_started', generation, 'executor', ?, ? FROM executions WHERE id = ?`,
+        ).bind(runId, JSON.stringify({ runId, engine: opts.engine ?? null }), now, runId),
+        this.db.prepare('UPDATE durable_tasks SET start_deadline_at = NULL WHERE id = ? AND generation = ? AND EXISTS (SELECT 1 FROM executions WHERE id = ?)')
+          .bind(taskId, opts.generation, runId),
+      ]);
+      const current = await this.requireTask(taskId);
+      if (current.generation !== opts.generation) throw new FencedError(taskId, opts.generation, current.generation);
+      return this.requireRun(runId);
+    }
     const runId = crypto.randomUUID();
     const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
     // Атомарная граница старта: попытка, событие и сброс дедлайна — ОДНА транзакция.
@@ -781,7 +837,7 @@ export class TaskStore {
       this.db
         .prepare(
           `UPDATE executions SET status = ?, finished_at = ?, error_class = ?, error_text = ?, result_json = ?
-           WHERE id = ?`,
+           WHERE id = ? AND status IN ('running', 'unknown', 'waiting')`,
         )
         .bind(
           outcome,
@@ -791,20 +847,17 @@ export class TaskStore {
           opts.result === undefined ? null : JSON.stringify(opts.result),
           runId,
         ),
+      this.db.prepare(
+        `INSERT INTO task_events(user_task_id, kind, generation, source, payload_json, created_at)
+         SELECT task_id, 'run_finished', generation, 'executor', ?, ? FROM executions WHERE id = ? AND changes() = 1`,
+      ).bind(JSON.stringify({ runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null }), now, runId),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const run = await this.getRun(runId);
+      if (run?.status === outcome) return run;
       throw new TaskStoreError(`finish rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
     }
-    const run = await this.requireRun(runId);
-    await this.logEvent({
-      taskId: run.task_id,
-      kind: 'run_finished',
-      generation: run.generation,
-      source: 'executor',
-      payload: { runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null },
-    });
-    return run;
+    return this.requireRun(runId);
   }
 
   /**
@@ -1171,12 +1224,24 @@ export class TaskStore {
           input.runId ?? null,
           now,
         ),
+      this.db.prepare(
+        `UPDATE task_artifacts SET size_bytes = COALESCE(size_bytes, ?), checksum = COALESCE(checksum, ?)
+         WHERE user_task_id = ? AND artifact_ref = ? AND run_id IS ?
+           AND (size_bytes IS NULL OR ? IS NULL OR size_bytes = ?)
+           AND (checksum IS NULL OR ? IS NULL OR checksum = ?)`,
+      ).bind(input.sizeBytes ?? null, input.checksum ?? null, input.taskId, input.artifactRef, input.runId ?? null,
+        input.sizeBytes ?? null, input.sizeBytes ?? null, input.checksum ?? null, input.checksum ?? null),
     ]);
     const artifact = (await this.db
       .prepare(`SELECT * FROM task_artifacts WHERE user_task_id = ? AND artifact_ref = ?`)
       .bind(input.taskId, input.artifactRef)
       .first<ArtifactRow>()) ?? null;
     if (!artifact) throw new TaskStoreError(`artifact record failed: ${input.artifactRef}`, input.taskId);
+    if (artifact.run_id !== (input.runId ?? null)
+      || (input.sizeBytes != null && artifact.size_bytes !== input.sizeBytes)
+      || (input.checksum != null && artifact.checksum !== input.checksum)) {
+      throw new TaskStoreError('artifact identity or metadata conflict', input.taskId);
+    }
     if (results[0]!.meta.changes === 1) {
       await this.logEvent({
         taskId: input.taskId,
@@ -1296,6 +1361,47 @@ export class TaskStore {
     return res.results;
   }
 
+  /** Persist only the minimal, identity-checked native exit proof. */
+  async recordNativeStopEvidence(taskId: string, proofs: NativeStopEvidence[]): Promise<void> {
+    const task = await this.requireTask(taskId);
+    const runs = await this.listRuns(taskId);
+    const unique = new Map<string, NativeStopEvidence>();
+    for (const proof of proofs) {
+      const run = runs.find((item) => item.id === proof.attemptId);
+      if (proof.taskId !== taskId || proof.profileId !== task.profile_id || proof.exitObserved !== true
+        || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
+        || !run || run.session_id !== proof.runId || run.generation !== proof.ownerGeneration
+        || run.finished_at === null || !['success', 'failed', 'cancelled'].includes(run.status)) {
+        throw new TaskStoreError(`native stop evidence identity mismatch for task ${taskId}`, taskId);
+      }
+      unique.set(proof.attemptId, {
+        taskId, profileId: task.profile_id, attemptId: run.id, runId: proof.runId,
+        ownerGeneration: run.generation, state: proof.state, exitObserved: true,
+      });
+    }
+    if (unique.size === 0) return;
+    const existing = await this.history(taskId);
+    const known = new Set<string>();
+    for (const event of existing) {
+      if (event.source !== 'gateway' || event.kind !== 'progress') continue;
+      try {
+        const payload = JSON.parse(event.payload_json) as { event?: string; nativeStops?: NativeStopEvidence[] };
+        if (payload.event === 'native_stop.confirmed') {
+          for (const proof of payload.nativeStops ?? []) known.add(proof.attemptId);
+        }
+      } catch { /* ignore unrelated or malformed progress payloads */ }
+    }
+    const newProofs = [...unique.values()].filter((proof) => !known.has(proof.attemptId));
+    if (newProofs.length === 0) return;
+    await this.logEvent({
+      taskId,
+      kind: 'progress',
+      generation: task.generation,
+      source: 'gateway',
+      payload: { event: 'native_stop.confirmed', nativeStops: newProofs },
+    });
+  }
+
   /** Есть ли событие такого типа (идемпотентность внешних операций, например run_started). */
   async hasEvent(taskId: string, kind: TaskEventKind): Promise<boolean> {
     const row = await this.db
@@ -1303,6 +1409,20 @@ export class TaskStore {
       .bind(taskId, kind)
       .first<{ present: number }>();
     return row !== null;
+  }
+
+  /** True if the durable pre-submit witness exists for this exact CP attempt. */
+  async runnerSubmitMayHaveStarted(taskId: string, attemptId: string): Promise<boolean> {
+    const events = await this.db.prepare(
+      `SELECT payload_json FROM task_events WHERE user_task_id = ? AND kind = 'progress'
+       AND source = 'executor' ORDER BY id`,
+    ).bind(taskId).all<{ payload_json: string }>();
+    return events.results.some((event) => {
+      try {
+        const payload = JSON.parse(event.payload_json) as { event?: string; attemptId?: string | null };
+        return payload.event === 'runner_submit_started' && payload.attemptId === attemptId;
+      } catch { return false; }
+    });
   }
 
   // ----------------------------------------------------------- переходы
@@ -1622,7 +1742,7 @@ export class TaskStore {
    */
   async confirmCancel(
     taskId: string,
-    opts: { source?: EventSource; reason?: string } = {},
+    opts: { source?: EventSource; reason?: string; expectedGeneration?: number; nativeStops?: NativeStopEvidence[] } = {},
   ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
     const now = Date.now();
     const before = await this.getTask(taskId);
@@ -1632,17 +1752,21 @@ export class TaskStore {
     if (isTerminalStatus(before.status)) {
       return { cancelled: false, generation: before.generation, status: before.status };
     }
+    if (opts.expectedGeneration !== undefined && before.generation !== opts.expectedGeneration) {
+      return { cancelled: false, generation: before.generation, status: before.status };
+    }
 
     const results = await this.db.batch([
       this.db
         .prepare(
           `UPDATE durable_tasks SET status = 'cancelled', updated_at = ?, revision = revision + 1
-           WHERE id = ? AND ${NON_TERMINAL_SQL}`,
+           WHERE id = ? AND ${NON_TERMINAL_SQL} AND (? IS NULL OR generation = ?)`,
         )
-        .bind(now, taskId),
+        .bind(now, taskId, opts.expectedGeneration ?? null, opts.expectedGeneration ?? null),
       this.db
-        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'`)
-        .bind(taskId),
+        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND generation = ? AND status = 'cancelled'))`)
+        .bind(taskId, opts.expectedGeneration ?? null, taskId, opts.expectedGeneration ?? null),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const row = await this.requireTask(taskId);
@@ -1664,6 +1788,7 @@ export class TaskStore {
         closedAwaiting: true,
         stopConfirmed: true,
         deliveriesSuppressed: suppressed,
+        ...(opts.nativeStops ? { nativeStops: opts.nativeStops } : {}),
       },
     });
     return { cancelled: true, generation: after.generation, status: 'cancelled' };
@@ -1829,6 +1954,14 @@ export class TaskStore {
     const generation = input.generation ?? task.generation;
     const purpose = input.purpose ?? null;
     const kind = input.kind ?? kindForPurpose(purpose);
+    if (purpose === 'credential') {
+      const requirement = (input.schema as { credential?: CredentialRequirement } | undefined)?.credential;
+      if (!requirement) throw new AnswerRejectedError(input.taskId, 'credential_binding_required');
+      validateCredentialRequirement(requirement);
+      if (input.respondentScope !== task.profile_id || input.checkpointRef) {
+        throw new AnswerRejectedError(input.taskId, 'unsupported_credential_scope');
+      }
+    }
 
     const open = await this.getOpenAwaiting(input.taskId);
     if (open) throw new AlreadyOpenAwaitingError(input.taskId, open.awaiting_input_id);
@@ -1900,6 +2033,7 @@ export class TaskStore {
     const generation = input.generation ?? (await this.requireTask(input.taskId)).generation;
     const open = await this.getOpenAwaiting(input.taskId);
     if (!open) throw new TaskStoreError(`no open awaiting input for task ${input.taskId}`, input.taskId);
+    if (open.purpose === 'credential') throw new AnswerRejectedError(open.awaiting_input_id, 'verified_credential_event_required');
 
     const close = this.db
       .prepare(
@@ -2007,6 +2141,7 @@ export class TaskStore {
   }> {
     const awaiting = await this.getAwaiting(input.awaitingInputId);
     if (!awaiting) throw new TaskStoreError(`awaiting input not found: ${input.awaitingInputId}`);
+    if (awaiting.purpose === 'credential') throw new AnswerRejectedError(input.awaitingInputId, 'verified_credential_event_required');
 
     // Повтор того же ключа: вернуть прежний результат, ничего не меняя.
     const previous = await this.db
@@ -2084,6 +2219,48 @@ export class TaskStore {
     };
   }
 
+  async completeCredentialAwaiting(input: CredentialReadyEvent): Promise<{ record: CredentialCompletionRow; duplicate: boolean }> {
+    validateCredentialReadyEvent(input);
+    const previous = await this.db.prepare('SELECT * FROM credential_completions WHERE host_principal_id = ? AND event_id = ?')
+      .bind(input.hostPrincipalId, input.eventId).first<CredentialCompletionRow>();
+    if (previous) {
+      if (previous.awaiting_input_id !== input.awaitingInputId || previous.user_task_id !== input.userTaskId
+        || previous.profile_id !== input.profileId || previous.provider !== input.provider
+        || previous.binding_ref !== input.bindingRef || previous.provider_session_ref !== input.providerSessionRef
+        || previous.generation !== input.generation || previous.wait_version !== input.version) {
+        throw new AnswerConflictError(input.awaitingInputId, input.eventId);
+      }
+      return { record: previous, duplicate: true };
+    }
+    let inserted: boolean;
+    try {
+      const result = await this.db.prepare(`INSERT INTO credential_completions(
+        host_principal_id, event_id, awaiting_input_id, user_task_id, profile_id, provider, binding_ref,
+        provider_session_ref, generation, wait_version, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(host_principal_id, event_id) DO NOTHING`)
+        .bind(input.hostPrincipalId, input.eventId, input.awaitingInputId, input.userTaskId, input.profileId,
+          input.provider, input.bindingRef, input.providerSessionRef, input.generation, input.version, Date.now()).run();
+      inserted = result.meta.changes > 0;
+    } catch {
+      throw new AnswerRejectedError(input.awaitingInputId, 'credential_completion_rejected');
+    }
+    const stored = await this.db.prepare('SELECT * FROM credential_completions WHERE host_principal_id = ? AND event_id = ?')
+      .bind(input.hostPrincipalId, input.eventId).first<CredentialCompletionRow>();
+    if (!stored) throw new TaskStoreError('credential completion was not persisted', input.userTaskId);
+    if (!inserted) return this.completeCredentialAwaiting(input);
+    return { record: stored, duplicate: false };
+  }
+
+  async pendingCredentialContinuations(): Promise<CredentialCompletionRow[]> {
+    return (await this.db.prepare("SELECT * FROM credential_completions WHERE continuation_status = 'pending' ORDER BY created_at LIMIT 100")
+      .all<CredentialCompletionRow>()).results;
+  }
+
+  async markCredentialContinuation(record: CredentialCompletionRow, status: 'woken' | 'stale'): Promise<void> {
+    await this.db.prepare("UPDATE credential_completions SET continuation_status = ?, dispatched_at = ? WHERE host_principal_id = ? AND event_id = ? AND continuation_status = 'pending'")
+      .bind(status, Date.now(), record.host_principal_id, record.event_id).run();
+  }
+
   async getAwaiting(awaitingInputId: string): Promise<AwaitingInputRow | null> {
     return this.db
       .prepare(`SELECT * FROM awaiting_inputs WHERE awaiting_input_id = ?`)
@@ -2156,11 +2333,153 @@ export class TaskStore {
     return res.results;
   }
 
+  /**
+   * Resolve the caller's complete admission barrier plus every still-open task
+   * in this generic conversation to its exact durable acceptance receipt.
+   * No ID is reconstructed from conversation contents or provider metadata.
+   */
+  async resolveCpStopTargets(input: {
+    profileId: string;
+    conversationId: string;
+    admissionRequestIds: string[];
+  }): Promise<CpStopTargetResolution> {
+    const targetByTask = new Map<string, CpStopTarget>();
+    const receiptReason = async (task: TaskRow): Promise<CpStopTargetResolution | CpStopTarget> => {
+      if (task.profile_id !== input.profileId || task.conversation_id !== input.conversationId || !task.request_id) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      if (task.request_id.startsWith('tgcp-') && !/^tgcp-[0-9a-f]{64}$/.test(task.request_id)) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      const receipts = await this.db.prepare(
+        `SELECT event_id, user_task_id, payload_json FROM task_events
+         WHERE user_task_id = ? AND kind = 'task_accepted' ORDER BY id LIMIT 2`,
+      ).bind(task.id).all<{ event_id: string | null; user_task_id: string; payload_json: string }>();
+      if (receipts.results.length !== 1 || !receipts.results[0]!.event_id
+        || receipts.results[0]!.user_task_id !== task.id) {
+        return { ok: false, reason: 'receipt_missing' };
+      }
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(receipts.results[0]!.payload_json) as Record<string, unknown>; }
+      catch { return { ok: false, reason: 'identity_mismatch' }; }
+      if (payload.requestId !== task.request_id || payload.profileId !== task.profile_id) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      return {
+        requestId: task.request_id,
+        userTaskId: task.id,
+        profileId: task.profile_id,
+        receiptId: receipts.results[0]!.event_id,
+      };
+    };
+
+    const openTasks = await this.db.prepare(
+      `SELECT * FROM durable_tasks WHERE profile_id = ? AND conversation_id = ?
+       AND ${NON_TERMINAL_SQL} ORDER BY created_at, id`,
+    ).bind(input.profileId, input.conversationId).all<TaskRow>();
+    for (const task of openTasks.results) {
+      const resolved = await receiptReason(task);
+      if ('ok' in resolved) return resolved;
+      targetByTask.set(task.id, resolved);
+    }
+
+    for (const requestId of input.admissionRequestIds) {
+      if (requestId.startsWith('tgcp-') && !/^tgcp-[0-9a-f]{64}$/.test(requestId)) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      const matches = await this.db.prepare(
+        `SELECT * FROM durable_tasks WHERE profile_id = ? AND request_id = ? ORDER BY id LIMIT 2`,
+      ).bind(input.profileId, requestId).all<TaskRow>();
+      if (matches.results.length > 1) return { ok: false, reason: 'identity_mismatch' };
+      const task = matches.results[0];
+      if (!task) {
+        const receipt = await this.db.prepare(
+          `SELECT event_id FROM task_events WHERE kind = 'task_accepted'
+           AND json_extract(payload_json, '$.profileId') = ?
+           AND json_extract(payload_json, '$.requestId') = ? LIMIT 1`,
+        ).bind(input.profileId, requestId).first<{ event_id: string | null }>();
+        return { ok: false, reason: receipt ? 'receipt_missing' : 'admission_unknown' };
+      }
+      const resolved = await receiptReason(task);
+      if ('ok' in resolved) return resolved;
+      targetByTask.set(task.id, resolved);
+    }
+
+    return {
+      ok: true,
+      targets: [...targetByTask.values()].sort((a, b) => a.requestId.localeCompare(b.requestId)),
+    };
+  }
+
+  async cpStopWindow(profileId: string, conversationId: string): Promise<CpStopWindowRow | null> {
+    return this.db.prepare(`SELECT * FROM cp_stop_windows WHERE profile_id = ? AND conversation_id = ?`)
+      .bind(profileId, conversationId).first<CpStopWindowRow>();
+  }
+
+  /** Atomic idempotent current-window claim; a new identity may replace only a confirmed window. */
+  async openCpStopWindow(input: OpenCpStopWindowInput): Promise<OpenCpStopWindowResult> {
+    const admissionIdsJson = JSON.stringify([...input.admissionRequestIds].sort());
+    const targetsJson = JSON.stringify(input.targets);
+    const current = await this.cpStopWindow(input.profileId, input.conversationId);
+    if (current?.window_id === input.windowId) {
+      if (current.admission_request_ids_json !== admissionIdsJson || current.targets_json !== targetsJson) {
+        return { ok: false, reason: 'snapshot_conflict' };
+      }
+      return { ok: true, window: current, created: false };
+    }
+    if (current && !input.restart) return { ok: false, reason: 'snapshot_conflict' };
+    if (current && input.restart && current.stop_confirmed !== 1) return { ok: false, reason: 'snapshot_conflict' };
+    if (!current && input.restart) return { ok: false, reason: 'snapshot_conflict' };
+
+    const now = Date.now();
+    const snapshotId = `stop_${crypto.randomUUID()}`;
+    const result = await this.db.prepare(
+      `INSERT INTO cp_stop_windows(profile_id, conversation_id, window_id, snapshot_id,
+         admission_request_ids_json, targets_json, stop_confirmed, reason, created_at, updated_at)
+       VALUES(?,?,?,?,?,?,0,'native_stop_pending',?,?)
+       ON CONFLICT(profile_id, conversation_id) DO UPDATE SET
+         window_id = excluded.window_id, snapshot_id = excluded.snapshot_id,
+         admission_request_ids_json = excluded.admission_request_ids_json,
+         targets_json = excluded.targets_json, stop_confirmed = 0,
+         reason = 'native_stop_pending', created_at = excluded.created_at, updated_at = excluded.updated_at
+       WHERE cp_stop_windows.stop_confirmed = 1 AND ? = 1`,
+    ).bind(input.profileId, input.conversationId, input.windowId, snapshotId, admissionIdsJson,
+      targetsJson, now, now, input.restart ? 1 : 0).run();
+    const window = await this.cpStopWindow(input.profileId, input.conversationId);
+    // Another identical request may have won the unique-key race. Return its
+    // durable snapshot when the complete admission and target set matches.
+    if (window?.window_id === input.windowId
+      && window.admission_request_ids_json === admissionIdsJson
+      && window.targets_json === targetsJson) {
+      return { ok: true, window, created: window.snapshot_id === snapshotId };
+    }
+    if (result.meta.changes !== 1 || !window || window.window_id !== input.windowId || window.snapshot_id !== snapshotId) {
+      return { ok: false, reason: 'snapshot_conflict' };
+    }
+    return { ok: true, window, created: true };
+  }
+
+  async updateCpStopWindow(input: {
+    profileId: string;
+    conversationId: string;
+    snapshotId: string;
+    stopConfirmed: boolean;
+    reason: string | null;
+  }): Promise<CpStopWindowRow | null> {
+    await this.db.prepare(
+      `UPDATE cp_stop_windows SET stop_confirmed = ?, reason = ?, updated_at = ?
+       WHERE profile_id = ? AND conversation_id = ? AND snapshot_id = ?`,
+    ).bind(input.stopConfirmed ? 1 : 0, input.reason, Date.now(), input.profileId,
+      input.conversationId, input.snapshotId).run();
+    const current = await this.cpStopWindow(input.profileId, input.conversationId);
+    return current?.snapshot_id === input.snapshotId ? current : null;
+  }
+
   // ------------------------------------------------------------- отчёты
 
   /** Приёмочный запрос §6.1: статус + история + сигналы + ожидание одним SQL. */
   static readonly STATUS_SQL = `
-    SELECT t.id, t.status, t.stage, t.generation, t.revision, t.result_json, t.conversation_id,
+    SELECT t.id, t.profile_id, t.status, t.stage, t.generation, t.revision, t.result_json, t.conversation_id,
            t.awaiting_input_id, t.delivery_state, t.updated_at,
       (SELECT json_group_array(json_object('id', e.id, 'kind', e.kind, 'step', e.task_item_id,
                                             'before', e.status_before, 'after', e.status_after,
@@ -2176,6 +2495,7 @@ export class TaskStore {
 
   async statusRow(taskId: string): Promise<{
     id: string;
+    profile_id: string;
     status: TaskStatus;
     stage: TaskStage | null;
     generation: number;
@@ -2191,6 +2511,7 @@ export class TaskStore {
   } | null> {
     const row = await this.db.prepare(TaskStore.STATUS_SQL).bind(taskId).first<{
       id: string;
+      profile_id: string;
       status: TaskStatus;
       stage: TaskStage | null;
       generation: number;
@@ -2208,6 +2529,7 @@ export class TaskStore {
     const parse = (v: string | null, fallback: unknown) => (v == null ? fallback : JSON.parse(v));
     return {
       id: row.id,
+      profile_id: row.profile_id,
       status: row.status,
       stage: row.stage,
       generation: row.generation,

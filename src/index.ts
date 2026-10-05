@@ -24,9 +24,13 @@ const WATCHDOG_STALE_MS = 30 * 60_000;
 import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
+import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
+import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
+import { runnerExternalStopPort } from './workflow-port/external-stop';
+import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -51,6 +55,10 @@ import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixe
 import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
+import { communicationSelector, communicationWriter } from './router/communication-client';
+import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
+import { commitQuickAnswer, dispatchAcceptedAgent } from './output/communication-v1';
+import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
   portContinuationPort,
@@ -59,6 +67,15 @@ import {
 } from './output';
 
 export interface Env {
+  NATIVE_CANCEL_CONFIRMATION?: string;
+  ROUTER_SELECTOR_NAMES_ONLY?: string;
+  ROUTER_SELECTOR?: string;
+  COMMUNICATION_API_URL?: string;
+  COMMUNICATION_SERVICE?: Fetcher;
+  COMMUNICATION_TOKEN?: string;
+  COMMUNICATION_TIMEOUT_MS?: string;
+  COMMUNICATION_WRITER_TIMEOUT_MS?: string;
+  ROUTER_AGENT_ENGINE?: string;
   DB: D1Database;
   TASK_WORKFLOW: Workflow;
   /**
@@ -78,11 +95,26 @@ export interface Env {
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  RUNNER_API_KEY_TELEGRAM_UX?: string;
+  RUN_SPEC_PROFILE_OVERRIDES?: string;
+  RUN_SPEC_POLICY_PROFILE?: string;
+  RUN_SPEC_REPOSITORY?: string;
+  RUN_SPEC_INPUT_REFS?: string;
+  RUN_SPEC_CWD?: string;
+  RUN_SPEC_ENV_ALLOWLIST?: string;
+  RUN_SPEC_OUTPUTS?: string;
+  RUN_SPEC_MCP?: string;
+  RUN_SPEC_RESULT_DESTINATION_REF?: string;
+  RUN_SPEC_TIMEOUT_MS?: string;
+  RUN_SPEC_STARTUP_TIMEOUT_MS?: string;
+  RUN_SPEC_MAX_OUTPUT_BYTES?: string;
+  RUN_SPEC_MAX_LOG_BYTES?: string;
   /**
    * Секрет проверки личности принципала (HMAC). Только из binding
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
    */
   PRINCIPAL_SECRET?: string;
+  CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
    * виртуальных часах. В проде не задаётся: время берёт системный clock.
@@ -136,6 +168,7 @@ export interface Env {
 }
 
 const isPermanent = (e: unknown): boolean =>
+  e instanceof ProfileRuntimeConfigurationError ||
   e instanceof FencedError ||
   e instanceof TerminalStateError ||
   /fenced|terminal state/i.test(String((e as Error)?.message ?? e));
@@ -166,10 +199,12 @@ export class TaskWorkflow extends WorkflowEntrypoint<Env, PlanParams> {
       // adapter, GTD Manager и хостовая политика RunSpec строятся из env
       // (bindings), не из params: ключ Runner'а и политика исполнения не должны
       // сериализоваться в durable params экземпляра.
-      return await conversationPlan(cfStepCtx(step), store, event.payload, {
-        adapter: runnerAdapterOf(this.env),
+      const task = await store.requireTask(event.payload.taskId);
+      const runtime = resolveProfileRuntime(this.env as unknown as Record<string, string | undefined>, task.profile_id);
+      return await conversationPlan(cfStepCtx(step), store, { ...event.payload, profileId: task.profile_id }, {
+        adapter: runtime.adapter,
         gtd: gtdServiceOf(this.env, store),
-        runSpecPolicy: runSpecPolicyOf(this.env as unknown as Record<string, string | undefined>),
+        runSpecPolicy: runtime.policy,
       });
     } catch (e) {
       // Повтор не исправит fencing и терминальный статус — валить экземпляр.
@@ -184,6 +219,12 @@ const json = (value: unknown, status = 200): Response =>
     status,
     headers: { 'content-type': 'application/json' },
   });
+
+async function credentialHost(req: Request, env: Env): Promise<string | null> {
+  const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
+  const trusted = (env.CREDENTIAL_HOST_PRINCIPALS ?? '').split(',').map(value => value.trim()).filter(Boolean);
+  return principal && trusted.includes(principal) ? principal : null;
+}
 
 const errorStatus = (e: unknown): number => {
   if (e instanceof InvalidEnvelopeError) return 400;
@@ -232,6 +273,28 @@ const principalOf = async (req: Request, auth: PrincipalAuth): Promise<string> =
 const scheduleClockOf = (env: Env): Clock =>
   env.SCHEDULE_CLOCK ? new VirtualClock(Number(env.SCHEDULE_CLOCK)) : systemClock;
 
+const credentialExecutionOf = (env: Env) => {
+  const runnerEngine = env.ROUTER_AGENT_ENGINE?.trim();
+  if (!runnerEngine) return undefined;
+  try {
+    const bindings = env as unknown as Record<string, string | undefined>;
+    const policy = runSpecPolicyOf(bindings) as { timeoutMs?: number };
+    const timeoutMs = policy.timeoutMs ?? (bindings.RUN_SPEC_TIMEOUT_MS ? Number(bindings.RUN_SPEC_TIMEOUT_MS) : undefined);
+    if (!timeoutMs) return undefined;
+    return { runnerEngine, runnerTimeoutSec: timeoutMs / 1000, runnerPollSec: 1 };
+  } catch {
+    return undefined;
+  }
+};
+
+const workflowPortOf = (env: Env, store: TaskStore) =>
+  new CfWorkflowPort(env.TASK_WORKFLOW, store, credentialExecutionOf(env), env.NATIVE_CANCEL_CONFIRMATION === 'true' ? {
+    async stop(context) {
+      const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, context.profileId);
+      return runtime.adapter ? runnerExternalStopPort(runtime.adapter).stop(context) : { state: 'unknown' };
+    },
+  } : undefined);
+
 const scheduleServiceOf = (env: Env, store: TaskStore, port: CfWorkflowPort, clock?: Clock): ScheduleService =>
   new ScheduleService({
     store: new ScheduleStore(env.DB),
@@ -244,7 +307,7 @@ const gtdServiceOf = (env: Env, store: TaskStore, clock?: Clock): GtdService =>
   new GtdService({
     store: new GtdStore(env.DB),
     tasks: store,
-    port: new CfWorkflowPort(env.TASK_WORKFLOW, store),
+    port: workflowPortOf(env, store),
     clock: clock ?? scheduleClockOf(env),
   });
 
@@ -278,13 +341,15 @@ async function handleRouteRoute(
 
   const task = await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
-  const catalog = sandboxCapabilityCatalog();
+  const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
+  const v1 = env.ROUTER_SELECTOR === 'communication_v1';
+  const catalog = v1 ? communicationV1Catalog() : sandboxCapabilityCatalog();
 
   // Права — из идентичности: выдача capability приходит из binding'а песочницы
   // (в проде — из credential broker). Текст запроса в выдачу не входит.
   const grants = parseJsonObject<Record<string, { capabilities?: string[]; integrations?: string[] }>>(env.ROUTER_GRANTS);
   const own = grants[principal.principalId] ?? {};
-  const platform = catalog.capabilities.map((c) => c.id).filter((id) => /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
+  const platform = catalog.capabilities.map((c) => c.id).filter((id) => id === 'system_health' || /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
   const authorization = await deriveAuthorization(
     {
       principalId: principal.principalId,
@@ -310,8 +375,13 @@ async function handleRouteRoute(
   const context = (body.context ?? {}) as Record<string, unknown>;
   const attachments = Array.isArray(body.attachments) ? body.attachments : [];
   const typedSignal = body.typedSignal as { kind: 'button' | 'command' | 'awaiting_answer'; ref: string } | null | undefined;
+  const ordinaryV1 = v1 && !typedSignal;
+  if (ordinaryV1) await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
+  const durableContext = ordinaryV1 ? await durableConversationContext(store, task) : undefined;
+  const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
+  const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
 
-  const result = await routeRequest(
+  let result = saved ?? await routeRequest(
     {
       envelope: {
         principalId: principal.principalId,
@@ -321,7 +391,7 @@ async function handleRouteRoute(
         catalogVersion: catalog.version,
         policyVersion: catalog.version,
         budgets: {
-          llmCallsRemaining: Number(env.ROUTER_LLM_BUDGET ?? 1),
+          llmCallsRemaining: Number(env.ROUTER_LLM_BUDGET ?? (ordinaryV1 ? 2 : 1)),
           agentAllowed: env.ROUTER_AGENT_ALLOWED !== 'false',
         },
         runId: null,
@@ -329,13 +399,18 @@ async function handleRouteRoute(
       },
       prepared: {
         text,
+        originalInput: ordinaryV1 ? storedValue : undefined,
+        durableContext,
         context: {
           pendingProposal: (context.pendingProposal as string | undefined) ?? null,
           lastAssistantText: (context.lastAssistantText as string | undefined) ?? null,
           sessionEmpty: context.sessionEmpty === undefined ? true : Boolean(context.sessionEmpty),
           relevantTurns: Number(context.relevantTurns ?? 0),
         },
-        attachments: attachments as never,
+        attachments: (ordinaryV1 ? inputItems.flatMap((item) => {
+          const refs = item as { artifactRefs?: string[]; snapshotId?: string };
+          return [...(refs.artifactRefs ?? []), ...(refs.snapshotId ? [`snapshot:${refs.snapshotId}`] : [])].map((artifactRef) => ({ artifactRef, kind: 'artifact', extracted: false, chars: null }));
+        }) : attachments) as never,
         typedSignal: typedSignal ?? null,
         contextVersion: `ctx:${task.id}:${catalog.version}`,
         readinessSnapshotPresent: true,
@@ -351,6 +426,7 @@ async function handleRouteRoute(
       },
     },
     {
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter) } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
@@ -371,6 +447,8 @@ async function handleRouteRoute(
       },
     },
   );
+  if (ordinaryV1 && !saved) result = await store.saveRoutingSelection(task.id, task.generation, result) as RouteResult;
+  if (ordinaryV1 && result.reply) await commitQuickAnswer(store, task, result);
 
   logStructured({
     event: 'route.dispatched',
@@ -393,7 +471,13 @@ async function handleRouteRoute(
   // запрашивает, но не создаёт ни job, ни run; выдача — по явному запросу и
   // только при включённой политике (по умолчанию выключена: запуск исполнителя
   // — отдельное решение, а не побочный эффект маршрутизации).
-  const continuation = await issueContinuation(result, env, store, port, body);
+  const continuation = ordinaryV1 && result.continuation && body.continue === true
+    ? env.ROUTER_CONTINUATION_ENABLED === 'true'
+      ? runtime.adapter
+        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode')
+        : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
+      : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
+    : await issueContinuation(result, env, store, port, body);
 
   return json({
     decisionId: result.decisionId,
@@ -401,6 +485,9 @@ async function handleRouteRoute(
     route: result.decision.route,
     mode: result.decision.mode,
     reasonCode: result.decision.reasonCode,
+    degraded: result.decision.degraded,
+    degradedNotice: result.decision.degradedNotice,
+    rendering: result.rendering,
     outcome: result.decision.outcome,
     needsExecutor: result.decision.needsExecutor,
     executor: result.decision.executor,
@@ -819,14 +906,11 @@ const localDeliveryAdapter: DeliveryAdapter = {
  * собственность Runner'а, control plane их только перечитывает.
  */
 async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): Promise<unknown> {
-  const adapter = runnerAdapterOf({
-    RUNNER_API_URL: env.RUNNER_API_URL,
-    RUNNER_API_KEY: env.RUNNER_API_KEY,
-  });
+  const task = await store.requireTask(taskId);
+  const { adapter } = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
   if (!adapter) return json({ error: 'runner not configured' }, 503);
 
   const runs = await store.listRuns(taskId);
-  const task = await store.requireTask(taskId);
   const before = (await store.listArtifacts(taskId)).length;
   const seen = new Set<string>();
   const failed: string[] = [];
@@ -842,7 +926,7 @@ async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): P
       continue;
     }
     for (const manifest of manifests) {
-      const ref = manifest.storageKey || manifest.artifactId;
+      const ref = manifest.ref;
       if (seen.has(ref)) continue;
       seen.add(ref);
       await store.recordArtifact({
@@ -880,10 +964,8 @@ async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): P
  * подмены результата: это чтение уже сохранённого выхода.
  */
 async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: string): Promise<Response> {
-  const adapter = runnerAdapterOf({
-    RUNNER_API_URL: env.RUNNER_API_URL,
-    RUNNER_API_KEY: env.RUNNER_API_KEY,
-  });
+  const task = await store.requireTask(taskId);
+  const { adapter } = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
   if (!adapter) return json({ error: 'runner not configured' }, 503);
 
   const artifacts = await store.listArtifacts(taskId);
@@ -899,7 +981,7 @@ async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: st
   if (runnerRunId) {
     try {
       for (const manifest of await adapter.artifacts(runnerRunId)) {
-        if (manifest.storageKey === ref || manifest.artifactId === ref) candidates.push(manifest.artifactId);
+        if ((manifest.ref === ref || manifest.artifactId === ref) && manifest.artifactId) candidates.push(manifest.artifactId);
       }
     } catch {
       // Манифесты недоступны — пробуем ссылку как artifactId.
@@ -951,7 +1033,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
-     const port = new CfWorkflowPort(env.TASK_WORKFLOW, store);
+     const port = workflowPortOf(env, store);
     // Проверяющая аутентификация: секрет только в binding, в запросе его нет.
     const auth = principalAuthOf(env as unknown as Record<string, string | undefined>);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
@@ -972,6 +1054,7 @@ const store = new TaskStore(env.DB);
             '/signal',
             '/cancel',
             '/status',
+            '/cp-stop-targets',
             '/recover',
             '/schedules',
             '/schedules/enable',
@@ -1163,6 +1246,14 @@ const store = new TaskStore(env.DB);
           if (!taskId) return json({ error: 'taskId is required' }, 400);
           const task = await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
           const purpose = (body.purpose as AwaitingPurpose | undefined) ?? 'missing_fact';
+          let credential: CredentialRequirement | undefined;
+          if (purpose === 'credential') {
+            const hostPrincipalId = await credentialHost(req, env);
+            if (!hostPrincipalId) return json({ error: 'trusted credential host required' }, 403);
+            const requirement = body.credential as Partial<CredentialRequirement> | undefined;
+            credential = { hostPrincipalId, provider: requirement?.provider ?? '',
+              bindingRef: requirement?.bindingRef ?? '', providerSessionRef: requirement?.providerSessionRef ?? '' };
+          }
           const opened = await store.openAwaiting({
             taskId,
             purpose,
@@ -1171,7 +1262,8 @@ const store = new TaskStore(env.DB);
             respondentScope: (body.respondentScope as string | undefined) ?? task.profile_id,
             step: (body.step as string | undefined) ?? null,
             runId: (body.runId as string | undefined) ?? null,
-            schema: body.options ? { options: body.options } : undefined,
+            schema: credential ? { credential } : body.options ? { options: body.options } : undefined,
+            checkpointRef: (body.checkpointRef as string | undefined) ?? null,
             deadlineAt: (body.deadlineAt as number | undefined) ?? undefined,
             engineRefs: {
               sessionRef: (body.engineSessionRef as string | undefined) ?? null,
@@ -1199,6 +1291,8 @@ const store = new TaskStore(env.DB);
               purpose: row?.purpose,
               status: row?.status,
               deadlineAt: row?.deadline_at,
+              generation: row?.generation,
+              version: row?.version,
             },
             201,
           );
@@ -1207,6 +1301,24 @@ const store = new TaskStore(env.DB);
         const parts = url.pathname.split('/').filter(Boolean); // ['awaiting', id?, 'answer'?]
         const awaitingInputId = parts[1] ?? null;
         if (!awaitingInputId) return json({ error: 'awaitingInputId is required' }, 400);
+
+        if (req.method === 'POST' && parts.length === 3 && parts[2] === 'credential-ready') {
+          const hostPrincipalId = await credentialHost(req, env);
+          if (!hostPrincipalId) return json({ error: 'trusted credential host required' }, 403);
+          const row = await store.getAwaiting(awaitingInputId);
+          if (!row) return json({ error: 'awaiting not found' }, 404);
+          await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:signal', auth);
+          if (body.status !== 'ready' || body.preflight === true || body._zerocreds_preflight === true
+            || req.headers.get('x-zerocreds-preflight') === 'true') {
+            return json({ error: 'verified readiness required' }, 409);
+          }
+          const input: CredentialReadyEvent = { hostPrincipalId, awaitingInputId,
+            eventId: body.eventId as string, userTaskId: body.userTaskId as string,
+            profileId: body.profileId as string, provider: body.provider as string,
+            bindingRef: body.bindingRef as string, providerSessionRef: body.providerSessionRef as string,
+            generation: body.generation as number, version: body.version as number };
+          return json(await port.completeCredential(input));
+        }
 
         if (req.method === 'GET' && parts.length === 2) {
           const row = await store.getAwaiting(awaitingInputId);
@@ -1303,6 +1415,16 @@ const store = new TaskStore(env.DB);
       // ── Task Router (P16, этап I05): решение маршрута по принятой задаче ──
       if (url.pathname === '/route') {
         return await handleRouteRoute(req, body, env, store, port, auth);
+      }
+
+      if (url.pathname === '/cp-stop-targets') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        const parsed = cpStopTargetsInputOf(body);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
+        requirePermission(principal, parsed.input.profileId, 'tasks:control');
+        const service = new CpStopTargetsService(store, port);
+        return json(await service.stop(parsed.input));
       }
 
       if (url.pathname === '/receipt') {
@@ -1415,6 +1537,7 @@ const startResult = await port.submit(input);
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
     const adapter = await resolveDeliveryAdapter(env);
+    await workflowPortOf(env, store).recoverCredentialContinuations();
 
     // Детектор наблюдает и уведомляет; переход состояния и запуск выполняет
     // существующий авторитетный владелец (Output/Router), не планировщик.
