@@ -12,6 +12,7 @@ The deployed contour is isolated test infrastructure. Production traffic is unch
 | Control plane | [PR43](https://github.com/trained-assist/trained-assist-control-plane/pull/43); deployed runtime code includes `c41db51` | Separate Worker, D1 and Workflow; scoped credential host enabled |
 | Runner | [PR131](https://github.com/trained-assist/ai-agent-runner/pull/131), `97956c5` | Own permanent, boot-enabled VM unit; separate key registry/journal; Google MCP off |
 | Native execution | [PR2](https://github.com/vovalikessmoothy-png/opencode-gha-runner/pull/2), execution source `47379f6`; [owned deployment PR3](https://github.com/vovalikessmoothy-png/opencode-gha-runner/pull/3) | Own Worker/KV and strong host-only claim authentication |
+| Google activation primitives | [PR24](https://github.com/trained-assist/trained-assist-documents-skill/pull/24), `1466a33`; owner-target PR22 and provider-verifier PR23 | Reviewed/tested source composition; live Google MCP remains off |
 
 Runner HTTPS uses a VM-side development Quick Tunnel. The laptop relay is stopped.
 Each new connector process receives a new URL: update the owned Runner public URL and
@@ -59,6 +60,10 @@ node tools/credential-boundary-verify.mjs verify \
   "$PRIVATE_RUNTIME/credential-verification-expectation-v2.json" \
   "$PRIVATE_RUNTIME/credential-host-binding.json" \
   "$PRIVATE_RUNTIME/credential-csv-checkpoint.json"
+
+(cd "$DOCUMENTS_REPO" && node scripts/sandbox/google-provider-verify.cjs \
+  --runtime "$GOOGLE_PRIVATE_RUNTIME" \
+  --expected-sa-email "$GOOGLE_EXPECTED_SA_EMAIL")
 ```
 
 The credential verifier reads only awaiting/status projections. It proves scoped
@@ -66,6 +71,11 @@ typed readiness and the successful Workflow attempt/native final-answer channel.
 Native engine identity and launch time need separate authenticated Runner/native
 evidence. CSV bytes/hash need the separate artifact verifier. It does not reverify
 the provider or prove Sheets/Telegram delivery.
+
+The domain provider command performs fresh OAuth and Drive-account verification
+only. Its parent-authorized live check passed with two HTTP 200 responses, exact
+isolated account identity and zero artifact calls/events. It sends no readiness
+event. Owner target approval and live Sheet permissions are separate gates.
 
 New factual probes: [communication smoke instructions](COMMUNICATION-V1-LIVE-SMOKE.md).
 New CSV work: [stable-ID submission and verification](AGENT-CSV-LIVE-VERIFY.md).
