@@ -2,10 +2,34 @@ const profileId = 'integration-v1';
 const hostPrincipalId = 'integration-v1-google-host';
 const reference = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value);
 const requireCondition = (condition, reason) => { if (!condition) throw new Error(reason); };
+const maxResponseBytes = 1024 * 1024;
+
+async function boundedJson(response) {
+  requireCondition(response.body && Number(response.headers.get('content-length') ?? 0) <= maxResponseBytes, 'cp_response_too_large');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let bytes = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maxResponseBytes) {
+        await reader.cancel();
+        throw new Error('cp_response_too_large');
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    const body = JSON.parse(text + decoder.decode());
+    requireCondition(body && typeof body === 'object' && !Array.isArray(body), 'invalid_cp_json_response');
+    return body;
+  } finally { reader.releaseLock(); }
+}
 
 export function privateClient(binding, fetchImpl = fetch) {
   requireCondition(binding.profileId === profileId && reference(binding.principalId)
-    && typeof binding.principalSignature === 'string' && binding.principalSignature.length > 0, 'invalid_private_binding');
+    && typeof binding.principalSignature === 'string' && /^[0-9a-f]{64}$/.test(binding.principalSignature), 'invalid_private_binding');
   const base = new URL(binding.baseUrl);
   requireCondition(base.protocol === 'https:' && !base.username && !base.password && !base.search && !base.hash, 'invalid_cp_origin');
   return {
@@ -16,11 +40,11 @@ export function privateClient(binding, fetchImpl = fetch) {
         || (method === 'POST' && /^\/awaiting\/[A-Za-z0-9._:-]+\/answer$/.test(path))
         || (method === 'GET' && (/^\/status\?taskId=/.test(path) || /^\/awaiting\/[A-Za-z0-9._:-]+$/.test(path))), 'operator_endpoint_forbidden');
       const response = await fetchImpl(`${base.origin}${path}`, {
-        method, headers: { 'x-principal': binding.principalId, 'x-principal-sig': binding.principalSignature,
+        method, redirect: 'error', headers: { 'x-principal': binding.principalId, 'x-principal-sig': binding.principalSignature,
           ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(90000),
       });
-      return { status: response.status, body: await response.json() };
+      return { status: response.status, body: await boundedJson(response) };
     },
   };
 }
@@ -30,11 +54,16 @@ export async function prepareBoundary({ user, host, goal, csvRef, bindingRef, pr
     && user.origin === host.origin, 'host_user_binding_mismatch');
   requireCondition([bindingRef, providerSessionRef, nonce].every(reference), 'invalid_boundary_refs');
   requireCondition(typeof goal === 'string' && goal.trim() && typeof csvRef === 'string' && csvRef.trim(), 'actual_csv_input_required');
+  const csv = new URL(csvRef);
+  requireCondition(csv.protocol === 'https:' && csv.hostname === 'raw.githubusercontent.com'
+    && !csv.username && !csv.password && !csv.search && !csv.hash
+    && /^a4acd6c(?:[0-9a-f]{33})?$/.test(csv.pathname.split('/')[3] ?? '')
+    && csv.pathname.endsWith('.csv'), 'immutable_csv_source_a4acd6c_required');
   const requestId = `credential-csv-${nonce}`;
   const conversationRef = `credential-csv-conversation-${nonce}`;
   requireCondition(requestId.length <= 200 && conversationRef.length <= 200, 'nonce_too_long');
   const envelope = { contractVersion: 1, requestId, conversationRef,
-    inputItems: [{ text: goal, artifactRefs: [csvRef] }] };
+    inputItems: [{ text: `${goal}\nUse only the public immutable CSV fixture ${csvRef} (sourceSha a4acd6c). Download it, then read the downloaded file before computing results. This is CSV work and a provider-attestation subboundary, not Google Sheet acceptance.`, artifactRefs: [csvRef] }] };
   const accepted = await user.call('POST', '/intake', envelope);
   requireCondition(accepted.status === 201 && accepted.body.durable === true && accepted.body.duplicate === false
     && accepted.body.profileId === profileId && reference(accepted.body.userTaskId), 'fresh_durable_receipt_required');
