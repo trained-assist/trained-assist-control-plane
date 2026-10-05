@@ -330,12 +330,12 @@ async function finalizeRun(
     // Конечный текст движка. Без движка — null: «ответа нет» видно, а не
     // выдаётся за пустую строку.
     answer: engine ? engine.text : null,
-    answerSource: engine?.answerSource ?? engine?.textSource ?? null,
     userAnswer: answerText(userAnswer),
     version: PLAN_VERSION,
     ...(engine
       ? {
           mode: 'engine' as const,
+          answerSource: engine.answerSource ?? engine.textSource,
           runId: engine.runId,
           ownerGeneration: engine.ownerGeneration,
           attempt: 1,
