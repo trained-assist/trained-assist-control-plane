@@ -140,6 +140,20 @@ describe('сквозной watchdog: пагинация, актуальност�
     expect((await store.listDeliveries(id))[0]!.status).toBe('delivered');
   });
 
+  it('повторный проход НЕ считается новой постановкой: queued отражает факт, а не попытку', async () => {
+    const store = setup();
+    await admitStuck(store, 1);
+    await expired();
+
+    const first = await runStuckInputSweep(store, {}, Date.now());
+    expect(first.queued).toBe(1);
+    // Следующие проходы ничего не добавляют (outbox идемпотентен) — и счётчик
+    // не должен показывать «очередь растёт» на каждом тике.
+    expect((await runStuckInputSweep(store, {}, Date.now())).queued).toBe(0);
+    expect((await runStuckInputSweep(store, {}, Date.now())).queued).toBe(0);
+    expect(await store.listDeliveries(created[0]!)).toHaveLength(1);
+  });
+
   it('без адаптера планировщик только ставит доставку в outbox и не «доставляет»', async () => {
     const store = setup();
     await admitStuck(store, 1);
