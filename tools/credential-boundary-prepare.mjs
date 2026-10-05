@@ -1,5 +1,6 @@
 const profileId = 'integration-v1';
 const hostPrincipalId = 'integration-v1-google-host';
+const sourceSha = 'a4acd6c1f428d56abb1fdb6610889528f3049fb5';
 const reference = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value);
 const requireCondition = (condition, reason) => { if (!condition) throw new Error(reason); };
 const maxResponseBytes = 1024 * 1024;
@@ -49,21 +50,19 @@ export function privateClient(binding, fetchImpl = fetch) {
   };
 }
 
-export async function prepareBoundary({ user, host, goal, csvRef, bindingRef, providerSessionRef, nonce, checkpoint = async () => {} }) {
+export async function prepareBoundary({ user, host, goal, csvRef, csvOwnerRepo, bindingRef, providerSessionRef, nonce, checkpoint = async () => {} }) {
   requireCondition(host.principalId === hostPrincipalId && user.principalId !== hostPrincipalId
     && user.origin === host.origin, 'host_user_binding_mismatch');
   requireCondition([bindingRef, providerSessionRef, nonce].every(reference), 'invalid_boundary_refs');
   requireCondition(typeof goal === 'string' && goal.trim() && typeof csvRef === 'string' && csvRef.trim(), 'actual_csv_input_required');
-  const csv = new URL(csvRef);
-  requireCondition(csv.protocol === 'https:' && csv.hostname === 'raw.githubusercontent.com'
-    && !csv.username && !csv.password && !csv.search && !csv.hash
-    && /^a4acd6c(?:[0-9a-f]{33})?$/.test(csv.pathname.split('/')[3] ?? '')
-    && csv.pathname.endsWith('.csv'), 'immutable_csv_source_a4acd6c_required');
+  requireCondition(typeof csvOwnerRepo === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(csvOwnerRepo)
+    && csvRef === `https://raw.githubusercontent.com/${csvOwnerRepo}/${sourceSha}/fixtures/integration-v1/category-source.csv`,
+    'immutable_csv_source_a4acd6c_required');
   const requestId = `credential-csv-${nonce}`;
   const conversationRef = `credential-csv-conversation-${nonce}`;
   requireCondition(requestId.length <= 200 && conversationRef.length <= 200, 'nonce_too_long');
-  const envelope = { contractVersion: 1, requestId, conversationRef,
-    inputItems: [{ text: `${goal}\nUse only the public immutable CSV fixture ${csvRef} (sourceSha a4acd6c). Download it, then read the downloaded file before computing results. This is CSV work and a provider-attestation subboundary, not Google Sheet acceptance.`, artifactRefs: [csvRef] }] };
+  const envelope = { contractVersion: 1, profileId, requestId, conversationRef,
+    inputItems: [{ text: `${goal}\nUse only the public immutable CSV fixture ${csvRef} (sourceSha ${sourceSha}). Download it, then read the downloaded file before computing results. This is CSV work and a provider-attestation subboundary, not Google Sheet acceptance.` }] };
   const accepted = await user.call('POST', '/intake', envelope);
   requireCondition(accepted.status === 201 && accepted.body.durable === true && accepted.body.duplicate === false
     && accepted.body.profileId === profileId && reference(accepted.body.userTaskId), 'fresh_durable_receipt_required');
