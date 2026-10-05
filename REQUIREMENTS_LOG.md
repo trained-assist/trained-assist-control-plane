@@ -4,6 +4,7 @@ Source: trained-assist/trained-agent-architecture#140, owner request 2026-10-05.
 
 | ID | Status | Requirement | Validation |
 |---|---|---|---|
+| V1-MCP-01 | active, source only | Use complete host-authorized actual method names as selector options, without duplicated descriptions. Selected description/schema comes from that exact scoped snapshot; unknown names and changed authorization never hand off. No generic any-profile token minting, Agent internals imports, direct tool execution or readiness claims. Runtime wiring requires the owner decisions in MCP-CATALOGUE-BOUNDARY-V1. | 27 boundary / 55 combined focused tests; full `npm run check`: 459 tests, typecheck and evidence sanitization pass. Isolated adapter only |
 | V1-01 | active | Explicit ROUTER_SELECTOR=communication_v1; fixture routing stays default. Ordinary text uses resolve_user_intent with only system_health, catalog.brief, agent. | Selector and HTTP tests |
 | V1-02 | active | Preserve complete durable conversation input/result context. Invalid, unavailable or oversized classification falls back to agent with original input. | Failure and context tests |
 | V1-03 | active | Health proves component reachability only. Capabilities describe catalog/grants and distinguish unverified integration readiness. | Handler tests |
