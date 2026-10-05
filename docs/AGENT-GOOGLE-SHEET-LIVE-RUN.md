@@ -22,13 +22,20 @@ Provide approved source metadata, not credentials, in `source.json`:
 {
   "schemaVersion": "google-sheet-source-v1",
   "spreadsheetId": "1KTYuKw-hzM5bJCHbhnm-TG63oApHX_KhuuGT2CeWaxg",
-  "sourceSheetId": 1056899445,
+  "sourceSheetId": 0,
   "sourceSheetName": "OWNER_CONFIRMED_ACTUAL_TAB_TITLE",
   "sourceRange": "A1:D1000"
 }
 ```
 
-The exact source title must be confirmed by the parent, not inferred from gid.
+Replace the illustrative `0` with the actual source tab's numeric gid from
+parent-verified Google metadata; use zero only if metadata actually confirms it.
+There is no default gid. The accepted value must be a nonnegative safe integer.
+The owner URL's gid `1056899445` may identify a preserved older tab, not the new
+seeded `Expenses` tab. Never infer the new source gid from that URL or guess it.
+The exact source title and gid must be confirmed together by the parent.
+Both are frozen into the source metadata, goal and checkpoint; changing either
+after preparation refuses resume/start rather than silently changing the input.
 The pinned schema is `date,category,amount,merchant`. Deduplication compares all
 four cells exactly, retaining the first row. Finite numeric amounts are summed
 by exact category, sorted ascending. Unknown headers or incomplete reads must

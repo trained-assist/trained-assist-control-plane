@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeEnvelope } from '../src/intake/envelope.ts';
 import { buildRunSpec, runSpecPolicyOf, toSubmitRequest, validateRunSpec } from '../src/run-spec/run-spec.ts';
-import { runGoogleSheet, sheetEnvelope, sourceSheetId, spreadsheetId, summaryPath } from './agent-google-sheet-live-run.mjs';
+import { runGoogleSheet, sheetEnvelope, spreadsheetId, summaryPath } from './agent-google-sheet-live-run.mjs';
 
 function fixture(context) {
   const directory = mkdtempSync(join(tmpdir(), 'google-sheet-operator-'));
@@ -15,7 +15,7 @@ function fixture(context) {
     INTEGRATION_HOST_APPROVAL_FILE: join(directory, 'approval.json') };
   const bindings = { CONTROL_PLANE_URL: 'https://cp.fixture', CONTROL_PLANE_PROFILE: 'integration-v1',
     CONTROL_PLANE_PRINCIPAL: 'fixture-client', CONTROL_PLANE_PRINCIPAL_SIGNATURE: 'a'.repeat(64) };
-  const source = { schemaVersion: 'google-sheet-source-v1', spreadsheetId, sourceSheetId, sourceSheetName: 'Expenses', sourceRange: 'A1:D1000' };
+  const source = { schemaVersion: 'google-sheet-source-v1', spreadsheetId, sourceSheetId: 24681012, sourceSheetName: 'Expenses', sourceRange: 'A1:D1000' };
   const server = { serverId: 'google-documents', transport: 'remote', url: 'https://mcp.fixture/mcp',
     bindingRef: 'google-sheet-fixture-binding', allowedTools: ['gdrive_read_sheet', 'gdrive_write_sheet'], toolTimeoutMs: 30000 };
   const approval = { schemaVersion: 'google-sheet-host-approval-v1', approved: true, taskId: 'fixture-task',
@@ -79,7 +79,7 @@ test('prepare accepts actual intake shape and checkpoints same task with no rout
   assert.equal(data.state.runs.length, 0);
   assert.equal(statSync(data.environment.INTEGRATION_REPORT_FILE).mode & 0o777, 0o600);
   const prompt = result.report.envelope.inputItems[0].text;
-  assert.ok(prompt.includes(spreadsheetId) && prompt.includes(String(sourceSheetId)));
+  assert.ok(prompt.includes(spreadsheetId) && prompt.includes(String(data.source.sourceSheetId)));
   assert.ok(prompt.includes('operationId') && prompt.includes('source_sheet_name') && prompt.includes(summaryPath));
   assert.ok(!/230|120|200|550|750/.test(prompt));
   assert.ok(!prompt.includes('mcp.fixture') && !prompt.includes(data.server.bindingRef));
@@ -184,13 +184,14 @@ test('lost intake ACK resumes identical envelope and stops prepared; prepared re
   assert.equal(data.state.runs.length, 0);
 });
 
-for (const mismatch of ['request', 'scope', 'source', 'envelope']) test(`checkpoint ${mismatch} mismatch refuses without HTTP or mutation`, async context => {
+for (const mismatch of ['request', 'scope', 'source', 'source-gid', 'envelope']) test(`checkpoint ${mismatch} mismatch refuses without HTTP or mutation`, async context => {
   const data = fixture(context);
   await runGoogleSheet('prepare', data.environment, data.fetchImpl);
   const checkpoint = JSON.parse(readFileSync(data.environment.INTEGRATION_REPORT_FILE, 'utf8'));
   if (mismatch === 'request') checkpoint.requestId = 'other-case';
   if (mismatch === 'scope') checkpoint.scope.origin = 'https://other.fixture';
   if (mismatch === 'source') checkpoint.source.sourceSheetName = 'other-source';
+  if (mismatch === 'source-gid') checkpoint.source.sourceSheetId++;
   if (mismatch === 'envelope') checkpoint.envelope.inputItems[0].text = 'other-work';
   data.save(data.environment.INTEGRATION_REPORT_FILE, checkpoint);
   const before = readFileSync(data.environment.INTEGRATION_REPORT_FILE, 'utf8');
@@ -280,9 +281,19 @@ for (const response of ['redirect', 'oversized', 'oversized-stream', 'invalid-js
 
 test('source target/range and unexpected fields are pinned before intake', async context => {
   const data = fixture(context);
-  for (const invalid of [{ spreadsheetId: 'other' }, { sourceSheetId: 0 }, { sourceRange: 'A1:Z1000' }, { expectedTotals: [999] }]) {
+  for (const invalid of [{ spreadsheetId: 'other' }, ...[-1, 1.5, '1056899445', null, Number.MAX_SAFE_INTEGER + 1, undefined].map(sourceSheetId => ({ sourceSheetId })),
+    { sourceRange: 'A1:Z1000' }, { expectedTotals: [999] }]) {
     data.save(data.environment.INTEGRATION_SOURCE_FILE, { ...data.source, ...invalid });
     assert.equal((await runGoogleSheet('prepare', data.environment, data.fetchImpl)).ok, false);
   }
   assert.equal(data.state.calls.length, 0);
+});
+
+test('parent-verified source gid is explicit, nonnegative and checkpoint-bound, not the owner URL gid', context => {
+  const data = fixture(context);
+  for (const sourceSheetId of [0, data.source.sourceSheetId, Number.MAX_SAFE_INTEGER]) {
+    const prompt = sheetEnvelope(data.environment.INTEGRATION_REQUEST_ID, { ...data.source, sourceSheetId }).inputItems[0].text;
+    assert.ok(prompt.includes(`sheetId/gid ${sourceSheetId}`));
+    assert.ok(!prompt.includes('1056899445'));
+  }
 });
