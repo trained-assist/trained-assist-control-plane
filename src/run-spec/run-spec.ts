@@ -24,7 +24,7 @@
 import { logStructured } from '../logging/structured-log';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v1';
+export const RUN_SPEC_VERSION = 'run-spec-v2';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -212,6 +212,8 @@ export interface RunSpecInput {
  * читается из bindings окружения воркера (секреты — только SM/GitHub Secrets).
  */
 export interface RunSpecPolicy {
+  inputRefs?: InputRef[];
+  timeoutMs?: number;
   cwd: string;
   envAllowlist: string[];
   outputs: OutputSpec[];
@@ -251,7 +253,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const REPOSITORY_FULL_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
-const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+const PROMPT_CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 
 function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
   if (!raw) return fallback;
@@ -285,6 +287,9 @@ export function defaultRunSpecPolicy(): RunSpecPolicy {
 }
 
 export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpecPolicy {
+  if (env.RUN_SPEC_POLICY_PROFILE && env.RUN_SPEC_POLICY_PROFILE !== 'integration-v1') {
+    throw new RunSpecMappingError('RUN_SPEC_POLICY_PROFILE: unsupported host policy', 'RUN_SPEC_POLICY_PROFILE');
+  }
   const cwd = env.RUN_SPEC_CWD?.trim() || DEFAULT_CWD;
   if (!cwd.startsWith('/')) throw new RunSpecMappingError('RUN_SPEC_CWD: expected an absolute path', 'RUN_SPEC_CWD');
 
@@ -298,7 +303,9 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
 
   const outputs = readJson<OutputSpec[]>(env.RUN_SPEC_OUTPUTS, [], 'RUN_SPEC_OUTPUTS');
   const mcp = readJson<McpSpec | null>(env.RUN_SPEC_MCP, null, 'RUN_SPEC_MCP');
-  const repository = readJson<RepositorySpec | null>(env.RUN_SPEC_REPOSITORY, null, 'RUN_SPEC_REPOSITORY');
+  const repository = readJson<RepositorySpec | null>(env.RUN_SPEC_REPOSITORY,
+    env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { fullName: 'trained-assist/ai-agent-runner' } : null,
+    'RUN_SPEC_REPOSITORY');
 
   const timeoutMs = Number(env.RUN_SPEC_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
@@ -312,6 +319,8 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
 
   return {
     cwd,
+    inputRefs: readJson<InputRef[]>(env.RUN_SPEC_INPUT_REFS, [], 'RUN_SPEC_INPUT_REFS'),
+    ...(env.RUN_SPEC_TIMEOUT_MS || env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { timeoutMs } : {}),
     envAllowlist,
     outputs,
     mcp,
@@ -346,15 +355,19 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   const conversationId = input.conversationId ?? `task:${input.userTaskId}`;
   if (!Number.isInteger(input.ownerGeneration) || input.ownerGeneration < 0) fail('ownerGeneration', 'ownerGeneration: expected a non-negative integer');
   if (input.engineName.length === 0 || input.engineName.length > 100) fail('engineName', 'engineName: expected 1..100 chars');
-  const trimmedPrompt = input.prompt.trim();
-  if (trimmedPrompt.length === 0) fail('prompt', 'prompt: must not be empty');
-  if (trimmedPrompt.length > 100_000) fail('prompt', 'prompt: longer than 100000');
+  if (input.prompt.trim().length === 0) fail('prompt', 'prompt: must not be empty');
+  const inlinePrompt = input.instructions === null || input.instructions === ''
+    ? input.prompt
+    : `${input.prompt}\n\nAdditional instructions:\n${input.instructions}`;
+  if (inlinePrompt.length > 100_000) fail('prompt', 'prompt and instructions: longer than 100000');
+  if (PROMPT_CONTROL_CHARS.test(inlinePrompt)) fail('prompt', 'prompt and instructions: unsupported control characters');
   if (!Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) fail('timeoutMs', 'timeoutMs: expected a positive integer');
 
   // Разрешённые вложения: только строковые ref'ы, без версионирования со стороны
   // клиента — версию вправе назначить только хост (snapshot binding).
   const refs: InputRef[] = [];
-  for (const [index, ref] of input.refs.entries()) {
+  if (policy.inputRefs !== undefined && !Array.isArray(policy.inputRefs)) fail('inputRefs', 'host inputRefs: expected an array');
+  for (const [index, ref] of [...(policy.inputRefs ?? []), ...input.refs].entries()) {
     if (typeof ref?.ref !== 'string' || ref.ref.length === 0 || ref.ref.length > 500) {
       fail(`refs[${index}]`, `refs[${index}].ref: expected 1..500 chars`);
     }
@@ -373,13 +386,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     refs.push(out);
   }
 
-  // Контракт Runner'а не пропускает управляющие символы в inlinePrompt
-  // (checkString: CONTROL_CHARS). Сообщение приходит от пользователя и может
-  // быть многострочным — нормализуем явно и фиксируем факт в результате.
-  const promptNormalized = CONTROL_CHARS.test(trimmedPrompt);
-  const inlinePrompt = promptNormalized
-    ? trimmedPrompt.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/[ \t]+/g, ' ').trim()
-    : trimmedPrompt;
+  const promptNormalized = false;
 
   const runId = `run_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}_${input.ownerGeneration}`;
   const jobId = `job_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}`;
@@ -398,7 +405,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     cwd: policy.cwd,
     envAllowlist: [...policy.envAllowlist],
     limits: {
-      timeoutMs: input.timeoutMs,
+      timeoutMs: policy.timeoutMs ?? input.timeoutMs,
       ...(policy.maxOutputBytes ? { maxOutputBytes: policy.maxOutputBytes } : {}),
     },
     input: {
@@ -476,7 +483,7 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
       if (input.inlinePrompt !== undefined) {
         if (typeof input.inlinePrompt !== 'string' || input.inlinePrompt.length === 0) errors.push('spec.input.inlinePrompt: expected a non-empty string');
         else if (input.inlinePrompt.length > 100_000) errors.push('spec.input.inlinePrompt: longer than 100000');
-        else if (CONTROL_CHARS.test(input.inlinePrompt)) errors.push('spec.input.inlinePrompt: control characters are not allowed');
+        else if (PROMPT_CONTROL_CHARS.test(input.inlinePrompt)) errors.push('spec.input.inlinePrompt: unsupported control characters');
       }
       if (input.refs !== undefined) {
         if (!Array.isArray(input.refs)) errors.push('spec.input.refs: expected an array');
