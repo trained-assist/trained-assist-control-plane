@@ -222,7 +222,7 @@ describe('M06: отмена, доставка и артефакты', () => {
 
   it('артефакт финализации попадает в сообщение доставки (ссылки, не байты)', async () => {
     const { store, port } = setup();
-    const taskId = await doneTask(store, port);
+    const taskId = await doneTask(store, port, nextId('m06-artifacts-64'));
 
     const run = (await store.listRuns(taskId))[0]!;
     await store.recordArtifact({
@@ -252,8 +252,7 @@ describe('M06: отмена, доставка и артефакты', () => {
       message: { text: 'Готово', artifactRefs: artifacts.map((a) => a.artifact_ref) },
     });
     const message = JSON.parse(delivery.message_json);
-    expect(message.artifactRefs).toEqual([`r2://control-plane/${taskId}/answer.json`]);
-    expect(delivery.message_json).not.toContain('64'); // байтов в сообщении нет, только ссылки
+    expect(message).toEqual({ text: 'Готово', artifactRefs: [`r2://control-plane/${taskId}/answer.json`] });
 
     const snapshot = await port.status(taskId);
     expect(snapshot.artifacts).toHaveLength(1);
