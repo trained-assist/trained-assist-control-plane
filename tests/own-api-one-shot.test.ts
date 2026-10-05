@@ -203,6 +203,71 @@ describe('one-shot с движком: результат = текст движк
 });
 
 describe('one-shot: RunSpec доходит до Runner целиком', () => {
+  it.each([
+    { answer: 'Итоги CSV:\n3 строки обработаны.', source: 'agent_file', expected: 'Итоги CSV:\n3 строки обработаны.' },
+    { answer: 'Only the final assistant answer', source: 'engine_stdout', expected: 'Only the final assistant answer' },
+    { answer: undefined, source: 'agent_file', expected: null },
+    { answer: null, source: null, expected: null },
+    { answer: '  \n', source: 'engine_stdout', expected: null },
+  ])('uses only explicit native answers, preserves provenance and terminal replay: %j', async ({ answer, source, expected }) => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-native-answer');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'process the CSV' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const { adapter, runId } = makeFakeRunner({ stdout: ['{"type":"tool_use","tool":"read","input":"not a final answer"}'] });
+    const submit = vi.fn(adapter.submit);
+    const status = vi.fn(async () => ({ ...await adapter.status(), ...(answer === undefined ? {} : { answer }) }));
+    const events = async () => {
+      const page = await adapter.events();
+      return { ...page, events: [...page.events, { type: 'agent_exit_resolved', sequence: page.cursor + 1, payload: { answerSource: source } }], cursor: page.cursor + 1 };
+    };
+    const native = { ...adapter, submit, status, events, result: async () => ({ ...await adapter.result(), text: 'result-text fallback must not leak' }) };
+    const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run', goal: 'process the CSV' };
+    expect(await conversationPlan(ctx, store, params, { adapter: native as unknown as RunnerApiAdapter })).toMatchObject({ ok: true, answer: expected });
+    const task = await store.requireTask(taskId);
+    const result = JSON.parse(task.result_json!);
+    expect(result.answer).toBe(expected);
+    expect(result.answerSource).toBe(expected === null ? null : source);
+    expect(result.engineText).toMatchObject({ text: expected, source: expected === null ? null : 'runner_status_answer', answerSource: expected === null ? null : source });
+    expect(task.result_json).not.toContain('tool_use');
+    expect(result.runId).toBe(runId);
+    const artifacts = await store.listArtifacts(taskId);
+    status.mockImplementation(async () => ({ ...await adapter.status(), answer: 'must not replace the durable answer' }));
+    expect(await conversationPlan(ctx, store, params, { adapter: native as unknown as RunnerApiAdapter })).toMatchObject({ ok: true, reason: 'already_terminal' });
+    expect((await store.requireTask(taskId)).result_json).toBe(task.result_json);
+    expect(await store.listArtifacts(taskId)).toEqual(artifacts);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+  });
+
+  it('replays a pre-upgrade cached wait by reading native status, never stdout or new jobs', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-native-cached-answer');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'original task' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const { adapter } = makeFakeRunner({ stdout: ['{"type":"tool_result","text":"diagnostic"}'] });
+    const submit = vi.fn(adapter.submit);
+    const status = vi.fn(async () => ({ ...await adapter.status(), answer: 'Authoritative answer' }));
+    const cachedCtx: StepCtx = { ...ctx, step: async (name, fn, options) => {
+      const value = await ctx.step(name, fn, options);
+      if (name === 'await-runner') {
+        const cached = { ...value as Record<string, unknown> };
+        delete cached.answer;
+        return cached as typeof value;
+      }
+      return value;
+    } };
+    const outcome = await conversationPlan(cachedCtx, store,
+      { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run', goal: 'original task' },
+      { adapter: { ...adapter, submit, status } as unknown as RunnerApiAdapter });
+    expect(outcome).toMatchObject({ ok: true, answer: 'Authoritative answer' });
+    expect(JSON.parse((await store.requireTask(taskId)).result_json!)).toMatchObject({ answerSource: 'runner_status_answer' });
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+  });
+
   it('concurrent terminal completion writes one immutable attempt result and event', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-terminal-attempt');

@@ -17,8 +17,7 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
-import { awaitRunnerResult, type TaskArtifactManifest } from '../runner-adapter/await-runner-result';
-import type { EngineText } from '../runner-adapter/engine-text';
+import { awaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
 import { RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
@@ -305,8 +304,9 @@ export interface EngineRun {
   runId: string;
   ownerGeneration: number;
   /** Происхождение текста: из каких событий он собран (см. `engine-text.ts`). */
-  textSource: EngineText['source'] | null;
-  textVersion: EngineText['version'] | null;
+  textSource: RunnerAnswer['source'];
+  textVersion: RunnerAnswer['version'];
+  answerSource: RunnerAnswer['answerSource'];
 }
 
 /**
@@ -330,6 +330,7 @@ async function finalizeRun(
     // Конечный текст движка. Без движка — null: «ответа нет» видно, а не
     // выдаётся за пустую строку.
     answer: engine ? engine.text : null,
+    answerSource: engine?.answerSource ?? engine?.textSource ?? null,
     userAnswer: answerText(userAnswer),
     version: PLAN_VERSION,
     ...(engine
@@ -343,6 +344,7 @@ async function finalizeRun(
             text: engine.text,
             source: engine.textSource,
             version: engine.textVersion,
+            answerSource: engine.answerSource,
           },
           persistence: engine.persistence,
           exitReason: engine.exitReason,
@@ -652,6 +654,7 @@ export async function conversationPlan(
         runId: runnerRunId,
         taskId,
         generation,
+        engineName: p.runnerEngine ?? 'opencode',
         pollSec: p.runnerPollSec ?? 1,
         timeoutSec: runnerResultTimeoutSec,
       }),
@@ -663,12 +666,17 @@ export async function conversationPlan(
       return { ok: false, reason: outcome.reason };
     }
     const runnerResult = outcome.result;
+    const native = p.runnerEngine === 'dynamic-ip-azure-agent-run';
+    const cachedStatus = native && !outcome.answer ? await adapter.status(runnerRunId) : null;
+    const cachedNativeText = typeof cachedStatus?.answer === 'string' && cachedStatus.answer.trim().length > 0 ? cachedStatus.answer : null;
+    const text = outcome.answer ? outcome.answer.text : native ? cachedNativeText : outcome.engineText?.text ?? runnerResult.text ?? null;
     engine = {
       ok: runnerResult.outcome === 'succeeded',
       // Конечный текст движка (stdout), а не ответ человека.
-      text: outcome.engineText ? outcome.engineText.text : runnerResult.text ?? null,
-      textSource: outcome.engineText?.source ?? null,
-      textVersion: outcome.engineText?.version ?? null,
+      text,
+      textSource: outcome.answer?.source ?? (native ? cachedNativeText === null ? null : 'runner_status_answer' : outcome.engineText?.source ?? null),
+      textVersion: outcome.answer?.version ?? (native ? cachedNativeText === null ? null : 'runner-answer-v1' : outcome.engineText?.version ?? null),
+      answerSource: outcome.answer?.answerSource ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
       exitReason: runnerResult.exitReason,

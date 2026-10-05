@@ -40,6 +40,7 @@ export interface RunnerReceipt {
 }
 
 export interface RunnerStatusView {
+  answer?: string | null;
   requestId: string;
   userTaskId: string;
   conversationId: string;
