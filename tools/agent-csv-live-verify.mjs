@@ -23,6 +23,7 @@ try {
   });
   assert.ok(response.ok, `status HTTP ${response.status}`);
   const state = await response.json();
+  assert.equal(state.taskStore?.id, taskId, 'status returned another task');
   report.status = state.taskStore?.status;
   report.generation = state.taskStore?.generation;
   assert.equal(report.status, 'done', 'task is not terminal done');
@@ -30,6 +31,7 @@ try {
   assert.equal(result.ok, true);
   assert.equal(result.mode, 'engine');
   assert.equal(result.persistence, 'persisted');
+  assert.equal(result.engineText?.source, 'runner_status_answer', 'answer is not the native final-answer channel');
   assert.match(result.runId ?? '', /^run_[a-f0-9-]{36}$/i);
   assert.ok(typeof result.answer === 'string' && result.answer.trim().length > 0, 'persisted agent answer is missing');
   assert.equal(state.runs.length, 1, 'expected one admitted attempt');
