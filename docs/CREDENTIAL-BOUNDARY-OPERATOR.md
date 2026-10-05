@@ -22,9 +22,14 @@ they do not prove artifact access, Sheet ownership, MCP mounting or agent work.
 
 Each private binding has exactly the operator-facing fields:
 `baseUrl`, `profileId`, `principalId`, `principalSignature`. Parent adapts existing
-client bindings locally; do not paste signatures into terminals or commit files.
+client bindings locally; signatures must be exactly 64 lowercase hexadecimal
+characters. Do not paste signatures into terminals or commit files. Transport
+uses `redirect: 'error'`; CP JSON responses are bounded to 1 MiB and object-shaped.
 Private input JSON has `goal`, `csvRef`, `bindingRef`, `providerSessionRef`.
-Use the actual existing CSV reference; this harness never reads artifact bytes.
+Use the actual public `raw.githubusercontent.com` CSV fixture URL pinned to
+sourceSha `a4acd6c` (or its full 40-character commit SHA), never a moving branch.
+The submitted goal explicitly requires download followed by reading the downloaded
+file before computation. This harness itself never reads artifact bytes.
 Opaque binding/session refs must correspond to the actual isolated provider
 verification context, not a credential value. Goal must not claim a Sheet target.
 
