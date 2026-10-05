@@ -17,6 +17,7 @@ import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
+import { confirmedExternalStop, type ExternalStopPort } from './external-stop';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
   if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
@@ -152,6 +153,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
     private readonly wf: Workflow,
     private readonly store: TaskStore,
     private readonly credentialExecution?: { runnerEngine: string; runnerTimeoutSec: number; runnerPollSec: number },
+    private readonly externalStop?: ExternalStopPort,
   ) {}
 
   /**
@@ -375,10 +377,38 @@ export class CfWorkflowPort implements WorkflowPortApi {
       return { cancelled: false, generation: requested.generation, status: requested.status, stopConfirmed: false };
     }
 
-    const confirmed = await this.store.confirmCancel(taskId, { reason: opts.reason });
-    // Активная попытка завершается как отменённая пользователем.
     const active = await this.store.activeRun(taskId);
-    if (active) await this.store.finishRun(active.id, 'cancelled', { errorText: opts.reason ?? null });
+    const unsettled = (await this.store.listRuns(taskId)).filter(run => run.finished_at === null);
+    if (this.externalStop || unsettled.some(run => run.session_id)) {
+      const task = await this.store.requireTask(taskId);
+      let stopped = !!this.externalStop && unsettled.length > 0
+        && unsettled.every(attempt => ['running', 'unknown', 'waiting'].includes(attempt.status));
+      try {
+        for (const attempt of unsettled) {
+          const context = { taskId, profileId: task.profile_id, attemptId: attempt.id,
+            runId: attempt.session_id, ownerGeneration: attempt.generation, reason: opts.reason };
+          if (!this.externalStop || !confirmedExternalStop(context, await this.externalStop.stop(context))) stopped = false;
+        }
+      } catch { stopped = false; }
+      if (!stopped) {
+        await this.store.logEvent({ taskId, kind: 'error', source: 'gateway',
+          payload: { where: 'cancel.external_stop', stopRequested: true, stopConfirmed: false } });
+        return { cancelled: false, generation: requested.generation, status: requested.status, stopConfirmed: false };
+      }
+      const current = await this.store.requireTask(taskId);
+      const currentRuns = (await this.store.listRuns(taskId)).filter(run => run.finished_at === null);
+      if (current.generation !== requested.generation || JSON.stringify(currentRuns.map(run => [run.id, run.session_id, run.generation]))
+        !== JSON.stringify(unsettled.map(run => [run.id, run.session_id, run.generation]))) {
+        return { cancelled: false, generation: current.generation, status: current.status, stopConfirmed: false };
+      }
+    }
+    const confirmed = await this.store.confirmCancel(taskId, { reason: opts.reason, expectedGeneration: requested.generation });
+    // Активная попытка завершается как отменённая пользователем.
+    if (confirmed.cancelled) {
+      for (const attempt of this.externalStop ? unsettled : active ? [active] : []) {
+        await this.store.finishRun(attempt.id, 'cancelled', { errorText: opts.reason ?? null });
+      }
+    }
     return {
       cancelled: confirmed.cancelled,
       generation: confirmed.generation,
