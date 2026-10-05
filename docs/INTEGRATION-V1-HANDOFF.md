@@ -7,7 +7,7 @@ The deployed contour is isolated test infrastructure. Production traffic is unch
 
 | Component | Source / review | Runtime |
 | --- | --- | --- |
-| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), `844fdef` | Separate sandbox Worker; temporary owner-approved test bot, single private chat allowlist and signed webhook configured; delivery acceptance pending |
+| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), runtime code `844fdef`, cron-pause configuration `110457c` | Separate sandbox Worker; temporary owner-approved test bot, single private chat allowlist and signed webhook configured; own cron paused after a delivery race |
 | Communication methods | [PR18](https://github.com/trained-assist/trained-assist-communication-skills/pull/18), `4a64612` | Separate communication Worker |
 | Control plane | [PR43](https://github.com/trained-assist/trained-assist-control-plane/pull/43); deployed runtime code includes `c41db51` | Separate Worker, D1 and Workflow; scoped credential host enabled |
 | Runner | [PR131](https://github.com/trained-assist/ai-agent-runner/pull/131), `97956c5` | Own permanent, boot-enabled VM unit; separate key registry/journal; Google MCP off |
@@ -30,7 +30,7 @@ hostname remain the production transport gate. Shared units/tunnels stay unchang
 | User/preflight/wrong-binding readiness | PASS refusal | Ordinary principal 403; preflight and changed binding 409; one durable credential completion/signal retained |
 | Own Runner restart | PASS terminal recovery | Both canonical CSV results/artifacts unchanged, one admission/dispatch/model launch each |
 | Mandatory output omitted | PASS expected failure | `ut-3364752a81741b5e0e54`, `run_caf880bb-ce25-441f-99b8-9b1aec48f9e3`; task failed/finished, one failed attempt, `ARTIFACTS_MISSING`, zero artifacts |
-| Real Telegram ingress/delivery | PENDING | Owner chat discovered with a one-time challenge; signed test webhook and single-chat allowlist configured; real quick-answer delivery and post-handoff user message still need verification |
+| Real Telegram ingress/delivery | FAIL replay safety | Controlled health/capabilities reach done with zero engine attempts and actual Bot API responses, but capabilities receipt and terminal provider IDs changed on independent readback; durable single-writer delivery fix and post-handoff human message verification pending |
 | Real Google Sheet and monthly follow-up | BLOCKED | Dedicated Sheet approved; exact SA authenticates, but Drive metadata returns 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
 Both successful CSV outputs have 35 bytes, SHA-256
@@ -43,6 +43,17 @@ seconds; these exclude workflow admission, routing and transport recovery.
 The failure case stores terminal failure metadata, without a durable user answer
 or delivery. Gateway terminal reconciliation supplies its deterministic failure
 message; real Telegram delivery still requires its separate acceptance test.
+
+Controlled Telegram health `ut-3744e4e6163312e3e6e1` has receipt/terminal IDs
+1360/1361. Its 15-second ingress ACK was lost; reconciliation preserved the same
+task, generation and zero engine attempts. Controlled capabilities
+`ut-f34f5dfc8e1c48f57bdb` has conflicting receipt IDs 1364/1363 and terminal IDs
+1365/1366 for the same logical deliveries. Earlier successful smoke snapshots
+therefore do not establish replay-safe delivery. Concurrent drains reproduce two
+provider calls offline even with strongly consistent fake KV. Own cron is paused;
+do not repeat live ingress/cron probes until the delivery owner is fixed. Existing
+KV deliveries must not be blindly imported or resent, and ambiguous provider ACKs
+must not be treated as definite failures eligible for automatic retries.
 
 ## Repeat read-only checks
 
