@@ -799,7 +799,7 @@ export class TaskStore {
       this.db
         .prepare(
           `UPDATE executions SET status = ?, finished_at = ?, error_class = ?, error_text = ?, result_json = ?
-           WHERE id = ?`,
+           WHERE id = ? AND status IN ('running', 'unknown', 'waiting')`,
         )
         .bind(
           outcome,
@@ -809,20 +809,17 @@ export class TaskStore {
           opts.result === undefined ? null : JSON.stringify(opts.result),
           runId,
         ),
+      this.db.prepare(
+        `INSERT INTO task_events(user_task_id, kind, generation, source, payload_json, created_at)
+         SELECT task_id, 'run_finished', generation, 'executor', ?, ? FROM executions WHERE id = ? AND changes() = 1`,
+      ).bind(JSON.stringify({ runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null }), now, runId),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const run = await this.getRun(runId);
+      if (run?.status === outcome) return run;
       throw new TaskStoreError(`finish rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
     }
-    const run = await this.requireRun(runId);
-    await this.logEvent({
-      taskId: run.task_id,
-      kind: 'run_finished',
-      generation: run.generation,
-      source: 'executor',
-      payload: { runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null },
-    });
-    return run;
+    return this.requireRun(runId);
   }
 
   /**
