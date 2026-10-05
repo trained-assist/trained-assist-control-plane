@@ -7,7 +7,7 @@ The deployed contour is isolated test infrastructure. Production traffic is unch
 
 | Component | Source / review | Runtime |
 | --- | --- | --- |
-| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), deployed source `594ce2a`, Worker version `29de75a8-e993-4443-aa18-2be5d6a2f302`; durable-owner fix [PR354](https://github.com/trained-assist/trained-assist-tg-bot/pull/354) | Separate sandbox Worker and SQLite Durable Object; temporary owner-approved test bot, single private chat allowlist, signed webhook restored; minute cron configured, scoped natural health delivery passed; cron-event correlation pending |
+| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), deployed source `594ce2a`, Worker version `29de75a8-e993-4443-aa18-2be5d6a2f302`; durable-owner fix [PR354](https://github.com/trained-assist/trained-assist-tg-bot/pull/354) | Separate sandbox Worker and SQLite Durable Object; temporary owner-approved test bot, single private chat allowlist, signed webhook restored; minute cron configured, scoped autonomous health/capabilities/native CSV delivery passed; health cron correlation confirmed |
 | Communication methods | [PR18](https://github.com/trained-assist/trained-assist-communication-skills/pull/18), `4a64612` | Separate communication Worker |
 | Control plane | [PR43](https://github.com/trained-assist/trained-assist-control-plane/pull/43); deployed source `118fbf4` includes D1 manifest fix and reviewed credential-ready conversation-context fix | Separate Worker, D1 and Workflow; scoped credential host enabled; Google MCP remains off |
 | Runner | [PR131](https://github.com/trained-assist/ai-agent-runner/pull/131), application `97956c5`; isolation [PR132](https://github.com/trained-assist/ai-agent-runner/pull/132), operational source `c877ea1`, documentation `b0b3725` | Own permanent, boot-enabled VM unit under dedicated UID/GID `12079`, root-owned release; separate key registry/journal; Google MCP off |
@@ -48,9 +48,14 @@ Two stable parent read-only snapshots confirm receipt/terminal provider IDs
 terminal delivery were autonomous, without manual cron or manual provider calls.
 The first observer's five-minute timeout remains in evidence; read-only
 reconciliation preserved the same immutable task identity rather than resubmitting.
-Independent natural-cron event correlation remains **PENDING**. Capabilities067
-has only been submitted and remains active; no capabilities or native-engine PASS
-is established by this health result.
+Mill independently correlated scheduled events at `10:06:49` / `10:07:49 UTC`
+with health deliveries 1375/1376: successful events, zero exceptions, approximately
+eight seconds. Parent also observed a successful `10:08:49 UTC` event. Health's
+natural-cron correlation is confirmed; it does not independently prove native execution.
+
+Parent and Bohr proofs establish separate scoped **PASS** results for capabilities067
+and native CSV068 below. Both have stable autonomous receipt/terminal delivery,
+one attempt each, without manual cron or manual provider calls.
 
 ## Observed scenarios
 
@@ -68,16 +73,27 @@ is established by this health result.
 | Historical Telegram delivery | FAIL replay safety, quarantined | Old capabilities receipt/terminal provider IDs changed on independent readback; both old tasks and four delivery records quarantined, not resent or relabelled as successful |
 | Post-cutover controlled Telegram health/capabilities | PASS scoped quick-answer delivery | `ut-4593cff37c0fbd03ecad` and `ut-90860cc5c147cbf22d63`, generation 1, zero engine attempts; health receipt/terminal 1369/1370 remain unchanged after eight concurrent reconciliations; capabilities 1371/1372 after exact-body reconciliation of initial HTTP 500; genuine human smoke still pending |
 | Delivery owner across Worker redeploy | PASS scoped durability | Historical quarantine and all six new health/capabilities/CSV provider IDs preserved after same-source Worker redeploy and eight concurrent reconciliations; each new delivery has one attempt. This is not a forced Durable Object eviction or live provider-ACK-loss test |
-| Natural Telegram health delivery | PASS scoped delivery; cron-event correlation pending | `ut-19ffeb4c273d284810cb`, generation 1, zero engine attempts; two stable parent read-only snapshots, receipt/terminal 1375/1376, one delivery attempt each, exact authorized scope; autonomous delivery without manual cron/provider calls; initial five-minute observer timeout preserved, same-task read-only reconciliation |
-| New capabilities067 | ACTIVE, not accepted | Submitted only; no capabilities or native-engine PASS claimed |
+| Natural Telegram health delivery | PASS scoped delivery and cron correlation | `ut-19ffeb4c273d284810cb`, generation 1, zero engine attempts; two stable parent read-only snapshots, receipt/terminal 1375/1376, one delivery attempt each, exact authorized scope; autonomous delivery without manual cron/provider calls; initial five-minute observer timeout preserved, same-task read-only reconciliation; independently correlated successful scheduled events |
+| Autonomous capabilities067 | PASS scoped quick-answer delivery | `ut-964212e1ccda1f203e12`, generation 1, zero engine attempts; stable receipt/terminal 1377/1378, one delivery attempt each; no manual cron/provider calls |
+| Autonomous native CSV068 | PASS scoped execution and delivery | `ut-f052d9bf02658ce68b8a`, generation 1, canonical `run_46ff7446-26e1-42ee-b9e8-ebb4698d78b6`; successful GHA `37295151043` attempt 1, source `47379f6`; one model session, six session steps, bash three/read one/write one tool calls; full journal proves one admission/dispatch, exact profile and generation 1; Runner UID12079; Native/CP artifacts match; stable autonomous receipt/terminal 1379/1380, one delivery attempt each, no manual cron/provider calls |
+| CSV068 active restart window | MISSED, no restart | Precheck found terminal execution; no Runner restart and no replacement job |
+| Controlled negative069 and active restart | PENDING | `ut-9f89570e06a1accae390` accepted; parent pipeline awaits a fresh active restart gate; no failure or restart/recovery proof claimed |
 | Real Google Sheet and monthly follow-up | DEFERRED, disabled | [Issue 142](https://github.com/trained-assist/trained-agent-architecture/issues/142); historical dedicated Sheet approval and SA authentication did not establish access: Drive metadata returned 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
-Both successful CSV outputs have 35 bytes, SHA-256
+The two earlier successful CSV outputs have 35 bytes, SHA-256
 `8072bf3523ee80345e5a10a08070f0d50779c65cb5d3b611702cbab39ea95da6`,
 and category totals food 150 / travel 275. Immutable output commits are
 `77ec55a8bbc2a095d9fca5bc66bd6250ee9980ab` and
 `fb763ab56643a2acde9457b73978fecfd8325de3`. Engine durations were 27.3 and 63.3
 seconds; these exclude workflow admission, routing and transport recovery.
+
+The new CSV068 output independently matches those 35 bytes, SHA-256 and category
+totals food 150 / travel 275, committed as
+`30f20cb2fe75af3b720fe3c0763a0536d770367a`. Its initial read-only CP transport
+`TypeError` after approximately 10.5 seconds remains in evidence; reconciliation
+used the same task, without replacement. The transport failure's cause is unknown.
+Execution/artifact/delivery PASS does not establish an active-restart test: CSV068
+was already terminal at the restart precheck.
 
 The failure case stores terminal failure metadata, without a durable user answer
 or delivery. Gateway terminal reconciliation supplies its deterministic failure
@@ -95,8 +111,8 @@ cutover manifest matched the authoritative CP conversation inventory: two termin
 tasks and four legacy deliveries. Signed readback proved their quarantine while
 delivery was paused; only then was delivery enabled and the webhook restored,
 without dropping queued updates. Cron was disabled during that cutover; the current
-minute schedule has scoped natural health delivery evidence, with cron-event
-correlation still pending as described above. Unknown provider
+minute schedule has scoped natural health delivery evidence and independently
+confirmed health cron-event correlation as described above. Unknown provider
 ACKs are held without automatic retries. The initial post-cutover capabilities HTTP
 500 remains in evidence; identical saved update bytes reconciled to one task and
 zero engine attempts. This does not prove the original transport error's cause.
@@ -163,9 +179,9 @@ counts survive; recovered timestamps cannot measure original engine execution.
   above. Do not use a routing-history ID as proof of native engine execution.
 - The shared legacy native gateway remains outside the owned strong-claim changes.
   Production needs least-privilege operator credentials and stable hosting.
-- Scoped autonomous health delivery passed; independent natural-cron event
-  correlation remains pending. Capabilities067 remains active. Do not substitute
-  a manual cron invocation or infer capabilities/native-engine acceptance.
+- Scoped autonomous health, capabilities067 and native CSV068 acceptance passed;
+  health natural-cron correlation is confirmed. Negative069 and active-restart
+  acceptance remain pending; CSV068's terminal precheck caused no restart or replacement.
 - Actual Runner rollback remains untested; guarded inactive/dead-unit recovery
   source `26680d9` is reviewed but not deployed. Do not treat unchanged tasks or Unix negative checks as rollback proof.
 - Full Telegram acceptance remains open in issue 140; Google access is deferred
