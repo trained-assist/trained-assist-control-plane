@@ -18,11 +18,12 @@ const parseObject = text => {
 
 export function validateExpectation(expected) {
   const keys = ['version', 'cpOrigin', 'statusMethod', 'taskId', 'profileId', 'hostPrincipalId', 'conversationRef',
-    'awaitingInputId', 'provider', 'bindingRef', 'providerSessionRef', 'eventId', 'generation', 'waitVersion', 'runId', 'engine'];
+    'awaitingInputId', 'provider', 'bindingRef', 'providerSessionRef', 'eventId', 'generation', 'waitVersion', 'runId', 'orchestrationEngine', 'nativeEngine'];
   requireCondition(record(expected) && Object.keys(expected).length === keys.length && keys.every(key => Object.hasOwn(expected, key)), 'invalid_expectation');
-  requireCondition(expected.version === 'credential-boundary-verify-v1' && expected.profileId === 'integration-v1'
+  requireCondition(expected.version === 'credential-boundary-verify-v2' && expected.profileId === 'integration-v1'
     && expected.hostPrincipalId === 'integration-v1-google-host' && expected.provider === 'google'
-    && ['GET', 'POST'].includes(expected.statusMethod) && ['dynamic-ip-azure-agent-run', 'github-actions-agent-run'].includes(expected.engine)
+    && ['GET', 'POST'].includes(expected.statusMethod) && expected.orchestrationEngine === 'cloudflare-workflows'
+    && expected.nativeEngine === 'dynamic-ip-azure-agent-run'
     && ['taskId', 'conversationRef', 'awaitingInputId', 'bindingRef', 'providerSessionRef', 'eventId'].every(key => reference(expected[key]))
     && canonicalRun(expected.runId) && Number.isSafeInteger(expected.generation) && expected.generation > 0
     && Number.isSafeInteger(expected.waitVersion) && expected.waitVersion > 0, 'invalid_expectation');
@@ -145,14 +146,16 @@ export async function verifyBoundary({ expected: expectation, checkpoint, client
   requireCondition(result?.ok === true && result.mode === 'engine' && result.persistence === 'persisted'
     && result.runId === expected.runId && result.ownerGeneration === expected.generation && result.exitReason === 'completed'
     && result.engineText?.source === 'runner_status_answer' && typeof result.answer === 'string' && result.answer.trim(), 'persisted_native_result_required');
-  requireCondition(Array.isArray(status.runs) && status.runs.length === 1, 'one_native_attempt_required');
+  requireCondition(Array.isArray(status.runs) && status.runs.length === 1, 'one_workflow_attempt_required');
   const attempt = status.runs[0];
   requireCondition(attempt.task_id === expected.taskId && attempt.generation === expected.generation
-    && attempt.session_id === expected.runId && attempt.engine === expected.engine && attempt.status === 'success'
+    && attempt.session_id === expected.runId && attempt.engine === expected.orchestrationEngine && attempt.status === 'success'
     && Number.isSafeInteger(attempt.started_at) && attempt.started_at >= wait.answered_at
-    && Number.isSafeInteger(attempt.finished_at) && attempt.finished_at > 0 && attempt.error_class === null, 'native_attempt_mismatch');
+    && Number.isSafeInteger(attempt.finished_at) && attempt.finished_at >= attempt.started_at && attempt.error_class === null, 'workflow_attempt_mismatch');
   return { outcome: 'pass', taskId: expected.taskId, runId: expected.runId, generation: expected.generation,
-    answeredTypedReady: true, identicalReplayCheckpointConfirmed: true, successfulNativeAttemptCount: 1,
+    answeredTypedReady: true, identicalReplayCheckpointConfirmed: true, successfulWorkflowAttemptCount: 1,
+    workflowStartedAfterReadiness: true, nativeFinalAnswerChannelVerified: true,
+    nativeEngineVerified: false, nativeLaunchTimeVerified: false,
     providerReverified: false, csvReadbackVerified: false, googleSheetsVerified: false, telegramDelivered: false };
 }
 
@@ -167,7 +170,8 @@ export async function runCli(args, { fetchImpl = fetch, write = text => console.
     return 0;
   } catch {
     write(JSON.stringify({ outcome: 'refused', reason: 'credential_boundary_verification_refused',
-      providerReverified: false, csvReadbackVerified: false, googleSheetsVerified: false, telegramDelivered: false }));
+      nativeEngineVerified: false, nativeLaunchTimeVerified: false, providerReverified: false,
+      csvReadbackVerified: false, googleSheetsVerified: false, telegramDelivered: false }));
     return 1;
   }
 }

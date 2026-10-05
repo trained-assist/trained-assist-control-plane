@@ -6,11 +6,11 @@ import { join } from 'node:path';
 import { readOnlyClient, verifyBoundary, readPrivateJson, runCli } from './credential-boundary-verify.mjs';
 
 function fixture() {
-  const expected = { version: 'credential-boundary-verify-v1', cpOrigin: 'https://cp.fixture', statusMethod: 'GET',
+  const expected = { version: 'credential-boundary-verify-v2', cpOrigin: 'https://cp.fixture', statusMethod: 'GET',
     taskId: 'ut-fixture', profileId: 'integration-v1', hostPrincipalId: 'integration-v1-google-host', conversationRef: 'fixture-conversation',
     awaitingInputId: 'fixture-wait', provider: 'google', bindingRef: 'fixture-binding', providerSessionRef: 'fixture-session',
     eventId: 'fixture-ready-event', generation: 1, waitVersion: 1,
-    runId: 'run_01234567-89ab-cdef-0123-456789abcdef', engine: 'dynamic-ip-azure-agent-run' };
+    runId: 'run_01234567-89ab-cdef-0123-456789abcdef', orchestrationEngine: 'cloudflare-workflows', nativeEngine: 'dynamic-ip-azure-agent-run' };
   const binding = { baseUrl: expected.cpOrigin, principalId: expected.hostPrincipalId, profileId: expected.profileId, principalSignature: 'a'.repeat(64) };
   const event = { status: 'ready', eventId: expected.eventId, userTaskId: expected.taskId, profileId: expected.profileId,
     provider: expected.provider, bindingRef: expected.bindingRef, providerSessionRef: expected.providerSessionRef, generation: 1, version: 1 };
@@ -28,7 +28,7 @@ function fixture() {
       payload: JSON.stringify({ status: 'ready', bindingRef: expected.bindingRef, provider: 'google' }) }],
     result: { ok: true, mode: 'engine', persistence: 'persisted', runId: expected.runId, ownerGeneration: 1,
       exitReason: 'completed', answer: 'synthetic native answer', engineText: { source: 'runner_status_answer' } } },
-    runs: [{ task_id: expected.taskId, generation: 1, session_id: expected.runId, engine: expected.engine,
+    runs: [{ task_id: expected.taskId, generation: 1, session_id: expected.runId, engine: expected.orchestrationEngine,
       status: 'success', started_at: 1100, finished_at: 1200, error_class: null }] };
   const calls = [];
   const fetchImpl = async (url, options) => {
@@ -38,12 +38,17 @@ function fixture() {
   return { expected, binding, checkpoint, wait, status, calls, fetchImpl };
 }
 
-test('verifies typed answered wait, exact checkpoint scope and one successful native attempt using only two reads', async () => {
+test('verifies typed wait and one Workflow attempt with native answer channel, not native engine or launch time', async () => {
   const data = fixture();
   const client = readOnlyClient(data.binding, data.expected, data.fetchImpl);
   const result = await verifyBoundary({ ...data, client });
   assert.equal(result.outcome, 'pass');
-  assert.equal(result.successfulNativeAttemptCount, 1);
+  assert.equal(result.successfulWorkflowAttemptCount, 1);
+  assert.equal(result.workflowStartedAfterReadiness, true);
+  assert.equal(result.nativeFinalAnswerChannelVerified, true);
+  assert.equal(result.nativeEngineVerified, false);
+  assert.equal(result.nativeLaunchTimeVerified, false);
+  assert.equal(result.successfulNativeAttemptCount, undefined);
   assert.equal(result.providerReverified, false);
   assert.equal(result.csvReadbackVerified, false);
   assert.equal(result.googleSheetsVerified, false);
@@ -101,8 +106,10 @@ const mutations = [
   ['extra failed attempt', data => { data.status.runs.push({ status: 'failed' }); }],
   ['bare UUID attempt', data => { data.status.runs[0].session_id = data.expected.runId.slice(4); }],
   ['unknown attempt', data => { data.status.runs[0].status = 'unknown'; }],
-  ['wrong native engine', data => { data.status.runs[0].engine = 'fake'; }],
-  ['execution before readiness', data => { data.status.runs[0].started_at = 900; }],
+  ['wrong orchestration engine', data => { data.status.runs[0].engine = 'fake'; }],
+  ['native label substituted for orchestration engine', data => { data.status.runs[0].engine = data.expected.nativeEngine; }],
+  ['Workflow start before readiness', data => { data.status.runs[0].started_at = 900; }],
+  ['Workflow finish before start', data => { data.status.runs[0].finished_at = 900; }],
 ];
 for (const [name, mutate] of mutations) test(`refuses ${name}`, async () => {
   const data = fixture();
@@ -133,9 +140,18 @@ test('expectation rejects unknown schema, unpinned origins and noncanonical runs
   for (const change of [{ version: 'other-schema' }, { extra: 'unexpected' }, { cpOrigin: 'http://cp.fixture' },
     { cpOrigin: 'https://cp.fixture/' }, { cpOrigin: 'https://cp.fixture/path' }, { cpOrigin: 'https://cp.fixture?secret=synthetic' },
     { cpOrigin: 'https://user:synthetic@cp.fixture' }, { runId: data.expected.runId.slice(4) }, { profileId: 'other-profile' },
-    { generation: 0 }, { waitVersion: 1.5 }, { statusMethod: 'DELETE' }, { engine: 'fake' }]) {
+    { generation: 0 }, { waitVersion: 1.5 }, { statusMethod: 'DELETE' }, { nativeEngine: 'fake' }, { orchestrationEngine: 'fake' }]) {
     assert.throws(() => readOnlyClient(data.binding, { ...data.expected, ...change }, data.fetchImpl));
   }
+  assert.equal(data.calls.length, 0);
+});
+
+test('legacy v1 engine expectation refuses instead of silently reinterpreting native identity', () => {
+  const data = fixture();
+  const legacy = { ...data.expected, version: 'credential-boundary-verify-v1', engine: data.expected.nativeEngine };
+  delete legacy.orchestrationEngine;
+  delete legacy.nativeEngine;
+  assert.throws(() => readOnlyClient(data.binding, legacy, data.fetchImpl), /invalid_expectation/);
   assert.equal(data.calls.length, 0);
 });
 
