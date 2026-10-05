@@ -104,6 +104,7 @@ export async function waitForAnswer(params: WaitForAnswerParams): Promise<WaitFo
     if (afterWake !== undefined) return returnAnswer(afterWake);
 
     if (hint !== null && hint !== undefined) {
+      if (eventType === 'credential_ready') continue;
       // Ответ мог прийти канальным сигналом (его уже записал Port) — тогда
       // применяем именно его, не плодя вторую строку сигнала. Если сигнала не
       // было (ответ пришёл только событием движка) — сохраняем событие durable
