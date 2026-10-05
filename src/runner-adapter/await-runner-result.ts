@@ -10,8 +10,7 @@
  *    может воспроизвести их независимо от движка.
  *  - Финализация артефактов: каждый `outputRef` становится строкой
  *    `task_artifacts` (ссылка, не байты) И элементом `artifacts` результата,
- *    который собирает план. Экспорт не подтверждён
- *    (`persistence != 'persisted'`) — задача не завершается успехом молча.
+ *    который собирает план.
  */
 import type { TaskStore, TaskEventKind } from '../taskstore';
 import type { RunnerApiAdapter, RunnerEvent, RunnerResult, RunnerStatusView } from './runner-api-adapter';
@@ -24,6 +23,7 @@ export interface AwaitRunnerResultOptions {
   taskId: string;
   generation: number;
   engineName?: string;
+  declaredOutputPaths?: readonly string[];
   pollSec?: number;
   timeoutSec?: number;
 }
@@ -203,7 +203,9 @@ async function finalize(
     });
   }
 
-  if (result.persistence !== 'persisted') {
+  const noExportRequired = opts.declaredOutputPaths?.length === 0
+    && result.persistence === 'not_required' && artifactRefs.length === 0;
+  if (result.persistence !== 'persisted' && !noExportRequired) {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.
     await commitFailure('export_not_persisted', 'failed');
     return { ok: false, reason: 'export_not_persisted' };

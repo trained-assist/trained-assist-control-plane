@@ -69,7 +69,7 @@ export interface RunnerResult {
   failure?: { code: string; failureClass: string; safeSummary: string; retryable: boolean };
   usage: { status: 'unknown' } | { status: 'known'; usd: number };
   outputRefs: string[];
-  persistence: 'pending' | 'persisted' | 'failed';
+  persistence: 'pending' | 'persisted' | 'failed' | 'not_required';
   cleanup: 'pending' | 'completed' | 'failed';
   logPath: string;
   /**
