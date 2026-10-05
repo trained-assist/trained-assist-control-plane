@@ -18,12 +18,15 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 | `web/` | Web-срез (M1, шаг 7): тонкий клиент к API control plane, страница одной conversation, сквозной прогон с рестартом посередине. Подключение — только из env |
 | `src/awaiting/` | Ожидание человека: маппинг purpose→kind, durable-ожидание (истина в Task Store, движок только будит) |
 | `migrations/0006_schedule_v1.sql` + `src/schedule/` | Расписание (P22, этап I07): `schedules`/`schedule_occurrences`, cron в IANA-зоне расписания, дедуп occurrence в БД, политики overlap/catch-up, виртуальные часы. Occurrence — обычная задача; `gtd_id` всегда `NULL` |
+
 | `src/router/` | Task Router (P16, этап I05): признаки текста, снимок прав, проверенный каталог, route policy, исполнение, события `routing.*`, replay корпуса P18 |
 | `eval/fast-replies/` | Пинned-снимок корпуса P18 (sha256 из манифеста) и артефакт решений route policy в формате стенда P18 |
 | `tools/p16-sandbox-probe.sh` + `tools/p16-evidence.mjs` | Изолированная песочница I05 и сборка sanitized evidence (fail closed) |
 | `migrations/0007_gtd_v1.sql` + `src/gtd/` | GTD (P23, этап I07): запись контроля одной User Task (opt-in), durable inbox Output→GTD, решения прогрессии, внешние условия (synthetic CI). `gtdId` — тот же идентификатор, что в `schedule_occurrences.gtd_id` |
 | `tests/` | vitest **в рантайме workerd** (`@cloudflare/vitest-pool-workers`): D1, Workflows, реальные миграции — 241 тест (в т.ч. `tests/p16-*.test.ts`, `tests/p22-schedule.test.ts`, `tests/p23-gtd.test.ts`) |
 | `tools/local-smoke.sh` | Воспроизводимый прогон слоя против локального `wrangler dev` |
+
+Пользовательские расписания обслуживает существующий Cloudflare Cron Trigger раз в минуту (`wrangler.jsonc` → `scheduled()`), без VM и отдельного GCP Scheduler job. Проход смотрит все профили, восстанавливает недоставленные occurrence и использует дедуп в D1; ручной `/schedules/tick` остаётся ограничен профилем авторизованного вызывающего. В `PREVIEW_ONLY=true` scheduled-проход не выполняется. Старые cron-скрипты `trained-assist-agent` с локальными файловыми входами учитываются отдельно в [эпике выключения VM](https://github.com/trained-assist/trained-agent-architecture/issues/145).
 
 ## Как запустить локально
 

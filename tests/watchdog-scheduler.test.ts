@@ -1,6 +1,8 @@
 import worker from '../src/index';
 import { TaskStore } from '../src/taskstore';
 import { gatewayDeliveryAdapter, localDeliveryAdapter, resolveDeliveryAdapter } from '../src/intake';
+import { ScheduleService, ScheduleStore, VirtualClock, portSubmitter } from '../src/schedule';
+import { CfWorkflowPort } from '../src/workflow-port';
 import { describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 
@@ -56,6 +58,36 @@ describe('П3c: планировщик watchdog и его работоспосо
       fakeCtx(),
     );
     expect(await s.lastWatchdogRun()).toBeNull();
+  });
+
+  it('Cron Trigger принимает пользовательское расписание без VM и не дублирует повтор', async () => {
+    const profileId = 'profile-cron-trigger-smoke';
+    const start = Date.parse('2026-03-10T09:30:00Z');
+    const due = Date.parse('2026-03-10T10:00:00Z');
+    const taskStore = store();
+    const scheduleStore = new ScheduleStore(env.DB);
+    const service = new ScheduleService({
+      store: scheduleStore,
+      submitter: portSubmitter(new CfWorkflowPort(env.TASK_WORKFLOW, taskStore)),
+      clock: new VirtualClock(start),
+    });
+    const { schedule } = await service.create(profileId, {
+      requestId: 'cron-trigger-smoke-1',
+      cron: '0 * * * *',
+      timezone: 'UTC',
+      goal: 'scheduled smoke',
+    });
+    const bindings = { ...env, DELIVERY_ADAPTER: 'local', SCHEDULE_CLOCK: String(due) } as never;
+    const event = { cron: '* * * * *', scheduledTime: due, noRetry: () => {} } as never;
+
+    await worker.scheduled(event, bindings, fakeCtx());
+    await worker.scheduled(event, bindings, fakeCtx());
+
+    const occurrences = await scheduleStore.listOccurrences(schedule.schedule_id);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]!.state).toBe('admitted');
+    expect(occurrences[0]!.profile_id).toBe(profileId);
+    expect(occurrences[0]!.gtd_id).toBeNull();
   });
 });
 
