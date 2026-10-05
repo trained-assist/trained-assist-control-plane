@@ -11,6 +11,8 @@ import { signPrincipal } from '../src/auth/principal-auth';
 import { dispatchAcceptedAgent } from '../src/output/communication-v1';
 import type { RouteResult } from '../src/router/service';
 import { env } from './env';
+import { durableConversationContext } from '../src/router/communication-v1';
+import { buildRunSpec, defaultRunSpecPolicy, toSubmitRequest } from '../src/run-spec/run-spec';
 
 const requirement = { hostPrincipalId: 'credential-host', provider: 'fixture-provider', bindingRef: 'fixture-binding', providerSessionRef: 'fixture-session' };
 const taskIds: string[] = [];
@@ -47,6 +49,47 @@ function wakePort(store: TaskStore, sendEvent = vi.fn(async () => {})) {
 }
 
 describe('verified credential completion', () => {
+  it('reproduces monthly context loss on credential-ready pre-execution startup', async () => {
+    const store = new TaskStore(env.DB);
+    const conversationId = `tg-${crypto.randomUUID()}`;
+    const priorId = `category-${crypto.randomUUID()}`;
+    const taskId = `monthly-${crypto.randomUUID()}`;
+    taskIds.push(priorId, taskId);
+    const source = 'Sheet approved-sheet; source Expenses; dedup by date/category/amount; result Category results';
+    const goal = 'А теперь добавь итог по месяцам';
+    await store.admitTask({ id: priorId, profileId: 'credential-profile', conversationId, goal: source,
+      userValue: { inputItems: [{ text: source }] } });
+    await store.commit(priorId, 1, { status: 'done', result: { answer: source } });
+    await store.admitTask({ id: taskId, profileId: 'credential-profile', conversationId, goal,
+      userValue: { inputItems: [{ text: goal }] } });
+    const task = await store.requireTask(taskId);
+    const context = await durableConversationContext(store, task);
+    const instructions = `${goal}\n${JSON.stringify(context)}`;
+    expect(instructions).toContain(source);
+    await store.saveRoutingSelection(taskId, task.generation, { agentInstructions: instructions });
+    const { awaitingInputId } = await store.openAwaiting({ taskId, purpose: 'credential', question: 'Connect provider',
+      respondentScope: task.profile_id, schema: { credential: requirement } });
+    const awaiting = (await store.getAwaiting(awaitingInputId))!;
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async (_input: { id: string; params: PlanParams }) => ({})) };
+    const port = new CfWorkflowPort(workflow as unknown as Workflow, store, {
+      runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 600, runnerPollSec: 1,
+    });
+    const result = await port.completeCredential({ ...requirement, awaitingInputId, userTaskId: taskId,
+      profileId: task.profile_id, eventId: `ready-${crypto.randomUUID()}`, generation: awaiting.generation, version: awaiting.version });
+    expect(result.delivered).toBe(true);
+    expect(workflow.create).toHaveBeenCalledTimes(1);
+    const params = workflow.create.mock.calls[0]![0].params;
+    expect(params.instructions).toBeNull();
+    const submitted = toSubmitRequest(buildRunSpec({ userTaskId: taskId, profileId: task.profile_id,
+      conversationId, ownerGeneration: params.generation, engineName: params.runnerEngine!, prompt: params.goal!,
+      refs: [], instructions: params.instructions ?? null, attemptRunId: null, timeoutMs: 600000,
+    }, defaultRunSpecPolicy()).spec);
+    expect(submitted.conversationId).toBe(conversationId);
+    expect(submitted.input?.inlinePrompt).toBe(goal);
+    expect(JSON.stringify(submitted)).not.toContain('approved-sheet');
+    expect((await store.routingSelection(taskId, task.generation)) as { agentInstructions: string }).toEqual({ agentInstructions: instructions });
+  });
+
   it('uses only host-configured engine and budget at the HTTP readiness boundary', async () => {
     const { store, taskId, event, awaitingInputId } = await parked();
     const secret = 'credential-engine-test-secret';
