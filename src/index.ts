@@ -913,7 +913,7 @@ async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): P
       continue;
     }
     for (const manifest of manifests) {
-      const ref = manifest.storageKey || manifest.artifactId;
+      const ref = manifest.ref;
       if (seen.has(ref)) continue;
       seen.add(ref);
       await store.recordArtifact({
@@ -970,7 +970,7 @@ async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: st
   if (runnerRunId) {
     try {
       for (const manifest of await adapter.artifacts(runnerRunId)) {
-        if (manifest.storageKey === ref || manifest.artifactId === ref) candidates.push(manifest.artifactId);
+        if ((manifest.ref === ref || manifest.artifactId === ref) && manifest.artifactId) candidates.push(manifest.artifactId);
       }
     } catch {
       // Манифесты недоступны — пробуем ссылку как artifactId.
