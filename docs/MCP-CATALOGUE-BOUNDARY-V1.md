@@ -1,6 +1,6 @@
 # Host-authorized MCP catalogue boundary
 
-Architecture #140. This is an isolated, dependency-injected source adapter, not an enabled route or a credential issuer. It does not call tools, start models, write Task Store, or claim that listed tools are ready.
+Task: [architecture #144](https://github.com/trained-assist/trained-agent-architecture/issues/144), parent integration #140. This is an isolated, dependency-injected source adapter, not an enabled route or a credential issuer. It does not call tools, start models, write Task Store, or claim that listed tools are ready.
 
 ## Existing wire protocol
 
@@ -16,16 +16,24 @@ The native Runner source `97956c5bca4a9d6c87d71b826354ab05ab48811d`, `src/api/se
 4. Keep the same adapter/snapshot through selection. `selectedInstruction` refuses unknown names, cross-task/generation/profile/principal reuse, and changed host policies/grants. It returns the original selected description/schema plus server/binding identity, never generated prose and never readiness claims. Snapshots are transient; restart means rediscovery, not replaying a tool. CP must persist its selection and the immutable metadata/policy witness using its existing Task Store ownership before dispatch.
 5. Existing Output/Runner owns execution of the same accepted task/generation. Pass selected metadata and original task context as work instructions, and the corresponding host-authorized RunSpec MCP binding. The Runner forms/validates required arguments under the selected schema and calls the actual method through its scoped MCP channel. This adapter does not substitute a direct CP generic `tools/call` path. For mutations, persist an operation identity before contact; lost ACK is unknown and requires owner reconciliation, never an automatic repeated tool call.
 
-## Exact owner decisions still needed
+## Owner decisions and remaining runtime gate
 
-- Which independently authorized host service supplies this catalogue, and which fixed CP-principal/profile-to-native-profile mapping and complete method grants does it attest? Existing `/mcp/token` allows its host credential to mint any profile; CP must not receive that credential.
-- Is the selected method's existing description/schema the approved instruction contract, or must the domain owner publish a separately versioned instruction document? No such generic API currently exists.
-- Should selection hand off to the existing Runner as above, or to an existing durable deterministic execution port? The latter must first expose argument validation, scope recheck, stable operation identity and effect receipt/unknown-outcome semantics. This adapter does not invent that controller.
+- Remaining runtime gate: the independently authorized discovery endpoint and host-attested CP-principal/profile-to-native-profile bindings, complete grants and registry revision. These must come from the approved MCP session, not user text or guessed configuration. Existing `/mcp/token` allows its host credential to mint any profile; CP must not receive that credential. Endpoint/binding provisioning is requested asynchronously; secret values must not enter the public handoff.
+- Owner accepted the selected method's existing description/schema as the minimal instruction contract. No separate instruction document/API is required or invented.
+- Owner prefers the existing Runner with scoped MCP for selected-instruction execution or ordinary agent work. No new deterministic execution controller or direct CP generic tool caller is introduced. Future alternatives would need their own durable argument validation, scope recheck, stable operation identity and effect receipt/unknown-outcome contract.
 
-Until those decisions and host composition are verified, the full catalogue route must remain disabled. Registry presence is not provider authorization, credential verification, engine readiness or successful execution.
+Until the host endpoint/bindings and composition are verified, the full catalogue route must remain disabled. Registry presence is not provider authorization, credential verification, engine readiness or successful execution. This branch does not change the current CP UX route and may be integrated into that source branch later.
 
 ## Offline validation
 
 `npm run typecheck` and `npm test -- tests/mcp-catalogue-boundary.test.ts`. Fixtures test complete 66/256-name aggregates, pagination, authoritative selected metadata, scope/policy fencing, unknown names, duplicates, overflow and sanitized failures. All injected RPCs are `tools/list`; no model/provider/runtime contact occurs.
+
+From a normal checkout with dependencies installed, the reproducible offline commands are:
+
+```sh
+npm run typecheck
+npm test -- tests/mcp-catalogue-boundary.test.ts tests/communication-v1.test.ts
+npm run check
+```
 
 Validation on the source-only branch: 27 boundary tests, 55 combined boundary/communication tests, and full `npm run check` with 459 tests plus typecheck/evidence sanitization passed. No deployed readiness or execution acceptance is inferred.
