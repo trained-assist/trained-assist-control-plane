@@ -222,6 +222,7 @@ export interface RunSpecPolicy {
   repository: RepositorySpec | null;
   resultDestinationRef: string | null;
   maxOutputBytes: number | null;
+  maxLogBytes?: number | null;
 }
 
 export interface BuiltRunSpec {
@@ -322,6 +323,10 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
   if (maxOutputBytes !== null && (!Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0)) {
     throw new RunSpecMappingError('RUN_SPEC_MAX_OUTPUT_BYTES: expected a positive integer', 'RUN_SPEC_MAX_OUTPUT_BYTES');
   }
+  const maxLogBytes = env.RUN_SPEC_MAX_LOG_BYTES ? Number(env.RUN_SPEC_MAX_LOG_BYTES) : null;
+  if (maxLogBytes !== null && (!Number.isSafeInteger(maxLogBytes) || maxLogBytes <= 0)) {
+    throw new RunSpecMappingError('RUN_SPEC_MAX_LOG_BYTES: expected a positive safe integer', 'RUN_SPEC_MAX_LOG_BYTES');
+  }
 
   return {
     cwd,
@@ -334,6 +339,7 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
     repository,
     resultDestinationRef: env.RUN_SPEC_RESULT_DESTINATION_REF?.trim() || null,
     maxOutputBytes,
+    maxLogBytes,
   };
 }
 
@@ -414,6 +420,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     limits: {
       timeoutMs: policy.timeoutMs ?? input.timeoutMs,
       ...(policy.maxOutputBytes ? { maxOutputBytes: policy.maxOutputBytes } : {}),
+      ...(policy.maxLogBytes ? { maxLogBytes: policy.maxLogBytes } : {}),
     },
     input: {
       ...(inlinePrompt ? { inlinePrompt } : {}),

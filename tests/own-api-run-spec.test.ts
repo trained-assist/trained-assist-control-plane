@@ -170,6 +170,17 @@ describe('run-spec: хостовая политика из bindings', () => {
     expect(runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '600000' }).startupTimeoutMs).toBe(600_000);
   });
 
+  it('projects explicit host output and log byte limits without changing legacy defaults', () => {
+    const hostPolicy = runSpecPolicyOf({ RUN_SPEC_MAX_OUTPUT_BYTES: '1048576', RUN_SPEC_MAX_LOG_BYTES: '1048576' });
+    const body = toSubmitRequest(buildRunSpec(baseInput, hostPolicy).spec);
+    expect(body.limits.maxOutputBytes).toBe(1_048_576);
+    expect(body.limits.maxLogBytes).toBe(1_048_576);
+    expect(toSubmitRequest(buildRunSpec(baseInput, policy).spec).limits.maxLogBytes).toBeUndefined();
+    for (const invalid of ['0', '-1', '1.5', 'invalid', '9007199254740992']) {
+      expect(() => runSpecPolicyOf({ RUN_SPEC_MAX_LOG_BYTES: invalid })).toThrow(RunSpecMappingError);
+    }
+  });
+
   it('only the explicitly selected integration host profile supplies a repository default', () => {
     expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).repository).toEqual({ fullName: 'trained-assist/ai-agent-runner' });
     expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).timeoutMs).toBe(300_000);

@@ -35,6 +35,8 @@
     "RUN_SPEC_ENV_ALLOWLIST": "LLM_LADDER_TOKEN",
     "RUN_SPEC_OUTPUTS": "[{\"path\":\"outputs/category-results.csv\",\"name\":\"Category totals\",\"mime\":\"text/csv\"}]",
     "RUN_SPEC_TIMEOUT_MS": "300000",
+    "RUN_SPEC_MAX_OUTPUT_BYTES": "1048576",
+    "RUN_SPEC_MAX_LOG_BYTES": "1048576",
     "RUN_SPEC_STARTUP_TIMEOUT_MS": "600000",
     "PILOT_ENABLED": "true",
     "PILOT_COHORT_PROFILE_IDS": "integration-v1",
