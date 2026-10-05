@@ -89,6 +89,22 @@ describe('П3c: планировщик watchdog и его работоспосо
     expect(occurrences[0]!.profile_id).toBe(profileId);
     expect(occurrences[0]!.gtd_id).toBeNull();
   });
+
+  it('ошибка расписаний не пропускает проход watchdog', async () => {
+    const tick = vi.spyOn(ScheduleService.prototype, 'tick').mockRejectedValue(new Error('schedule unavailable'));
+    const mark = vi.spyOn(TaskStore.prototype, 'markWatchdogRun');
+    try {
+      await expect(worker.scheduled(
+        { cron: '* * * * *', scheduledTime: Date.now(), noRetry: () => {} } as never,
+        { ...env, DELIVERY_ADAPTER: 'local' } as never,
+        fakeCtx(),
+      )).rejects.toThrow('schedule unavailable');
+      expect(mark).toHaveBeenCalledTimes(1);
+    } finally {
+      tick.mockRestore();
+      mark.mockRestore();
+    }
+  });
 });
 
 describe('П3b: адаптер канала — реальный или честная заглушка', () => {
