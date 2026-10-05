@@ -15,6 +15,7 @@ export interface CommunicationConfig {
   token?: string;
   timeoutMs?: number;
   fetcher?: typeof fetch;
+  service?: Pick<Fetcher, 'fetch'>;
 }
 
 async function callTool(config: CommunicationConfig, name: string, input: Record<string, unknown>): Promise<unknown> {
@@ -24,7 +25,8 @@ async function callTool(config: CommunicationConfig, name: string, input: Record
   if (JSON.stringify(input).length > 120_000) throw new SelectorError('input_too_large');
   let response: Response;
   try {
-    response = await (config.fetcher ?? fetch)(`${config.url.replace(/\/+$/, '')}/mcp`, {
+    const fetcher: typeof fetch = config.service ? config.service.fetch.bind(config.service) : config.fetcher ?? fetch;
+    response = await fetcher(`${config.url.replace(/\/+$/, '')}/mcp`, {
       method: 'POST',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json', accept: 'application/json', 'mcp-protocol-version': '2024-11-05' },
       body: JSON.stringify({ jsonrpc: '2.0', id: input.request_id, method: 'tools/call', params: { name, arguments: input } }),

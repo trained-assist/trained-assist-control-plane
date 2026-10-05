@@ -84,6 +84,23 @@ describe('communication MCP client', () => {
     }) as typeof fetch });
     await expect(write({ request_id: 'writer', context_revision: 'new' })).rejects.toMatchObject({ code: 'writer_rejected' });
   });
+
+  it('preserves service receiver and bearer auth; service errors never retry externally', async () => {
+    const externalFetch = vi.fn();
+    vi.stubGlobal('fetch', externalFetch);
+    const service = {
+      fetch: vi.fn(async function (this: unknown, url: unknown, init?: RequestInit) {
+        expect(this).toBe(service);
+        expect(url).toBe('https://communication.example.test/mcp');
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-credential');
+        return new Response('unauthorized', { status: 401 });
+      }),
+    };
+    const resolve = communicationSelector({ url: 'https://communication.example.test', token: 'test-credential', service: service as unknown as Fetcher, fetcher: externalFetch });
+    await expect(resolve(request)).rejects.toMatchObject({ code: 'http_401' });
+    expect(service.fetch).toHaveBeenCalledTimes(1);
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('v1 routing', () => {
@@ -231,22 +248,25 @@ describe('Task Store and Output ownership', () => {
     expect(await store.listRuns(id)).toHaveLength(1);
   });
 
-  it('HTTP toggle commits a quick answer and duplicate routes reuse it without MCP calls', async () => {
+  it.each(['external', 'service'])('HTTP toggle uses %s transport for selector/writer and reuses durable answers', async (transport) => {
     const store = new TaskStore(env.DB);
     const id = nextId();
     await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:read', 'tasks:control'] });
     await store.admitTask({ id, profileId: 'selector-profile', goal: 'Что умеешь?', userValue: { inputItems: [{ text: 'Что умеешь?' }] } });
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(_url).toBe('https://communication.example.test/mcp');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-credential');
       const rpc = JSON.parse(String(init?.body));
       const data = rpc.params.name === 'resolve_user_intent'
         ? { user_goal: 'Узнать доступные возможности помощника.', decision: 'catalog.brief' }
         : { status: 'generated', message_text: rpc.params.arguments.context.verified_reply, context_revision: rpc.params.arguments.context_revision };
       return Response.json({ id: rpc.id, result: { structuredContent: data } });
     });
-    vi.stubGlobal('fetch', fetcher);
+    const externalFetch = transport === 'external' ? fetcher : vi.fn(async () => { throw new Error('unexpected external request'); });
+    vi.stubGlobal('fetch', externalFetch);
     const signature = await signPrincipal('selector-principal', 'test-principal-secret');
     const request = () => new Request('https://control.example.test/route', { method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature }, body: JSON.stringify({ taskId: id, continue: true }) });
-    const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential' };
+    const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential', ...(transport === 'service' ? { COMMUNICATION_SERVICE: { fetch: fetcher } as unknown as Fetcher } : {}) };
     const first = await worker.fetch(request(), bindings);
     expect(first.status).toBe(200);
     expect(await first.json()).toMatchObject({ route: 'deterministic', capabilityId: 'catalog.brief' });
@@ -255,6 +275,7 @@ describe('Task Store and Output ownership', () => {
     expect(JSON.parse(task.result_json!).answer).toContain('Каталог');
     expect((await worker.fetch(request(), bindings)).status).toBe(200);
     expect(fetcher).toHaveBeenCalledTimes(2);
+    if (transport === 'service') expect(externalFetch).not.toHaveBeenCalled();
   });
 
   it('HTTP fallback dispatches through Output without requiring gateway start', async () => {

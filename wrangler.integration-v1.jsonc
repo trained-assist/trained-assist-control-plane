@@ -5,6 +5,12 @@
   "compatibility_date": "2025-09-01",
   "workers_dev": true,
   "observability": { "enabled": false },
+  "services": [
+    {
+      "binding": "COMMUNICATION_SERVICE",
+      "service": "trained-assist-communication-v1-sandbox"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
