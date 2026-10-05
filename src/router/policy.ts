@@ -49,6 +49,10 @@ import {
 /** Верхняя граница одной попытки решения (bounded termination §11.2 шаг 7). */
 export const MAX_DECISION_ATTEMPTS = 1;
 
+export function initialSelectorDecision(input: RoutingInput): RoutingDecision {
+  return blocked(input, 'COMMUNICATION_SELECTED', 'reply', 'full');
+}
+
 interface Draft {
   route: Route;
   mode: RouteMode;

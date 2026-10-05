@@ -366,6 +366,25 @@ export class TaskStore {
     return res.results;
   }
 
+  async routingSelection(taskId: string, generation: number): Promise<unknown | null> {
+    const row = await this.db.prepare('SELECT payload_json FROM task_events WHERE event_id = ?')
+      .bind(`routing:${taskId}:${generation}`).first<{ payload_json: string }>();
+    return row ? JSON.parse(row.payload_json) : null;
+  }
+
+  async saveRoutingSelection(taskId: string, generation: number, selection: unknown): Promise<unknown> {
+    await this.db.prepare(
+      `INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+       SELECT ?, id, 'routing.selected', generation, 'router', ?, ? FROM durable_tasks
+       WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+    ).bind(`routing:${taskId}:${generation}`, JSON.stringify(selection), Date.now(), taskId, generation).run();
+    const saved = await this.routingSelection(taskId, generation);
+    const task = await this.requireTask(taskId);
+    if (task.generation !== generation) throw new FencedError(taskId, generation, task.generation);
+    if (saved !== null) return saved;
+    throw new TerminalStateError(taskId, task.status);
+  }
+
   /**
    * Нетерминальные задачи ПРОФИЛЯ: снимок «своих» данных для быстрых ответов
    * (`/status`, «что сейчас в работе»). Чужие задачи не выдаются никогда
@@ -401,13 +420,31 @@ export class TaskStore {
    */
   async startRun(
     taskId: string,
-    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number } = { generation: 1 },
+    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number; idempotent?: boolean } = { generation: 1 },
   ): Promise<RunAttemptRow> {
     const task = await this.requireTask(taskId);
     if (isTerminalStatus(task.status)) {
       throw new TaskStoreError(`cannot start run on terminal task ${taskId} (${task.status})`, taskId);
     }
     const now = Date.now();
+    if (opts.idempotent) {
+      const runId = `routing-run:${taskId}:${opts.generation}`;
+      await this.db.batch([
+        this.db.prepare(
+          `INSERT OR IGNORE INTO executions(id, task_id, engine, status, generation, started_at, last_heartbeat_at)
+           SELECT ?, id, ?, 'running', generation, ?, ? FROM durable_tasks WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+        ).bind(runId, opts.engine ?? null, now, now, taskId, opts.generation),
+        this.db.prepare(
+          `INSERT OR IGNORE INTO task_events(event_id, user_task_id, execution_id, kind, generation, source, payload_json, created_at)
+           SELECT ?, task_id, id, 'run_started', generation, 'executor', ?, ? FROM executions WHERE id = ?`,
+        ).bind(runId, JSON.stringify({ runId, engine: opts.engine ?? null }), now, runId),
+        this.db.prepare('UPDATE durable_tasks SET start_deadline_at = NULL WHERE id = ? AND generation = ? AND EXISTS (SELECT 1 FROM executions WHERE id = ?)')
+          .bind(taskId, opts.generation, runId),
+      ]);
+      const current = await this.requireTask(taskId);
+      if (current.generation !== opts.generation) throw new FencedError(taskId, opts.generation, current.generation);
+      return this.requireRun(runId);
+    }
     const runId = crypto.randomUUID();
     const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
     // Атомарная граница старта: попытка, событие и сброс дедлайна — ОДНА транзакция.

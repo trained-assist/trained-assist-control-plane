@@ -51,6 +51,10 @@ import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixe
 import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
+import { communicationSelector, communicationWriter } from './router/communication-client';
+import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
+import { commitQuickAnswer, dispatchAcceptedAgent } from './output/communication-v1';
+import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
   portContinuationPort,
@@ -59,6 +63,12 @@ import {
 } from './output';
 
 export interface Env {
+  ROUTER_SELECTOR?: string;
+  COMMUNICATION_API_URL?: string;
+  COMMUNICATION_TOKEN?: string;
+  COMMUNICATION_TIMEOUT_MS?: string;
+  COMMUNICATION_WRITER_TIMEOUT_MS?: string;
+  ROUTER_AGENT_ENGINE?: string;
   DB: D1Database;
   TASK_WORKFLOW: Workflow;
   /**
@@ -278,13 +288,14 @@ async function handleRouteRoute(
 
   const task = await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
-  const catalog = sandboxCapabilityCatalog();
+  const v1 = env.ROUTER_SELECTOR === 'communication_v1';
+  const catalog = v1 ? communicationV1Catalog() : sandboxCapabilityCatalog();
 
   // Права — из идентичности: выдача capability приходит из binding'а песочницы
   // (в проде — из credential broker). Текст запроса в выдачу не входит.
   const grants = parseJsonObject<Record<string, { capabilities?: string[]; integrations?: string[] }>>(env.ROUTER_GRANTS);
   const own = grants[principal.principalId] ?? {};
-  const platform = catalog.capabilities.map((c) => c.id).filter((id) => /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
+  const platform = catalog.capabilities.map((c) => c.id).filter((id) => id === 'system_health' || /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
   const authorization = await deriveAuthorization(
     {
       principalId: principal.principalId,
@@ -310,8 +321,13 @@ async function handleRouteRoute(
   const context = (body.context ?? {}) as Record<string, unknown>;
   const attachments = Array.isArray(body.attachments) ? body.attachments : [];
   const typedSignal = body.typedSignal as { kind: 'button' | 'command' | 'awaiting_answer'; ref: string } | null | undefined;
+  const ordinaryV1 = v1 && !typedSignal;
+  if (ordinaryV1) await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
+  const durableContext = ordinaryV1 ? await durableConversationContext(store, task) : undefined;
+  const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
+  const communicationConfig = { url: env.COMMUNICATION_API_URL, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
 
-  const result = await routeRequest(
+  let result = saved ?? await routeRequest(
     {
       envelope: {
         principalId: principal.principalId,
@@ -321,7 +337,7 @@ async function handleRouteRoute(
         catalogVersion: catalog.version,
         policyVersion: catalog.version,
         budgets: {
-          llmCallsRemaining: Number(env.ROUTER_LLM_BUDGET ?? 1),
+          llmCallsRemaining: Number(env.ROUTER_LLM_BUDGET ?? (ordinaryV1 ? 2 : 1)),
           agentAllowed: env.ROUTER_AGENT_ALLOWED !== 'false',
         },
         runId: null,
@@ -329,13 +345,18 @@ async function handleRouteRoute(
       },
       prepared: {
         text,
+        originalInput: ordinaryV1 ? storedValue : undefined,
+        durableContext,
         context: {
           pendingProposal: (context.pendingProposal as string | undefined) ?? null,
           lastAssistantText: (context.lastAssistantText as string | undefined) ?? null,
           sessionEmpty: context.sessionEmpty === undefined ? true : Boolean(context.sessionEmpty),
           relevantTurns: Number(context.relevantTurns ?? 0),
         },
-        attachments: attachments as never,
+        attachments: (ordinaryV1 ? inputItems.flatMap((item) => {
+          const refs = item as { artifactRefs?: string[]; snapshotId?: string };
+          return [...(refs.artifactRefs ?? []), ...(refs.snapshotId ? [`snapshot:${refs.snapshotId}`] : [])].map((artifactRef) => ({ artifactRef, kind: 'artifact', extracted: false, chars: null }));
+        }) : attachments) as never,
         typedSignal: typedSignal ?? null,
         contextVersion: `ctx:${task.id}:${catalog.version}`,
         readinessSnapshotPresent: true,
@@ -351,6 +372,7 @@ async function handleRouteRoute(
       },
     },
     {
+      communicationV1: ordinaryV1 ? { select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runnerAdapterOf(env)) } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
@@ -371,6 +393,8 @@ async function handleRouteRoute(
       },
     },
   );
+  if (ordinaryV1 && !saved) result = await store.saveRoutingSelection(task.id, task.generation, result) as RouteResult;
+  if (ordinaryV1 && result.reply) await commitQuickAnswer(store, task, result);
 
   logStructured({
     event: 'route.dispatched',
@@ -393,7 +417,13 @@ async function handleRouteRoute(
   // запрашивает, но не создаёт ни job, ни run; выдача — по явному запросу и
   // только при включённой политике (по умолчанию выключена: запуск исполнителя
   // — отдельное решение, а не побочный эффект маршрутизации).
-  const continuation = await issueContinuation(result, env, store, port, body);
+  const continuation = ordinaryV1 && result.continuation && body.continue === true
+    ? env.ROUTER_CONTINUATION_ENABLED === 'true'
+      ? runnerAdapterOf(env)
+        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode')
+        : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
+      : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
+    : await issueContinuation(result, env, store, port, body);
 
   return json({
     decisionId: result.decisionId,
@@ -401,6 +431,9 @@ async function handleRouteRoute(
     route: result.decision.route,
     mode: result.decision.mode,
     reasonCode: result.decision.reasonCode,
+    degraded: result.decision.degraded,
+    degradedNotice: result.decision.degradedNotice,
+    rendering: result.rendering,
     outcome: result.decision.outcome,
     needsExecutor: result.decision.needsExecutor,
     executor: result.decision.executor,

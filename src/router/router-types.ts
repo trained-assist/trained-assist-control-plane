@@ -43,6 +43,8 @@ export type RouteMode = (typeof ROUTE_MODES)[number];
 
 /** Причины перехода. Значение, не текст: по нему считаются метрики §11.9. */
 export const REASON_CODES = [
+  'COMMUNICATION_SELECTED',
+  'COMMUNICATION_FALLBACK',
   // детерминированные пути (§11.2 шаг 1)
   'TYPED_COMMAND',
   'SERVICE_COMMAND',
@@ -193,6 +195,11 @@ export interface ConversationContext {
 }
 
 export interface PreparedInput {
+  originalInput?: unknown;
+  durableContext?: {
+    history: Array<{ id: string; author: string; text: string }>;
+    active_tasks: Array<{ id: string; goal: string; expected_answer?: string }>;
+  };
   /** Полный текст текущего запроса (не head/tail: §11.6). */
   text: string;
   context: ConversationContext;

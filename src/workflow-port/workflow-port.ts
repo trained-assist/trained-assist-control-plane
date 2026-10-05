@@ -35,6 +35,7 @@ function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'lega
 }
 
 export interface SubmitInput extends AdmitTaskInput {
+  idempotentRun?: boolean;
   /** Уже начатая попытка (например после resume) — не создавать вторую. */
   runId?: string | null;
   question?: string;
@@ -254,6 +255,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
           engine: 'cloudflare-workflows',
           // session_id заполнит план, привязав runId настоящего Runner'а.
           sessionId: null,
+          idempotent: input.idempotentRun,
         });
         runId = run.id;
       }
@@ -264,10 +266,16 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // run_started), а не поведение create на разных платформах (в miniflare
     // повторный create не бросает ошибку, в проде бросает).
     let instanceCreated = false;
-    if (needInstance) {
+    if (needInstance || input.idempotentRun) {
       try {
-        await this.wf.create({ id: task.id, params });
-        instanceCreated = true;
+        let exists = false;
+        if (input.idempotentRun) {
+          try { await (await this.wf.get(task.id)).status(); exists = true; } catch { exists = false; }
+        }
+        if (!exists) {
+          await this.wf.create({ id: task.id, params });
+          instanceCreated = true;
+        }
       } catch (e) {
         // Экземпляр уже существует (гонка или повтор) — берём прежний.
         try {
