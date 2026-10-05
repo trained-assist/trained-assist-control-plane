@@ -32,6 +32,7 @@
     "ROUTER_AGENT_ALLOWED": "true",
     "ROUTER_AGENT_ENGINE": "dynamic-ip-azure-agent-run",
     "RUN_SPEC_REPOSITORY": "{\"fullName\":\"trained-assist/ai-agent-runner\"}",
+    "RUN_SPEC_ENV_ALLOWLIST": "[\"LLM_LADDER_TOKEN\"]",
     "RUN_SPEC_OUTPUTS": "[{\"path\":\"outputs/category-results.csv\",\"name\":\"Category totals\",\"mime\":\"text/csv\"}]",
     "RUN_SPEC_TIMEOUT_MS": "300000",
     "RUN_SPEC_STARTUP_TIMEOUT_MS": "600000",
