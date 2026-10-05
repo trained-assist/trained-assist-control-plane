@@ -98,6 +98,16 @@ export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number];
 export const EVENT_SOURCES = ['input', 'router', 'executor', 'output', 'gateway', 'cron', 'watcher'] as const;
 export type EventSource = (typeof EVENT_SOURCES)[number];
 
+export interface NativeStopEvidence {
+  taskId: string;
+  profileId: string;
+  attemptId: string;
+  runId: string;
+  ownerGeneration: number;
+  state: 'succeeded' | 'failed' | 'cancelled';
+  exitObserved: true;
+}
+
 /** Канал-источник сигнала (§5.3). */
 export const SIGNAL_SOURCES = ['telegram', 'web', 'api', 'cron', 'system'] as const;
 export type SignalSource = (typeof SIGNAL_SOURCES)[number];

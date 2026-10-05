@@ -35,6 +35,8 @@ The selected result is persisted in the existing task journal with a unique even
 
 ## Validation
 
+The optional `CommunicationV1Deps.namesOnly` contract sends only `{id}` options and omits the duplicated capability descriptions. It requires a compatible communication resolver; do not enable it against a resolver that still requires descriptions. This bounded vertical still advertises only its registered health/capabilities handlers and agent fallback: it is not discovery or dispatch of the full profile's native MCP catalogue. Native method discovery, permission-filtered bindings and selected-instruction dispatch must be proven separately before claiming that broader scenario.
+
 ```bash
 npm run typecheck
 npm test -- tests/communication-v1.test.ts tests/p16-route-policy.test.ts tests/p17-reply-or-route.test.ts tests/p20-catalog-brief.test.ts tests/task-store-consistency.test.ts

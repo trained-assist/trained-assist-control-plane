@@ -4,6 +4,8 @@ import { CfWorkflowPort } from '../src/workflow-port/workflow-port';
 import { runnerExternalStopPort, type ExternalStopContext, type ExternalStopPort } from '../src/workflow-port/external-stop';
 import { RunnerApiAdapter, type RunnerResult, type RunnerStatusView } from '../src/runner-adapter/runner-api-adapter';
 import { env } from './env';
+import worker from '../src/index';
+import { signPrincipal } from '../src/auth/principal-auth';
 
 let sequence = 0;
 const nativeRunId = 'run_00000000-0000-0000-0000-000000000001';
@@ -39,6 +41,89 @@ async function setup(withNative = true) {
 }
 
 describe('native cancellation requires actual terminal evidence', () => {
+  it('signed HTTP status and cancellation retry expose durable proof only to the owning profile', async () => {
+    const fixture = await setup();
+    const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
+    const cancelled = await port.cancel(fixture.taskId);
+    const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'fixture-http-secret' };
+    for (const profileId of [fixture.context.profileId, 'foreign-profile']) {
+      const principalId = `${fixture.taskId}:${profileId}`;
+      await fixture.store.upsertPrincipal({ principalId, profileId, scopes: ['tasks:read', 'tasks:control'] });
+      const signature = await signPrincipal(principalId, bindings.PRINCIPAL_SECRET);
+      for (const path of ['/status', '/cancel']) {
+        const response = await worker.fetch(new Request(`https://control.invalid${path}`, { method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-principal': principalId, 'x-principal-sig': signature },
+          body: JSON.stringify({ taskId: fixture.taskId }) }), bindings);
+        expect(response.status).toBe(profileId === fixture.context.profileId ? 200 : 403);
+        if (response.ok) {
+          const body = await response.json() as { nativeStops: unknown; taskStore?: { profile_id: string }; stopConfirmed?: boolean };
+          expect(body.nativeStops).toEqual(cancelled.nativeStops);
+          if (path === '/status') expect(body.taskStore?.profile_id).toBe(profileId);
+          else expect(body.stopConfirmed).toBe(true);
+        }
+      }
+    }
+    expect(fixture.adapter.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('persists minimal exact native evidence and reads it through a fresh port without another cancellation', async () => {
+    const fixture = await setup();
+    fixture.result.logPath = 'private-host-path';
+    const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
+    const cancelled = await port.cancel(fixture.taskId);
+    const proof = { taskId: fixture.taskId, profileId: fixture.context.profileId, attemptId: fixture.attempt.id,
+      runId: fixture.context.runId, ownerGeneration: fixture.attempt.generation, state: 'cancelled', exitObserved: true };
+    expect(cancelled.nativeStops).toEqual([proof]);
+    const freshStore = new TaskStore(env.DB);
+    const freshPort = new CfWorkflowPort(fixture.workflow, freshStore);
+    const status = await freshPort.status(fixture.taskId);
+    expect(status.taskStore?.profile_id).toBe(fixture.context.profileId);
+    expect(status.nativeStops).toEqual([proof]);
+    expect((await freshPort.cancel(fixture.taskId))).toMatchObject({ cancelled: true, stopConfirmed: true, nativeStops: [proof] });
+    expect(fixture.adapter.cancel).toHaveBeenCalledOnce();
+    expect(fixture.terminate).toHaveBeenCalledOnce();
+    expect(JSON.stringify(cancelled.nativeStops)).not.toContain('private-host-path');
+    const event = (await freshStore.history(fixture.taskId)).find(event => event.kind === 'task_cancelled');
+    expect(JSON.parse(event!.payload_json).nativeStops).toEqual([proof]);
+  });
+
+  for (const mismatch of ['profile', 'task', 'attempt', 'run', 'generation', 'event_generation', 'source', 'unobserved']) {
+    it(`durable ${mismatch} mismatch is not native stop evidence`, async () => {
+      const fixture = await setup();
+      const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
+      const outcome = await port.cancel(fixture.taskId);
+      const proof = { ...outcome.nativeStops![0]! };
+      if (mismatch === 'profile') proof.profileId = 'foreign-profile';
+      if (mismatch === 'task') proof.taskId = 'foreign-task';
+      if (mismatch === 'attempt') proof.attemptId = 'foreign-attempt';
+      if (mismatch === 'run') proof.runId = nativeRunId === proof.runId ? 'run_00000000-0000-0000-0000-000000000002' : nativeRunId;
+      if (mismatch === 'generation') proof.ownerGeneration += 1;
+      const payload = { nativeStops: [{ ...proof, ...(mismatch === 'unobserved' ? { exitObserved: false } : {}) }] };
+      await env.DB.prepare(`UPDATE task_events SET payload_json = ?, generation = ?, source = ?
+        WHERE user_task_id = ? AND kind = 'task_cancelled'`)
+        .bind(JSON.stringify(payload), outcome.generation! + (mismatch === 'event_generation' ? 1 : 0),
+          mismatch === 'source' ? 'executor' : 'gateway', fixture.taskId).run();
+      expect((await port.status(fixture.taskId)).nativeStops).toEqual([]);
+      expect((await port.cancel(fixture.taskId)).stopConfirmed).toBe(false);
+      expect(fixture.adapter.cancel).toHaveBeenCalledOnce();
+    });
+  }
+
+  it('pending native cancellation exposes no terminal evidence', async () => {
+    const fixture = await setup();
+    fixture.status.state = 'running';
+    const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
+    expect((await port.cancel(fixture.taskId)).stopConfirmed).toBe(false);
+    expect((await port.status(fixture.taskId)).nativeStops).toEqual([]);
+  });
+
+  it('bare UUID is not normalized or submitted as a native cancellation identity', async () => {
+    const fixture = await setup();
+    const hook = runnerExternalStopPort(fixture.adapter);
+    expect(await hook.stop({ ...fixture.context, runId: fixture.context.runId!.slice(4) })).toEqual({ state: 'unknown' });
+    expect(fixture.adapter.cancel).not.toHaveBeenCalled();
+  });
+
   it('real Runner HTTP adapter sends exact original-generation cancel before status/result readback', async () => {
     const fixture = await setup();
     const requests: Array<{ path: string; method: string; body: unknown }> = [];

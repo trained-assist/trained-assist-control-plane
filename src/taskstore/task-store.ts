@@ -40,6 +40,7 @@ import {
   type AwaitingPurpose,
   type ConversationRow,
   type EventSource,
+  type NativeStopEvidence,
   type PendingInputRow,
   type WatchdogHealthRow,
   type StuckInputAlertRow,
@@ -1651,7 +1652,7 @@ export class TaskStore {
    */
   async confirmCancel(
     taskId: string,
-    opts: { source?: EventSource; reason?: string; expectedGeneration?: number } = {},
+    opts: { source?: EventSource; reason?: string; expectedGeneration?: number; nativeStops?: NativeStopEvidence[] } = {},
   ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
     const now = Date.now();
     const before = await this.getTask(taskId);
@@ -1697,6 +1698,7 @@ export class TaskStore {
         closedAwaiting: true,
         stopConfirmed: true,
         deliveriesSuppressed: suppressed,
+        ...(opts.nativeStops ? { nativeStops: opts.nativeStops } : {}),
       },
     });
     return { cancelled: true, generation: after.generation, status: 'cancelled' };
@@ -2245,7 +2247,7 @@ export class TaskStore {
 
   /** Приёмочный запрос §6.1: статус + история + сигналы + ожидание одним SQL. */
   static readonly STATUS_SQL = `
-    SELECT t.id, t.status, t.stage, t.generation, t.revision, t.result_json, t.conversation_id,
+    SELECT t.id, t.profile_id, t.status, t.stage, t.generation, t.revision, t.result_json, t.conversation_id,
            t.awaiting_input_id, t.delivery_state, t.updated_at,
       (SELECT json_group_array(json_object('id', e.id, 'kind', e.kind, 'step', e.task_item_id,
                                             'before', e.status_before, 'after', e.status_after,
@@ -2261,6 +2263,7 @@ export class TaskStore {
 
   async statusRow(taskId: string): Promise<{
     id: string;
+    profile_id: string;
     status: TaskStatus;
     stage: TaskStage | null;
     generation: number;
@@ -2276,6 +2279,7 @@ export class TaskStore {
   } | null> {
     const row = await this.db.prepare(TaskStore.STATUS_SQL).bind(taskId).first<{
       id: string;
+      profile_id: string;
       status: TaskStatus;
       stage: TaskStage | null;
       generation: number;
@@ -2293,6 +2297,7 @@ export class TaskStore {
     const parse = (v: string | null, fallback: unknown) => (v == null ? fallback : JSON.parse(v));
     return {
       id: row.id,
+      profile_id: row.profile_id,
       status: row.status,
       stage: row.stage,
       generation: row.generation,

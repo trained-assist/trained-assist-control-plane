@@ -104,6 +104,15 @@ describe('communication MCP client', () => {
 });
 
 describe('v1 routing', () => {
+  it('passes a closed names-only option list without duplicating capability descriptions', async () => {
+    const select = vi.fn(selection('system_health'));
+    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select, health: healthy, namesOnly: true } });
+    const payload = select.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(payload[0].decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
+    expect(payload[0]).not.toHaveProperty('capabilities');
+    expect(result.decision.capabilityId).toBe('system_health');
+  });
+
   it.each(['Работает?', 'Система ещё отвечает?', 'Проверишь доступность помощника?'])('routes paraphrases through the shared selector: %s', async (text) => {
     const select = vi.fn(selection('system_health'));
     const result = await routeRequest(await routingInput(text), { communicationV1: { select, health: healthy } });

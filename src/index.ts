@@ -29,6 +29,7 @@ import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
+import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -65,6 +66,8 @@ import {
 } from './output';
 
 export interface Env {
+  NATIVE_CANCEL_CONFIRMATION?: string;
+  ROUTER_SELECTOR_NAMES_ONLY?: string;
   ROUTER_SELECTOR?: string;
   COMMUNICATION_API_URL?: string;
   COMMUNICATION_SERVICE?: Fetcher;
@@ -284,7 +287,12 @@ const credentialExecutionOf = (env: Env) => {
 };
 
 const workflowPortOf = (env: Env, store: TaskStore) =>
-  new CfWorkflowPort(env.TASK_WORKFLOW, store, credentialExecutionOf(env));
+  new CfWorkflowPort(env.TASK_WORKFLOW, store, credentialExecutionOf(env), env.NATIVE_CANCEL_CONFIRMATION === 'true' ? {
+    async stop(context) {
+      const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, context.profileId);
+      return runtime.adapter ? runnerExternalStopPort(runtime.adapter).stop(context) : { state: 'unknown' };
+    },
+  } : undefined);
 
 const scheduleServiceOf = (env: Env, store: TaskStore, port: CfWorkflowPort, clock?: Clock): ScheduleService =>
   new ScheduleService({
@@ -417,7 +425,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter) } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter) } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({

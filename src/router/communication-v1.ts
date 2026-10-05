@@ -43,6 +43,7 @@ export function agentConversationInstructions(input: Pick<PreparedInput, 'text' 
 }
 
 export interface CommunicationV1Deps {
+  namesOnly?: boolean;
   select: (input: Record<string, unknown>) => Promise<IntentSelection>;
   health: () => Promise<{ runner: 'reachable' | 'unreachable' | 'not_configured' | 'unknown'; checkedAt: string }>;
   write?: (input: Record<string, unknown>) => Promise<string>;
@@ -83,9 +84,9 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
         attachments: input.prepared.attachments.map((attachment) => ({ id: attachment.artifactRef, name: attachment.artifactRef, resource_ref: attachment.artifactRef, content_status: 'metadata_only' })),
       },
       recipient: { role: 'Ты сам — помощник trained-assist и система, к которой пользователь обращается в этом диалоге.', persona: 'Пользователь может спрашивать о твоей работоспособности или возможностях коротко, без имени системы. Выбери quick answer, который выполнит проверку после выбора, либо агентскую задачу.' },
-      decision_options: [...allowed.map(({ id, description, applicability }) => ({ id, description, applicability })),
+      decision_options: deps.namesOnly ? [...allowed.map(({ id }) => ({ id })), { id: 'agent' }] : [...allowed.map(({ id, description, applicability }) => ({ id, description, applicability })),
         { id: 'agent', description: 'Выполнить любую задачу, не покрытую целиком одним доступным quick answer; сохранить все подзадачи и ограничения.', applicability: 'Составные запросы, работа с файлами, внешние действия, непонятные запросы и продолжения задач. Не подходит для самостоятельного вопроса о работоспособности самого помощника или его возможностях, если такой quick answer доступен.' }],
-      capabilities: visible.map((entry) => ({ id: entry.id, title: entry.title, description: `Режимы: ${entry.supportedModes.join(', ')}; источник: ${entry.dataSource}; эффект: ${entry.effect}.`, version: String(entry.version), availability: entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'granted_readiness_unverified' : 'not_connected') : 'registered' })),
+      ...(deps.namesOnly ? {} : { capabilities: visible.map((entry) => ({ id: entry.id, title: entry.title, description: `Режимы: ${entry.supportedModes.join(', ')}; источник: ${entry.dataSource}; эффект: ${entry.effect}.`, version: String(entry.version), availability: entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'granted_readiness_unverified' : 'not_connected') : 'registered' })) }),
       dialog_context: input.prepared.durableContext ?? { history: [], active_tasks: [] },
       options: { language: 'ru' },
     });
