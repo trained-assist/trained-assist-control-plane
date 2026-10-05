@@ -17,7 +17,7 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
-import { awaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
+import { awaitRunnerResult, type AwaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
 import { RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
@@ -649,20 +649,31 @@ export async function conversationPlan(
   // артефакты. connection_lost — неизвестный исход, не failed, без авто-rerun.
   let engine: EngineRun | null = null;
   if (adapter && runnerRunId) {
-    const outcome = await ctx.step('await-runner', () =>
-      awaitRunnerResult(adapter, store, {
-        runId: runnerRunId,
-        taskId,
-        generation,
-        engineName: p.runnerEngine ?? 'opencode',
-        pollSec: p.runnerPollSec ?? 1,
-        timeoutSec: runnerResultTimeoutSec,
-      }),
-      { limit: 2, delaySec: 1, timeoutSec: Math.ceil(runnerResultTimeoutSec) + 60 },
-    );
+    let observation = 0;
+    let outcome: AwaitRunnerResult;
+    for (;;) {
+      outcome = await ctx.step(observation === 0 ? 'await-runner' : `await-runner-reconcile-${observation}`, () =>
+        awaitRunnerResult(adapter, store, {
+          runId: runnerRunId,
+          taskId,
+          generation,
+          engineName: p.runnerEngine ?? 'opencode',
+          pollSec: p.runnerPollSec ?? 1,
+          timeoutSec: runnerResultTimeoutSec,
+        }),
+        { limit: 2, delaySec: 1, timeoutSec: Math.ceil(runnerResultTimeoutSec) + 60 },
+      );
+      if (outcome.ok || !['connection_lost', 'runner_unavailable', 'runner_timeout'].includes(outcome.reason)) break;
+      const reason = outcome.reason;
+      await ctx.step(`runner-observation-unknown-${observation}`, () => store.logEvent({
+        taskId, generation, kind: 'error', source: 'executor', executionId: runnerRunId,
+        payload: { class: reason, outcome: 'unknown', runId: runnerRunId, ownerGeneration: generation,
+          reconciliation: 'same_accepted_run', observation },
+      }));
+      await ctx.sleep(`runner-reconcile-backoff-${observation}`, Math.min(60, 15 * 2 ** Math.min(observation, 2)));
+      observation += 1;
+    }
     if (!outcome.ok) {
-      if (outcome.reason === 'connection_lost') return { ok: false, reason: 'connection_lost' };
-      if (outcome.reason === 'runner_unavailable') return { ok: false, reason: 'runner_unavailable' };
       return { ok: false, reason: outcome.reason };
     }
     const runnerResult = outcome.result;

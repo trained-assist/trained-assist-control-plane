@@ -344,8 +344,8 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
         { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerPollSec: 1, runnerTimeoutSec: 120 },
         { adapter: { ...adapter, submit, status } as unknown as RunnerApiAdapter,
           runSpecPolicy: runSpecPolicyOf({ RUN_SPEC_TIMEOUT_MS: '240000', RUN_SPEC_STARTUP_TIMEOUT_MS: '600000' }) });
-      expect(outcome.ok).toBe(ok);
-      if (!ok) expect(outcome.reason).toBe('runner_timeout');
+      expect(outcome.ok).toBe(true);
+      if (!ok) expect((await store.history(taskId)).some(event => event.payload_json.includes('runner_timeout'))).toBe(true);
       expect(submit).toHaveBeenCalledTimes(1);
       expect(await store.listRuns(taskId)).toHaveLength(1);
       expect((await store.requireTask(taskId)).generation).toBe(1);
