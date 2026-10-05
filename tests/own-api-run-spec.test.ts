@@ -79,11 +79,19 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(() => buildRunSpec({ ...baseInput, prompt: '   ' }, policy)).toThrow(RunSpecMappingError);
   });
 
-  it('многострочный prompt нормализуется (контракт Runner\'а не пропускает control chars)', () => {
-    const built = buildRunSpec({ ...baseInput, prompt: 'первая\nвторая\tтретья' }, policy);
-    expect(built.promptNormalized).toBe(true);
-    expect(built.spec.input?.inlinePrompt).toBe('первая вторая третья');
+  it('preserves multiline goal and full instructions without normalization', () => {
+    const prompt = '  первая\r\nвторая\tтретья  ';
+    const instructions = 'Original context:\n```\n  keep whitespace\n```\n';
+    const built = buildRunSpec({ ...baseInput, prompt, instructions }, policy);
+    expect(built.promptNormalized).toBe(false);
+    expect(toSubmitRequest(built.spec).input?.inlinePrompt).toBe(`${prompt}\n\nAdditional instructions:\n${instructions}`);
     expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('rejects oversized combined context and unsupported controls rather than truncating', () => {
+    expect(() => buildRunSpec({ ...baseInput, instructions: 'x'.repeat(100_000) }, policy)).toThrow(RunSpecMappingError);
+    expect(() => buildRunSpec({ ...baseInput, prompt: 'before\x00after' }, policy)).toThrow(RunSpecMappingError);
+    expect(() => buildRunSpec({ ...baseInput, instructions: 'before\x7fafter' }, policy)).toThrow(RunSpecMappingError);
   });
 
   it('runId стабилен для той же задачи и поколения — идемпотентность на стороне хоста', () => {
@@ -105,6 +113,7 @@ describe('run-spec: хостовая политика из bindings', () => {
       repository: null,
       resultDestinationRef: null,
       maxOutputBytes: null,
+      inputRefs: [],
     });
   });
 
@@ -139,6 +148,32 @@ describe('run-spec: хостовая политика из bindings', () => {
   it('envAllowlist принимает только имена переменных, не значения', () => {
     expect(() => runSpecPolicyOf({ RUN_SPEC_ENV_ALLOWLIST: 'A=1' })).toThrow(RunSpecMappingError);
     expect(runSpecPolicyOf({ RUN_SPEC_ENV_ALLOWLIST: 'A, B_C' }).envAllowlist).toEqual(['A', 'B_C']);
+  });
+
+  it('uses explicit host repository, input refs and runtime limits with no project inference', () => {
+    const hostPolicy = runSpecPolicyOf({
+      RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'trained-assist/ai-agent-runner' }),
+      RUN_SPEC_INPUT_REFS: JSON.stringify([{ ref: 'artifact://host-input.md', version: 'v1' }]),
+      RUN_SPEC_TIMEOUT_MS: '240000',
+      RUN_SPEC_ENV_ALLOWLIST: 'LANG',
+    });
+    const body = toSubmitRequest(buildRunSpec({ ...baseInput, engineName: 'dynamic-ip-azure-agent-run', refs: [{ ref: 'artifact://user-input.md' }] }, hostPolicy).spec);
+    expect(body.repository).toEqual({ fullName: 'trained-assist/ai-agent-runner' });
+    expect(body.input?.refs).toEqual([{ ref: 'artifact://host-input.md', version: 'v1' }, { ref: 'artifact://user-input.md' }]);
+    expect(body.limits.timeoutMs).toBe(240_000);
+    expect(body.envAllowlist).toEqual(['LANG']);
+    expect(toSubmitRequest(buildRunSpec(baseInput, policy).spec).repository).toBeUndefined();
+    expect(() => buildRunSpec(baseInput, runSpecPolicyOf({ RUN_SPEC_INPUT_REFS: '{}' }))).toThrow(RunSpecMappingError);
+    expect(() => runSpecPolicyOf({ RUN_SPEC_TIMEOUT_MS: '0' })).toThrow(RunSpecMappingError);
+  });
+
+  it('only the explicitly selected integration host profile supplies a repository default', () => {
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).repository).toEqual({ fullName: 'trained-assist/ai-agent-runner' });
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).timeoutMs).toBe(300_000);
+    expect(buildRunSpec(baseInput, runSpecPolicyOf({})).spec.limits.timeoutMs).toBe(baseInput.timeoutMs);
+    expect(runSpecPolicyOf({ ROUTER_SELECTOR: 'communication_v1' }).repository).toBeNull();
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1', RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'explicit/override' }) }).repository).toEqual({ fullName: 'explicit/override' });
+    expect(() => runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'invented' })).toThrow(RunSpecMappingError);
   });
 
   it('относительный путь выхода и небезопасный repository отклоняются локально', () => {
@@ -240,7 +275,7 @@ describe('run-spec: собранный RunSpec проходит локальну
     expect(mutate((s) => { s.cwd = '../../etc'; }).ok).toBe(false);
     expect(mutate((s) => { s.envAllowlist = ['A=1']; }).ok).toBe(false);
     expect(mutate((s) => { s.outputs = [{ path: '/abs' }]; }).ok).toBe(false);
-    expect(mutate((s) => { s.input = { inlinePrompt: 'a\nb' }; }).ok).toBe(false);
+    expect(mutate((s) => { s.input = { inlinePrompt: 'a\x00b' }; }).ok).toBe(false);
     expect(mutate((s) => { s.engine = { name: '', adapterVersion: '1' }; }).ok).toBe(false);
     expect(mutate((s) => { s.limits = { timeoutMs: 0 }; }).ok).toBe(false);
     expect(mutate((s) => { s.repository = { fullName: 'x' }; }).ok).toBe(false);

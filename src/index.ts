@@ -89,6 +89,16 @@ export interface Env {
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  RUN_SPEC_POLICY_PROFILE?: string;
+  RUN_SPEC_REPOSITORY?: string;
+  RUN_SPEC_INPUT_REFS?: string;
+  RUN_SPEC_CWD?: string;
+  RUN_SPEC_ENV_ALLOWLIST?: string;
+  RUN_SPEC_OUTPUTS?: string;
+  RUN_SPEC_MCP?: string;
+  RUN_SPEC_RESULT_DESTINATION_REF?: string;
+  RUN_SPEC_TIMEOUT_MS?: string;
+  RUN_SPEC_MAX_OUTPUT_BYTES?: string;
   /**
    * Секрет проверки личности принципала (HMAC). Только из binding
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
