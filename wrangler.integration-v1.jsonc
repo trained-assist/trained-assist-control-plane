@@ -24,6 +24,7 @@
     "ROUTER_SELECTOR": "communication_v1",
     "ROUTER_CONTINUATION_ENABLED": "true",
     "ROUTER_AGENT_ALLOWED": "true",
+    "ROUTER_AGENT_ENGINE": "dynamic-ip-azure-agent-run",
     "PILOT_ENABLED": "true",
     "PILOT_COHORT_PROFILE_IDS": "integration-v1",
     "DELIVERY_ADAPTER": "local"
