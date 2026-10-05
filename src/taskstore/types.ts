@@ -113,6 +113,8 @@ export interface CpStopTarget {
   userTaskId: string;
   profileId: string;
   receiptId: string;
+  taskGeneration: number;
+  attempts: { attemptId: string; ownerGeneration: number; runId: string | null; idempotencyKey: string }[];
 }
 
 export interface CpStopWindowRow {

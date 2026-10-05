@@ -72,7 +72,7 @@ export interface CpStopTargetsResponse {
 }
 
 export interface CpStopPort {
-  cancel(taskId: string, opts?: { reason?: string }): Promise<{
+  cancel(taskId: string, opts?: { reason?: string; stopPin?: { target: CpStopTarget; snapshotId: string } }): Promise<{
     stopConfirmed: boolean;
     nativeStopState?: 'pending' | 'rejected' | 'unknown';
   }>;
@@ -161,7 +161,14 @@ export class CpStopTargetsService {
       const targets = JSON.parse(window.targets_json) as CpStopTarget[];
       return Array.isArray(targets) && targets.every(target => target && typeof target.requestId === 'string'
         && typeof target.userTaskId === 'string' && typeof target.profileId === 'string'
-        && typeof target.receiptId === 'string') ? targets : null;
+        && target.profileId === window.profile_id && typeof target.receiptId === 'string'
+        && Number.isSafeInteger(target.taskGeneration) && target.taskGeneration > 0
+        && Array.isArray(target.attempts) && target.attempts.every(attempt => attempt
+          && typeof attempt.attemptId === 'string' && attempt.attemptId.length > 0
+          && Number.isSafeInteger(attempt.ownerGeneration) && attempt.ownerGeneration > 0
+          && (attempt.runId === null || /^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(attempt.runId))
+          && typeof attempt.idempotencyKey === 'string')
+        && new Set(target.attempts.map(attempt => attempt.attemptId)).size === target.attempts.length) ? targets : null;
     } catch { return null; }
   }
 
@@ -182,7 +189,8 @@ export class CpStopTargetsService {
     let unknown = false;
     for (const target of tasks) {
       let outcome: { stopConfirmed: boolean; nativeStopState?: 'pending' | 'rejected' | 'unknown' };
-      try { outcome = await this.port.cancel(target.userTaskId, { reason: `cp_stop_window:${window.snapshot_id}` }); }
+      try { outcome = await this.port.cancel(target.userTaskId, { reason: `cp_stop_window:${window.snapshot_id}`,
+        stopPin: { target, snapshotId: window.snapshot_id } }); }
       catch { outcome = { stopConfirmed: false, nativeStopState: 'unknown' }; }
       if (!outcome.stopConfirmed) {
         if (outcome.nativeStopState === 'pending') pending = true;

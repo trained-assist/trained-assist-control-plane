@@ -7,6 +7,7 @@ import type {
   ArtifactRow,
   AwaitingPurpose,
   DeliveryRow,
+  CpStopTarget,
   RunAttemptRow,
   SignalSource,
   TaskStore,
@@ -354,7 +355,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
    * статус cancelled ставится только после подтверждения остановки. Если
    * остановка не удалась — задача остаётся не-терминальной, виден cancel_requested.
    */
-  async cancel(taskId: string, opts: { reason?: string } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
+  async cancel(taskId: string, opts: { reason?: string; stopPin?: { target: CpStopTarget; snapshotId: string } } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
+    if (opts.stopPin) return this.cancelPinned(taskId, opts.stopPin);
     const requested = await this.store.requestCancel(taskId, { reason: opts.reason });
     if (!requested.requested) {
       const verified = await this.verifyTerminalNativeStops(taskId, opts.reason);
@@ -457,6 +459,59 @@ export class CfWorkflowPort implements WorkflowPortApi {
       nativeStops: await this.nativeStopEvidence(taskId),
       ...(nativeStopState && !confirmed.cancelled ? { nativeStopState } : {}),
     };
+  }
+
+  private async cancelPinned(taskId: string, pin: { target: CpStopTarget; snapshotId: string }): Promise<CancelResult & { stopConfirmed: boolean }> {
+    const unresolved: CancelResult & { stopConfirmed: boolean } = {
+      cancelled: false, stopConfirmed: false, nativeStopState: 'unknown',
+    };
+    const { target, snapshotId } = pin;
+    if (target.userTaskId !== taskId) return unresolved;
+    const generation = await this.store.claimCpStopTarget(target, snapshotId);
+    if (generation === null) return unresolved;
+    const matches = () => this.store.cpStopTargetMatches(target, snapshotId, generation);
+    const nativeStops: NativeStopEvidence[] = [];
+    const known = await this.nativeStopEvidence(taskId);
+    for (const attempt of target.attempts) {
+      if (!await matches()) return unresolved;
+      if (!attempt.runId) {
+        const run = await this.store.requireRun(attempt.attemptId);
+        if (run.finished_at === null || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.attemptId)) return unresolved;
+        continue;
+      }
+      const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === attempt.runId
+        && value.ownerGeneration === attempt.ownerGeneration && value.profileId === target.profileId);
+      if (proof) { nativeStops.push(proof); continue; }
+      if (!this.externalStop || !await matches()) return unresolved;
+      const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
+        runId: attempt.runId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
+      const outcome = await this.externalStop.stop(context);
+      if (!confirmedExternalStop(context, outcome) || outcome.state !== 'stopped') {
+        return { ...unresolved, nativeStopState: outcome.state === 'pending' ? 'pending' : 'unknown' };
+      }
+      if (!await matches()) return unresolved;
+      const state = outcome.result.outcome;
+      if (!await this.store.finishCpStopAttempt(target, snapshotId, generation, attempt.attemptId,
+        state === 'succeeded' ? 'success' : state)) return unresolved;
+      if (!await matches()) return unresolved;
+      const observed: NativeStopEvidence = { taskId, profileId: target.profileId,
+        attemptId: attempt.attemptId, runId: attempt.runId, ownerGeneration: attempt.ownerGeneration,
+        state, exitObserved: true };
+      if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, observed)) return unresolved;
+      nativeStops.push(observed);
+    }
+    if (!await matches()) return unresolved;
+    const task = await this.store.requireTask(taskId);
+    if (isTerminalStatus(task.status)) return { cancelled: task.status === 'cancelled', stopConfirmed: true,
+      generation, status: task.status, nativeStops };
+    try {
+      const instance = await this.wf.get(taskId);
+      if (!['terminated', 'complete', 'errored'].includes((await instance.status()).status)) return unresolved;
+    } catch { return unresolved; }
+    if (!await matches()) return unresolved;
+    const result = await this.store.confirmCancel(taskId, { expectedGeneration: generation,
+      reason: `cp_stop_window:${snapshotId}`, nativeStops, stopPin: pin });
+    return { ...result, cancelled: result.cancelled, stopConfirmed: result.cancelled, nativeStops };
   }
 
   async status(taskId: string): Promise<PortStatusResult> {
