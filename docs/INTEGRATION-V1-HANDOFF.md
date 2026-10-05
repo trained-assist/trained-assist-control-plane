@@ -7,7 +7,7 @@ The deployed contour is isolated test infrastructure. Production traffic is unch
 
 | Component | Source / review | Runtime |
 | --- | --- | --- |
-| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), runtime code `844fdef`, cron-pause configuration `110457c` | Separate sandbox Worker; temporary owner-approved test bot, single private chat allowlist and signed webhook configured; own cron paused after a delivery race |
+| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), deployed source `325f184`; durable-owner fix [PR354](https://github.com/trained-assist/trained-assist-tg-bot/pull/354) | Separate sandbox Worker and SQLite Durable Object; temporary owner-approved test bot, single private chat allowlist, signed webhook restored after verified quarantine cutover; scheduled cron remains disabled |
 | Communication methods | [PR18](https://github.com/trained-assist/trained-assist-communication-skills/pull/18), `4a64612` | Separate communication Worker |
 | Control plane | [PR43](https://github.com/trained-assist/trained-assist-control-plane/pull/43); deployed runtime code includes `c41db51` | Separate Worker, D1 and Workflow; scoped credential host enabled |
 | Runner | [PR131](https://github.com/trained-assist/ai-agent-runner/pull/131), `97956c5` | Own permanent, boot-enabled VM unit; separate key registry/journal; Google MCP off |
@@ -30,7 +30,8 @@ hostname remain the production transport gate. Shared units/tunnels stay unchang
 | User/preflight/wrong-binding readiness | PASS refusal | Ordinary principal 403; preflight and changed binding 409; one durable credential completion/signal retained |
 | Own Runner restart | PASS terminal recovery | Both canonical CSV results/artifacts unchanged, one admission/dispatch/model launch each |
 | Mandatory output omitted | PASS expected failure | `ut-3364752a81741b5e0e54`, `run_caf880bb-ce25-441f-99b8-9b1aec48f9e3`; task failed/finished, one failed attempt, `ARTIFACTS_MISSING`, zero artifacts |
-| Real Telegram ingress/delivery | FAIL replay safety | Controlled health/capabilities reach done with zero engine attempts and actual Bot API responses, but capabilities receipt and terminal provider IDs changed on independent readback; durable single-writer delivery fix and post-handoff human message verification pending |
+| Historical Telegram delivery | FAIL replay safety, quarantined | Old capabilities receipt/terminal provider IDs changed on independent readback; both old tasks and four delivery records quarantined, not resent or relabelled as successful |
+| Post-cutover controlled Telegram health/capabilities | PASS scoped quick-answer delivery | `ut-4593cff37c0fbd03ecad` and `ut-90860cc5c147cbf22d63`, generation 1, zero engine attempts; health receipt/terminal 1369/1370 remain unchanged after eight concurrent reconciliations; capabilities 1371/1372 after exact-body reconciliation of initial HTTP 500; genuine human smoke still pending |
 | Real Google Sheet and monthly follow-up | BLOCKED | Dedicated Sheet approved; exact SA authenticates, but Drive metadata returns 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
 Both successful CSV outputs have 35 bytes, SHA-256
@@ -50,10 +51,15 @@ task, generation and zero engine attempts. Controlled capabilities
 `ut-f34f5dfc8e1c48f57bdb` has conflicting receipt IDs 1364/1363 and terminal IDs
 1365/1366 for the same logical deliveries. Earlier successful smoke snapshots
 therefore do not establish replay-safe delivery. Concurrent drains reproduce two
-provider calls offline even with strongly consistent fake KV. Own cron is paused;
-do not repeat live ingress/cron probes until the delivery owner is fixed. Existing
-KV deliveries must not be blindly imported or resent, and ambiguous provider ACKs
-must not be treated as definite failures eligible for automatic retries.
+provider calls offline even with strongly consistent fake KV. The sandbox now uses
+a reviewed SQLite Durable Object owner with a durable pre-send claim. An operator
+cutover manifest matched the authoritative CP conversation inventory: two terminal
+tasks and four legacy deliveries. Signed readback proved their quarantine while
+delivery was paused; only then was delivery enabled and the webhook restored,
+without dropping queued updates. Scheduled cron remains disabled. Unknown provider
+ACKs are held without automatic retries. The initial post-cutover capabilities HTTP
+500 remains in evidence; identical saved update bytes reconciled to one task and
+zero engine attempts. This does not prove the original transport error's cause.
 
 ## Repeat read-only checks
 
