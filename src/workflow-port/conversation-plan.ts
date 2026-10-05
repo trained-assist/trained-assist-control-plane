@@ -517,7 +517,6 @@ export async function conversationPlan(
       runSpecPolicy,
     );
     runnerResultTimeoutSec = (runSpec.spec.limits.timeoutMs + (runSpecPolicy.startupTimeoutMs ?? 0)) / 1000;
-    runnerDeclaredOutputs = runSpec.spec.outputs?.map(output => output.path) ?? [];
     logRunSpecBuilt({
       profileId: taskProfileId,
       userTaskId: taskId,
@@ -535,11 +534,12 @@ export async function conversationPlan(
       'submit-runner',
       async () => {
         try {
-          return await adapter.submit({
+          const submitted = await adapter.submit({
             userTaskId: taskId,
             idempotencyKey: attemptKey,
             runSpec: runSpec.spec,
           });
+          return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [] };
         } catch (e) {
           // Любой отказ Runner на этапе submit — неизвестный исход попытки, а не
           // «failed»: задача не теряется, авто-rerun нет, повтор с тем же ключом
@@ -562,6 +562,7 @@ export async function conversationPlan(
       { limit: 8, delaySec: 3 },
     );
     runnerRunId = receipt.runId;
+    runnerDeclaredOutputs = receipt.declaredOutputPaths;
     // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
     if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId);
     await store.logEvent({
@@ -579,7 +580,7 @@ export async function conversationPlan(
         // Что реально ушло в Runner: манифест выходов и ссылки. Без этого
         // «объявленные выходы не экспортируются» не отличить от «не объявлены».
         runSpec: {
-          outputs: runSpec.spec.outputs?.map((o) => o.path) ?? [],
+          outputs: runnerDeclaredOutputs ?? null,
           refs: runSpec.spec.input?.refs?.length ?? 0,
           promptNormalized: runSpec.promptNormalized,
           mcpNotTransmitted: false,
