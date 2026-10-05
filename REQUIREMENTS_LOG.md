@@ -4,6 +4,7 @@ Source: trained-assist/trained-agent-architecture#140, owner request 2026-10-05.
 
 | ID | Status | Requirement | Validation |
 |---|---|---|---|
+| UX-CRED-01 | active | The Telegram generic profile may request only the host-configured LLM_LADDER_TOKEN name for model authentication. No values enter CP, no implicit grant is created, and host/MCP/GCP credentials remain excluded. Empty envAllowlist caused actual missing model credential and provider401; isolation must not remove the engine's own authorized model credential. | Trusted profile/body regression, mixed-host-name rejection and unchanged historical policy |
 | V1-01 | active | Explicit ROUTER_SELECTOR=communication_v1; fixture routing stays default. Ordinary text uses resolve_user_intent with only system_health, catalog.brief, agent. | Selector and HTTP tests |
 | V1-02 | active | Preserve complete durable conversation input/result context. Invalid, unavailable or oversized classification falls back to agent with original input. | Failure and context tests |
 | V1-03 | active | Health proves component reachability only. Capabilities describe catalog/grants and distinguish unverified integration readiness. | Handler tests |

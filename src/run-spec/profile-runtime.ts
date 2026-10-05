@@ -42,7 +42,8 @@ export function resolveProfileRuntime(
     || !env.RUNNER_API_KEY_TELEGRAM_UX?.trim()
     || env.RUNNER_API_KEY_TELEGRAM_UX === env.RUNNER_API_KEY) return fail();
   return {
-    policy: { ...policy, outputs: [], inputRefs: [], mcp: null, envAllowlist: [] },
+    policy: { ...policy, outputs: [], inputRefs: [], mcp: null,
+      envAllowlist: policy.envAllowlist.filter(name => name === 'LLM_LADDER_TOKEN') },
     adapter: runnerAdapterOf({ RUNNER_API_URL: env.RUNNER_API_URL, RUNNER_API_KEY: env.RUNNER_API_KEY_TELEGRAM_UX }),
   };
 }
