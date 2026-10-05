@@ -31,3 +31,5 @@ jobs:
       # файловые операции в workerd-пуле vitest запрещены.
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
+      - name: Read-only credential boundary verifier
+        run: node --test tools/credential-boundary-verify.test.mjs
