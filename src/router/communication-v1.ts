@@ -38,6 +38,10 @@ export async function durableConversationContext(store: TaskStore, task: TaskRow
   };
 }
 
+export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'>): string {
+  return `${input.text}\n\nИсходный принятый ввод и полный контекст диалога (результаты и ввод предыдущих задач):\n${JSON.stringify({ input: input.originalInput, dialog: input.durableContext })}`;
+}
+
 export interface CommunicationV1Deps {
   select: (input: Record<string, unknown>) => Promise<IntentSelection>;
   health: () => Promise<{ runner: 'reachable' | 'unreachable' | 'not_configured' | 'unknown'; checkedAt: string }>;
@@ -160,7 +164,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   }
   decision.modelCalls = calls;
   return { decision, decisionId: decision.decisionId, reply, askUser: null, workOrder, continuation, rendering,
-    agentInstructions: continuation ? `${input.prepared.text}\n\nИсходный принятый ввод и полный контекст диалога (результаты и ввод предыдущих задач):\n${JSON.stringify({ input: input.prepared.originalInput, dialog: input.prepared.durableContext })}` : undefined,
+    agentInstructions: continuation ? agentConversationInstructions(input.prepared) : undefined,
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
     brief: { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } },
   };

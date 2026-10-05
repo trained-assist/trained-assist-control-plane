@@ -85,6 +85,17 @@ recovery ports. Without them, readiness is durable but initial work stays pendin
 it must not silently select the legacy `opencode` engine or default budgets.
 This patch intentionally does not introduce another runtime-policy owner.
 
+Pre-execution startup also preserves the same-generation durable routing
+selection's agent instructions. When no instructions were selected, it builds
+them with the ordinary communication route's formatter from accepted input and
+Task Store history/results for the same profile and conversation. This retains
+previous Sheet/source context for follow-up tasks without treating credential
+readiness as a new goal. Readiness payloads, wait answers, provider assertions
+and host credentials are not instruction sources. Task, conversation, generation
+and existing Runner identity/idempotency mapping remain unchanged. Duplicate
+completion and recovery do not submit another attempt. This preserves context;
+it is not evidence of provider permissions or a successful external operation.
+
 Credential readiness proceeds to outstanding Runner work rather than completing
 the demo `no_engine` branch. Missing Runner configuration leaves the task
 nonterminal. An existing Runner session, unknown/interrupted attempt or checkpoint

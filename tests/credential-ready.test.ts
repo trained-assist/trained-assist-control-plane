@@ -5,12 +5,14 @@ import { conversationPlan } from '../src/workflow-port/conversation-plan';
 import type { PlanParams } from '../src/workflow-port/conversation-plan';
 import type { StepCtx } from '../src/workflow-port/step-ctx';
 import type { RunnerApiAdapter } from '../src/runner-adapter';
+import { stableAttemptKey } from '../src/runner-adapter';
 import type { CredentialReadyEvent } from '../src/awaiting/credential-ready';
 import worker from '../src/index';
 import { signPrincipal } from '../src/auth/principal-auth';
 import { dispatchAcceptedAgent } from '../src/output/communication-v1';
 import type { RouteResult } from '../src/router/service';
 import { env } from './env';
+import { agentConversationInstructions, durableConversationContext } from '../src/router/communication-v1';
 
 const requirement = { hostPrincipalId: 'credential-host', provider: 'fixture-provider', bindingRef: 'fixture-binding', providerSessionRef: 'fixture-session' };
 const taskIds: string[] = [];
@@ -46,7 +48,85 @@ function wakePort(store: TaskStore, sendEvent = vi.fn(async () => {})) {
   return { port: new CfWorkflowPort(workflow as unknown as Workflow, store), workflow, sendEvent };
 }
 
+async function monthlyFollowup() {
+  const store = new TaskStore(env.DB);
+  const conversationId = `tg-${crypto.randomUUID()}`;
+  const priorId = `category-${crypto.randomUUID()}`;
+  const taskId = `monthly-${crypto.randomUUID()}`;
+  const foreignId = `foreign-${crypto.randomUUID()}`;
+  const unrelatedId = `unrelated-${crypto.randomUUID()}`;
+  taskIds.push(priorId, taskId, foreignId, unrelatedId);
+  const source = 'Sheet approved-sheet; source Expenses; gid 24681012; dedup by date/category/amount/merchant';
+  const goal = 'А теперь добавь итог по месяцам';
+  await store.admitTask({ id: priorId, profileId: 'credential-profile', conversationId, goal: source,
+    userValue: { inputItems: [{ text: source }] } });
+  await store.commit(priorId, 1, { status: 'done', result: { answer: 'Saved Category results', spreadsheetId: 'approved-sheet' } });
+  await store.admitTask({ id: foreignId, profileId: 'foreign-profile', conversationId, goal: 'FOREIGN_PROFILE_PRIVATE' });
+  await store.admitTask({ id: unrelatedId, profileId: 'credential-profile', conversationId: 'other-dialog', goal: 'UNRELATED_DIALOG_PRIVATE' });
+  await store.admitTask({ id: taskId, profileId: 'credential-profile', conversationId, goal,
+    userValue: { inputItems: [{ text: goal }] } });
+  const task = await store.requireTask(taskId);
+  const expected = agentConversationInstructions({ text: goal, originalInput: JSON.parse(task.user_value!),
+    durableContext: await durableConversationContext(store, task) });
+  const { awaitingInputId } = await store.openAwaiting({ taskId, purpose: 'credential',
+    question: 'UNTRUSTED_PROVIDER_QUESTION', respondentScope: task.profile_id, schema: { credential: requirement } });
+  const awaiting = (await store.getAwaiting(awaitingInputId))!;
+  const event: CredentialReadyEvent = { ...requirement, awaitingInputId, userTaskId: taskId,
+    profileId: task.profile_id, eventId: `ready-${crypto.randomUUID()}`, generation: awaiting.generation, version: awaiting.version };
+  return { store, task, taskId, conversationId, source, goal, expected, event, awaitingInputId };
+}
+
 describe('verified credential completion', () => {
+  it.each([
+    ['saved', 'ready'], ['saved', 'recovery'], ['fallback', 'ready'], ['fallback', 'recovery'],
+  ] as const)('preserves monthly Sheet context in actual Runner input using %s instructions at %s startup', async (selection, entrypoint) => {
+    const { store, task, taskId, conversationId, source, goal, expected, event, awaitingInputId } = await monthlyFollowup();
+    const instructions = selection === 'saved' ? `${expected}\nSAVED_ROUTING_CONSTRAINT` : expected;
+    if (selection === 'saved') await store.saveRoutingSelection(taskId, task.generation, { agentInstructions: instructions });
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }),
+      create: vi.fn(async (_input: { id: string; params: PlanParams }) => ({})) };
+    const execution = { runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 600, runnerPollSec: 1 };
+    const port = new CfWorkflowPort(workflow as unknown as Workflow, store, execution);
+    if (entrypoint === 'recovery') {
+      await store.completeCredentialAwaiting(event);
+      await port.recoverCredentialContinuations();
+    } else expect(await port.completeCredential(event)).toMatchObject({ delivered: true });
+    expect(workflow.create).toHaveBeenCalledTimes(1);
+    const params = workflow.create.mock.calls[0]![0].params;
+    expect(params).toMatchObject({ taskId, profileId: task.profile_id, generation: task.generation,
+      awaitingInputId, instructions, goal, ...execution });
+    const runs = await store.listRuns(taskId);
+    expect(runs).toHaveLength(1);
+    expect(params.runId).toBe(runs[0]!.id);
+    expect(await port.completeCredential(event)).toMatchObject({ duplicate: true, delivered: true });
+    await new CfWorkflowPort(workflow as unknown as Workflow, new TaskStore(env.DB), execution).recoverCredentialContinuations();
+    expect(workflow.create).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+    const submit = vi.fn(async (_input: Parameters<RunnerApiAdapter['submit']>[0]) => { throw new Error('offline Runner capture'); });
+    const ctx = { step: async (_name: string, operation: () => Promise<unknown>) => operation() } as StepCtx;
+    await expect(conversationPlan(ctx, store, params, {
+      adapter: { submit } as unknown as RunnerApiAdapter,
+    })).rejects.toThrow('offline Runner capture');
+    expect(submit).toHaveBeenCalledTimes(1);
+    const request = submit.mock.calls[0]![0];
+    expect(request.userTaskId).toBe(taskId);
+    expect(request.idempotencyKey).toBe(await stableAttemptKey(taskId, task.generation));
+    expect(request.runSpec).toMatchObject({ userTaskId: taskId, profileId: task.profile_id, conversationId,
+      ownerGeneration: task.generation, runId: `run_${taskId}_${task.generation}`, jobId: `job_${taskId}`,
+      operationId: `op_${params.runId}`, engine: { name: execution.runnerEngine } });
+    const prompt = request.runSpec!.input!.inlinePrompt!;
+    expect(prompt).toContain(goal);
+    expect(prompt).toContain(source);
+    expect(prompt).toContain('Saved Category results');
+    expect(prompt).toContain(instructions);
+    for (const excluded of ['FOREIGN_PROFILE_PRIVATE', 'UNRELATED_DIALOG_PRIVATE', 'UNTRUSTED_PROVIDER_QUESTION',
+      requirement.provider, requirement.bindingRef, requirement.providerSessionRef, requirement.hostPrincipalId]) {
+      expect(prompt).not.toContain(excluded);
+    }
+    expect((await store.requireTask(taskId)).conversation_id).toBe(conversationId);
+    expect((await store.requireTask(taskId)).generation).toBe(task.generation);
+  });
+
   it('uses only host-configured engine and budget at the HTTP readiness boundary', async () => {
     const { store, taskId, event, awaitingInputId } = await parked();
     const secret = 'credential-engine-test-secret';
@@ -58,7 +138,9 @@ describe('verified credential completion', () => {
     const request = async (principal: string) => worker.fetch(new Request(`https://cp.test/awaiting/${awaitingInputId}/credential-ready`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': principal,
         'x-principal-sig': await signPrincipal(principal, secret) },
-      body: JSON.stringify({ ...event, status: 'ready', runnerEngine: 'opencode', runnerTimeoutSec: 1, runnerPollSec: 99 }),
+      body: JSON.stringify({ ...event, status: 'ready', runnerEngine: 'opencode', runnerTimeoutSec: 1, runnerPollSec: 99,
+        instructions: 'UNTRUSTED_PROVIDER_INSTRUCTIONS', context: { spreadsheetId: 'UNTRUSTED_PROVIDER_SHEET' },
+        authToken: 'UNTRUSTED_PROVIDER_SECRET' }),
     }), bindings);
     expect((await request('gateway-fixture')).status).toBe(403);
     expect(workflow.create).not.toHaveBeenCalled();
@@ -68,6 +150,7 @@ describe('verified credential completion', () => {
     expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
       runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 900, runnerPollSec: 1, awaitingInputId,
     }) });
+    expect(JSON.stringify(workflow.create.mock.calls)).not.toMatch(/UNTRUSTED_PROVIDER_(INSTRUCTIONS|SHEET|SECRET)/);
   });
 
   it.each(['http', 'scheduled'] as const)('uses host settings for %s recovery of a pre-execution intent', async entrypoint => {

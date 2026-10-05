@@ -16,6 +16,7 @@ import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
+import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
   if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
@@ -541,8 +542,14 @@ export class CfWorkflowPort implements WorkflowPortApi {
         || execution.runnerTimeoutSec <= 0 || !Number.isFinite(execution.runnerPollSec)
         || execution.runnerPollSec <= 0) return false;
       try {
+        const selection = await this.store.routingSelection(task.id, task.generation) as { agentInstructions?: unknown } | null;
+        const instructions = typeof selection?.agentInstructions === 'string' && selection.agentInstructions.trim()
+          ? selection.agentInstructions
+          : agentConversationInstructions({ text: task.goal,
+            originalInput: task.user_value ? JSON.parse(task.user_value) : undefined,
+            durableContext: await durableConversationContext(this.store, task) });
         await this.submit({ id: task.id, profileId: task.profile_id, goal: task.goal,
-          awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
+          instructions, awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
         await this.store.markCredentialContinuation(record, 'woken');
         return true;
       } catch {
