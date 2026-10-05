@@ -1,5 +1,8 @@
 # trained-assist-control-plane
 
+**GCP VM exit (05.10.2026):** New work on `alesa-personal-assistent/us-central1-a/alesa-vm` is prohibited. Use serverless by default; the existing French VM only for a proven persistent or local requirement. Other Google services remain allowed. See [the exit plan](https://github.com/trained-assist/trained-agent-architecture/issues/145).
+
+
 Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workflows), поверх них — Input/Router/Output/GTD/Journal/Reporting.
 
 **Статус (04.10.2026): M1.1, M1.2, P04 (приём+квитанция), P05/P06 (поток событий, replay, восстановление), P16 (route policy и высокоточные правила fast path), P22 (расписание) и P23 (GTD opt-in и bounded control) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
