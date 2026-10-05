@@ -203,6 +203,53 @@ describe('one-shot с движком: результат = текст движк
 });
 
 describe('one-shot: RunSpec доходит до Runner целиком', () => {
+  it('concurrent terminal completion writes one immutable attempt result and event', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-terminal-attempt');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'terminal refusal' });
+    const attempt = await store.startRun(taskId, { generation: 1 });
+    const result = { reason: 'WORKER_HTTP_ERROR' };
+    const finished = await Promise.all([store.finishRun(attempt.id, 'failed', { result }), store.finishRun(attempt.id, 'failed', { result })]);
+    expect(finished[0]).toEqual(finished[1]);
+    expect((await store.history(taskId)).filter((event) => event.kind === 'run_finished')).toHaveLength(1);
+    await expect(store.finishRun(attempt.id, 'success')).rejects.toThrow('finish rejected');
+    expect(JSON.parse((await store.requireRun(attempt.id)).result_json!)).toEqual(result);
+  });
+
+  it.each(['pending', 'failed'] as const)('preserves WORKER_HTTP_ERROR before export checks (%s) and closes the attempt once', async (persistence) => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-worker-refusal');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'process original CSV' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const { adapter, runId } = makeFakeRunner();
+    const failure = { code: 'WORKER_HTTP_ERROR', failureClass: 'external_dependency', safeSummary: 'Worker HTTP 400: taskId required', retryable: false };
+    const artifacts = vi.fn(async () => { throw new Error('preflight has no artifact endpoint'); });
+    const submit = vi.fn(adapter.submit);
+    const failing = { ...adapter, submit, artifacts,
+      status: async () => ({ state: 'failed', connectionLost: false }),
+      events: async () => ({ runId, events: [], cursor: 0, hasMore: false }),
+      result: async () => ({ ...await adapter.result(), outcome: 'failed', exitReason: 'worker_http_error', failure, persistence, outputRefs: [] }),
+    };
+    const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, goal: 'process original CSV' };
+    expect(await conversationPlan(ctx, store, params, { adapter: failing as unknown as RunnerApiAdapter })).toMatchObject({ ok: false, reason: 'runner_failed' });
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('failed');
+    expect(task.stage).toBe('finished');
+    expect(JSON.parse(task.result_json!)).toMatchObject({ reason: 'WORKER_HTTP_ERROR', exitReason: 'worker_http_error', failure, persistence, outcome: 'failed', runId });
+    expect(artifacts).not.toHaveBeenCalled();
+    expect(await store.listArtifacts(taskId)).toHaveLength(0);
+    const finished = await store.requireRun(attempt.id);
+    expect(finished.status).toBe('failed');
+    expect(finished.error_class).toBe('WORKER_HTTP_ERROR');
+    await Promise.all([store.finishRun(attempt.id, 'failed'), store.finishRun(attempt.id, 'failed')]);
+    expect(await store.requireRun(attempt.id)).toEqual(finished);
+    expect((await store.history(taskId)).filter((event) => event.kind === 'run_finished')).toHaveLength(1);
+    expect(await conversationPlan(ctx, store, params, { adapter: failing as unknown as RunnerApiAdapter })).toMatchObject({ ok: false, reason: 'already_terminal' });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+    expect((await store.requireTask(taskId)).result_json).toBe(task.result_json);
+  });
+
   it.each([{ elapsedMs: 700_000, ok: true }, { elapsedMs: 841_000, ok: false }])('bounds result polling by host runtime plus startup budget: %j', async ({ elapsedMs, ok }) => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-host-budget');

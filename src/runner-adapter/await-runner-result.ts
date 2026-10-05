@@ -132,6 +132,22 @@ async function finalize(
 
   const result = await adapter.result(opts.runId);
 
+  const commitFailure = async (reason: string, terminalStatus: 'failed' | 'cancelled') => {
+    const failureResult = { reason, runId: result.runId, ownerGeneration: result.ownerGeneration,
+      outcome: result.outcome, persistence: result.persistence, exitReason: result.exitReason, failure: result.failure ?? null };
+    const attempt = (await store.listRuns(opts.taskId)).find((run) => run.session_id === opts.runId && run.generation === opts.generation);
+    if (attempt) await store.finishRun(attempt.id, terminalStatus, {
+      errorClass: result.failure?.code ?? reason, errorText: result.failure?.safeSummary ?? result.exitReason, result: failureResult,
+    });
+    await store.commit(opts.taskId, opts.generation, { status: terminalStatus, stage: 'finished',
+      kind: 'task_status_changed', step: 'finalize', result: failureResult, payload: failureResult });
+  };
+
+  if (state !== 'succeeded' || result.outcome !== 'succeeded') {
+    await commitFailure(result.failure?.code ?? result.exitReason, result.outcome === 'cancelled' ? 'cancelled' : 'failed');
+    return { ok: false, reason: 'runner_failed' };
+  }
+
   // Финализация артефактов: ссылки на сохранённые выходы Runner'а. Источников
   // два, потому что Runner отдаёт их по-разному: `result.outputRefs` — то, что движок
   // сам положил в результат, а `GET /v1/runs/{runId}/artifacts` — манифесты
@@ -166,36 +182,8 @@ async function finalize(
 
   if (result.persistence !== 'persisted') {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.
-    await store.commit(opts.taskId, opts.generation, {
-      status: 'failed',
-      kind: 'task_status_changed',
-      step: 'finalize',
-      result: {
-        reason: 'export_not_persisted',
-        runId: result.runId,
-        ownerGeneration: result.ownerGeneration,
-        persistence: result.persistence,
-        exitReason: result.exitReason,
-      },
-      payload: { runId: result.runId, persistence: result.persistence, exitReason: result.exitReason },
-    });
+    await commitFailure('export_not_persisted', 'failed');
     return { ok: false, reason: 'export_not_persisted' };
-  }
-
-  if (state !== 'succeeded') {
-    await store.commit(opts.taskId, opts.generation, {
-      status: 'failed',
-      kind: 'task_status_changed',
-      step: 'finalize',
-      result: {
-        reason: result.exitReason,
-        runId: result.runId,
-        ownerGeneration: result.ownerGeneration,
-        failure: result.failure ?? null,
-      },
-      payload: { runId: result.runId, exitReason: result.exitReason, failure: result.failure ?? null },
-    });
-    return { ok: false, reason: 'runner_failed' };
   }
 
   // Конечный текст движка — из потока событий, а не из поля результата: в
