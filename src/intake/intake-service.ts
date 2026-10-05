@@ -155,6 +155,25 @@ export class IntakeService {
       };
     }
 
+     // Пакет накопителя вышел из окна «до запуска» и связан с задачей (arch#132 R9).
+     // Ошибка связи не должна ломать приём: квитанция уже выдана, а потеря след��
+     // означает лишь одно лишнее срабатывание детектора, а не потерю задачи.
+     const pendingBatchId = envelope.pendingBatchId;
+     if (pendingBatchId) {
+       try {
+         await this.store.linkPendingInputToTask(pendingBatchId, userTaskId);
+       } catch (e) {
+         logStructured({
+           event: 'intake.pending_link_failed',
+           level: 'warn',
+           profileId,
+           userTaskId,
+           reason: 'link_failed',
+           error: e instanceof Error ? e.message : String(e),
+         });
+       }
+     }
+
      logStructured({
        event: 'intake.accepted',
        profileId,

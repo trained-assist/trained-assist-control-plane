@@ -253,7 +253,14 @@ describe('M06: отмена, доставка и артефакты', () => {
     });
     const message = JSON.parse(delivery.message_json);
     expect(message.artifactRefs).toEqual([`r2://control-plane/${taskId}/answer.json`]);
-    expect(delivery.message_json).not.toContain('64'); // байтов в сообщении нет, только ссылки
+    // Байтов в сообщении нет — только ссылки. Проверяем СОСТАВ сообщения, а не
+    // «в нём нет подстроки '64'»: sizeBytes выше равен 64, и та же строка попадала
+    // в taskId (миллисекунды epoch начинаются с 1791164), поэтому проверялось не
+    // содержимое доставки, а случайные цифры идентификатора — тест был красным
+    // на main независимо от кода.
+    expect(Object.keys(message).sort()).toEqual(['artifactRefs', 'text']);
+    expect(message).not.toHaveProperty('sizeBytes');
+    expect(message).not.toHaveProperty('size_bytes');
 
     const snapshot = await port.status(taskId);
     expect(snapshot.artifacts).toHaveLength(1);
