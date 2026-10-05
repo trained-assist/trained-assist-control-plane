@@ -339,7 +339,7 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
     repository,
     resultDestinationRef: env.RUN_SPEC_RESULT_DESTINATION_REF?.trim() || null,
     maxOutputBytes,
-    maxLogBytes,
+    ...(maxLogBytes !== null ? { maxLogBytes } : {}),
   };
 }
 
