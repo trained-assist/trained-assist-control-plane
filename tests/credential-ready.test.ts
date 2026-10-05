@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskStore } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port';
 import { conversationPlan } from '../src/workflow-port/conversation-plan';
+import type { PlanParams } from '../src/workflow-port/conversation-plan';
 import type { StepCtx } from '../src/workflow-port/step-ctx';
 import type { RunnerApiAdapter } from '../src/runner-adapter';
 import type { CredentialReadyEvent } from '../src/awaiting/credential-ready';
 import worker from '../src/index';
 import { signPrincipal } from '../src/auth/principal-auth';
+import { dispatchAcceptedAgent } from '../src/output/communication-v1';
+import type { RouteResult } from '../src/router/service';
 import { env } from './env';
 
 const requirement = { hostPrincipalId: 'credential-host', provider: 'fixture-provider', bindingRef: 'fixture-binding', providerSessionRef: 'fixture-session' };
@@ -44,6 +47,49 @@ function wakePort(store: TaskStore, sendEvent = vi.fn(async () => {})) {
 }
 
 describe('verified credential completion', () => {
+  it('keeps a pre-execution continuation pending without trusted execution settings', async () => {
+    const { store, taskId, event } = await parked();
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };
+    const port = new CfWorkflowPort(workflow as unknown as Workflow, store);
+    expect(await port.completeCredential(event)).toMatchObject({ delivered: false });
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await store.listRuns(taskId)).toHaveLength(0);
+    expect(await store.pendingCredentialContinuations()).toEqual(expect.arrayContaining([expect.objectContaining({ user_task_id: taskId })]));
+  });
+
+  it('preserves configured native engine and runtime budgets when readiness starts initial work', async () => {
+    const { store, taskId, event, awaitingInputId } = await parked();
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async () => ({})) };
+    const execution = { runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 900, runnerPollSec: 3 };
+    const port = new CfWorkflowPort(workflow as unknown as Workflow, store, execution);
+    expect(await port.completeCredential(event)).toMatchObject({ delivered: true });
+    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+      ...execution, taskId, generation: event.generation, awaitingInputId,
+    }) });
+    expect(await port.completeCredential(event)).toMatchObject({ duplicate: true, delivered: true });
+    expect(workflow.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('adopts the registered credential wait before Output dispatch starts the workflow', async () => {
+    const { store, taskId, awaitingInputId } = await parked();
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async (_input: { id: string; params: PlanParams }) => ({})) };
+    const port = new CfWorkflowPort(workflow as unknown as Workflow, store);
+    const task = await store.requireTask(taskId);
+    await dispatchAcceptedAgent(store, port, task, { continuation: { goal: task.goal } } as RouteResult, 'dynamic-ip-azure-agent-run');
+    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+      awaitingInputId, runnerEngine: 'dynamic-ip-azure-agent-run',
+    }) });
+    expect((await store.getAwaiting(awaitingInputId))?.status).toBe('open');
+    const submit = vi.fn();
+    const waitFor = vi.fn(async () => { throw new Error('credential wait reached'); });
+    const params = workflow.create.mock.calls[0]![0].params;
+    await expect(conversationPlan({ waitFor } as unknown as StepCtx, store, params, {
+      adapter: { submit } as unknown as RunnerApiAdapter,
+    })).rejects.toThrow('credential wait reached');
+    expect(waitFor).toHaveBeenCalledWith('wait', 'credential_ready', expect.any(Number));
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it('rejects text and generic signals without storing a credential answer', async () => {
     const { store, taskId, awaitingInputId } = await parked();
     await expect(store.answerAwaitingById({ awaitingInputId, idempotencyKey: 'user-text', answer: { answer: 'I connected it' } })).rejects.toThrow('verified_credential_event_required');

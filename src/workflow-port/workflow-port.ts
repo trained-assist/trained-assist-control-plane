@@ -150,6 +150,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
   constructor(
     private readonly wf: Workflow,
     private readonly store: TaskStore,
+    private readonly credentialExecution?: { runnerEngine: string; runnerTimeoutSec: number; runnerPollSec: number },
   ) {}
 
   /**
@@ -535,9 +536,13 @@ export class CfWorkflowPort implements WorkflowPortApi {
       return true;
     } catch {
       if ((await this.store.listRuns(task.id)).length > 0) return false;
+      const execution = this.credentialExecution;
+      if (!execution?.runnerEngine.trim() || !Number.isFinite(execution.runnerTimeoutSec)
+        || execution.runnerTimeoutSec <= 0 || !Number.isFinite(execution.runnerPollSec)
+        || execution.runnerPollSec <= 0) return false;
       try {
         await this.submit({ id: task.id, profileId: task.profile_id, goal: task.goal,
-          awaitingInputId: record.awaiting_input_id, idempotentRun: true });
+          awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
         await this.store.markCredentialContinuation(record, 'woken');
         return true;
       } catch {
