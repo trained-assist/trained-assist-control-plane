@@ -10,6 +10,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 
 Изолированная [credential readiness boundary v1](docs/CREDENTIAL-READY-V1.md) связывает проверенное событие доверенного host с существующим ожиданием и продолжением той же задачи. Provider OAuth/validation и native Runner checkpoint resume не реализованы; без `CREDENTIAL_HOST_PRINCIPALS` callback закрыт.
 
+[Read-only credential-boundary verifier](docs/CREDENTIAL-BOUNDARY-VERIFY.md) проверяет существующие checkpoint, typed-ready wait и одну успешную native-попытку без ready/start/recover; CSV readback остаётся отдельной проверкой.
+
 | Путь | Что это |
 |---|---|
 | `migrations/0001_task_store_v1.sql` | D1-схема Task Store v1 по [TASK-STORE-SCHEMA-V1 §6](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-STORE-SCHEMA-V1.md): `durable_tasks`, `task_events`, `task_signals`, `awaiting_inputs`, `conversations` |
