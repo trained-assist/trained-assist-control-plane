@@ -18,6 +18,12 @@ Runner HTTPS uses a VM-side development Quick Tunnel. The laptop relay is stoppe
 Each new connector process receives a new URL: update the owned Runner public URL and
 CP Runner binding before submitting further work. A named tunnel and approved DNS
 hostname remain the production transport gate. Shared units/tunnels stay unchanged.
+Stable hosting requires an owner-approved hostname and Tunnel/DNS Write authorization.
+
+The public autonomous reproduction harness is source-only:
+[TG PR360](https://github.com/trained-assist/trained-assist-tg-bot/pull/360),
+integrated as `5fc109d` in PR351, changes scripts, documentation and tests only.
+The gateway runtime remains `594ce2a`; this harness update was not redeployed.
 
 ### Applied Runner Unix isolation
 
@@ -77,6 +83,7 @@ one attempt each, without manual cron or manual provider calls.
 | Autonomous capabilities067 | PASS scoped quick-answer delivery | `ut-964212e1ccda1f203e12`, generation 1, zero engine attempts; stable receipt/terminal 1377/1378, one delivery attempt each; no manual cron/provider calls |
 | Autonomous native CSV068 | PASS scoped execution and delivery | `ut-f052d9bf02658ce68b8a`, generation 1, canonical `run_46ff7446-26e1-42ee-b9e8-ebb4698d78b6`; successful GHA `37295151043` attempt 1, source `47379f6`; one model session, six session steps, bash three/read one/write one tool calls; full journal proves one admission/dispatch, exact profile and generation 1; Runner UID12079; Native/CP artifacts match; stable autonomous receipt/terminal 1379/1380, one delivery attempt each, no manual cron/provider calls |
 | CSV068 active restart window | MISSED, no restart | Precheck found terminal execution; no Runner restart and no replacement job |
+| CSV068 exact terminal update replay | PASS scoped duplicate safety | Exact saved update `901010068` intentionally replayed once after known terminal completion; ACK `duplicate:true`, same `ut-f052d9bf02658ce68b8a` and canonical `run_46ff7446-26e1-42ee-b9e8-ebb4698d78b6`; CP/result/artifact unchanged; fresh full-journal before/after proves one admission/dispatch with unchanged profile and generation 1; receipt/terminal 1379/1380 stable, one delivery attempt each, across two readbacks after natural tick `10:38:49 UTC` |
 | Controlled negative069 with active API restart/resume | PASS scoped engine, recovery and failure delivery | `ut-9f89570e06a1accae390`, generation 1, canonical run prefix `6995decf`; one attempt and one journal admission/dispatch; Native/CP failed with `ARTIFACTS_MISSING`, observed engine exit 0, zero artifacts; GHA `37296543375` attempt 1 completed failure with expected failed Run agent step; Pauli independently verified provenance; natural receipt1381/terminal1382, terminal stable across two readbacks; only the owned API unit restarted once after fresh `10:27:00 UTC` gate, new PID219855 UID12079, same-run `poll_resumed`, canonical identity/generation preserved; legacy units, tunnels and callback unchanged |
 | Real Google Sheet and monthly follow-up | DEFERRED, disabled | [Issue 142](https://github.com/trained-assist/trained-agent-architecture/issues/142); historical dedicated Sheet approval and SA authentication did not establish access: Drive metadata returned 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
@@ -110,8 +117,8 @@ read. Engine exit 0 without mandatory output correctly produced
 completed failure with the expected failed Run agent step. Natural Telegram
 receipt1381 and terminal1382 establish scoped failure delivery, with terminal1382
 stable across two readbacks. These results do not establish Google, real-human or
-production acceptance. Duplicate068 terminal replay and real-human acceptance
-remain pending.
+production acceptance. CSV068's single exact known-terminal replay separately
+passed scoped duplicate safety; real-human Telegram acceptance remains pending.
 
 The failure case stores terminal failure metadata, without a durable user answer
 or delivery. Gateway terminal reconciliation supplies its deterministic failure
@@ -200,8 +207,9 @@ counts survive; recovered timestamps cannot measure original engine execution.
 - Scoped autonomous health, capabilities067 and native CSV068 acceptance passed;
   health natural-cron correlation is confirmed. Negative069's scoped engine,
   active API restart/recovery and controlled-failure delivery acceptance passed.
-  CSV068's terminal precheck caused no restart or replacement; duplicate068 terminal
-  replay and real-human acceptance remain pending. No Google or production PASS is claimed.
+  CSV068's terminal precheck caused no restart or replacement; its single exact
+  known-terminal update replay passed scoped duplicate safety. Real-human Telegram
+  acceptance remains pending. No Google or production PASS is claimed.
 - Actual Runner rollback remains untested; guarded inactive/dead-unit recovery
   source `26680d9` is reviewed but not deployed. Do not treat unchanged tasks or Unix negative checks as rollback proof.
 - Full Telegram acceptance remains open in issue 140; Google access is deferred
