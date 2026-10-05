@@ -165,11 +165,15 @@ describe('run-spec: хостовая политика из bindings', () => {
     expect(toSubmitRequest(buildRunSpec(baseInput, policy).spec).repository).toBeUndefined();
     expect(() => buildRunSpec(baseInput, runSpecPolicyOf({ RUN_SPEC_INPUT_REFS: '{}' }))).toThrow(RunSpecMappingError);
     expect(() => runSpecPolicyOf({ RUN_SPEC_TIMEOUT_MS: '0' })).toThrow(RunSpecMappingError);
+    expect(() => runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '-1' })).toThrow(RunSpecMappingError);
+    expect(() => runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '3600001' })).toThrow(RunSpecMappingError);
+    expect(runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '600000' }).startupTimeoutMs).toBe(600_000);
   });
 
   it('only the explicitly selected integration host profile supplies a repository default', () => {
     expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).repository).toEqual({ fullName: 'trained-assist/ai-agent-runner' });
     expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).timeoutMs).toBe(300_000);
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).startupTimeoutMs).toBe(600_000);
     expect(buildRunSpec(baseInput, runSpecPolicyOf({})).spec.limits.timeoutMs).toBe(baseInput.timeoutMs);
     expect(runSpecPolicyOf({ ROUTER_SELECTOR: 'communication_v1' }).repository).toBeNull();
     expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1', RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'explicit/override' }) }).repository).toEqual({ fullName: 'explicit/override' });

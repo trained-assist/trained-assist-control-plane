@@ -1,12 +1,14 @@
 // Own-API dogfood (#23), шаг 1: результат задачи — конечный текст движка, а не
 // ответ человека. Ожидание человека открывается только по typed-запросу хоста.
 import { env } from './env';
+import type { WorkflowStep } from 'cloudflare:workers';
 import { TaskStore } from '../src/taskstore';
 import { extractEngineText, ENGINE_TEXT_VERSION } from '../src/runner-adapter/engine-text';
 import { awaitRunnerResult, RunnerApiAdapter } from '../src/runner-adapter';
 import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
-import type { StepCtx } from '../src/workflow-port/step-ctx';
-import { describe, expect, it } from 'vitest';
+import { cfStepCtx, type StepCtx } from '../src/workflow-port/step-ctx';
+import { describe, expect, it, vi } from 'vitest';
+import { runSpecPolicyOf } from '../src/run-spec/run-spec';
 
 let seq = 0;
 const nextId = (prefix: string) => `${prefix}-${++seq}-${Date.now()}`;
@@ -201,6 +203,55 @@ describe('one-shot с движком: результат = текст движк
 });
 
 describe('one-shot: RunSpec доходит до Runner целиком', () => {
+  it.each([{ elapsedMs: 700_000, ok: true }, { elapsedMs: 841_000, ok: false }])('bounds result polling by host runtime plus startup budget: %j', async ({ elapsedMs, ok }) => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-host-budget');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'wait for cold start' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter } = makeFakeRunner();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const submit = vi.fn(async (input: { userTaskId: string; idempotencyKey: string; runSpec: { limits: { timeoutMs: number } } }) => {
+      expect(input.runSpec.limits.timeoutMs).toBe(240_000);
+      return adapter.submit(input);
+    });
+    let polls = 0;
+    const status = async () => {
+      if (++polls === 1) {
+        now += elapsedMs;
+        return { state: 'running', connectionLost: false };
+      }
+      return adapter.status();
+    };
+    try {
+      const budgetCtx: StepCtx = { ...ctx, step: async (name, fn, options) => {
+        if (name === 'await-runner') expect(options?.timeoutSec).toBe(900);
+        return ctx.step(name, fn, options);
+      } };
+      const outcome = await conversationPlan(budgetCtx, store,
+        { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerPollSec: 1, runnerTimeoutSec: 120 },
+        { adapter: { ...adapter, submit, status } as unknown as RunnerApiAdapter,
+          runSpecPolicy: runSpecPolicyOf({ RUN_SPEC_TIMEOUT_MS: '240000', RUN_SPEC_STARTUP_TIMEOUT_MS: '600000' }) });
+      expect(outcome.ok).toBe(ok);
+      if (!ok) expect(outcome.reason).toBe('runner_timeout');
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(await store.listRuns(taskId)).toHaveLength(1);
+      expect((await store.requireTask(taskId)).generation).toBe(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('passes the explicit result-wait timeout to Cloudflare without changing retry ownership', async () => {
+    const doStep = vi.fn(async (_name: string, options: unknown, callback: () => Promise<unknown>) => {
+      expect(options).toEqual({ retries: { limit: 2, delay: '1 seconds', backoff: 'constant' }, timeout: '900 seconds' });
+      return callback();
+    });
+    const step = cfStepCtx({ do: doStep } as unknown as WorkflowStep);
+    expect(await step.step('await-runner', async () => 'done', { limit: 2, delaySec: 1, timeoutSec: 900 })).toBe('done');
+    expect(doStep).toHaveBeenCalledTimes(1);
+  });
+
   it('adapter получает runSpec с хостовым cwd/env и клиентским prompt/refs', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-run-spec');

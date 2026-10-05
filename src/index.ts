@@ -98,6 +98,7 @@ export interface Env {
   RUN_SPEC_MCP?: string;
   RUN_SPEC_RESULT_DESTINATION_REF?: string;
   RUN_SPEC_TIMEOUT_MS?: string;
+  RUN_SPEC_STARTUP_TIMEOUT_MS?: string;
   RUN_SPEC_MAX_OUTPUT_BYTES?: string;
   /**
    * Секрет проверки личности принципала (HMAC). Только из binding

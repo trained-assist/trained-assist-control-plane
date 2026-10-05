@@ -13,7 +13,7 @@ export interface StepCtx {
   step<T>(
     name: string,
     fn: (attempt?: StepAttempt) => Promise<T>,
-    retry?: { limit: number; delaySec: number },
+    retry?: { limit: number; delaySec: number; timeoutSec?: number },
   ): Promise<T>;
   sleep(name: string, seconds: number): Promise<void>;
   waitFor<T = unknown>(name: string, eventType: string, timeoutSec: number): Promise<T>;
@@ -31,11 +31,12 @@ export function cfStepCtx(step: WorkflowStep): StepCtx {
   const doStep = <T,>(
     name: string,
     fn: (attempt?: StepAttempt) => Promise<T>,
-    retry: { limit: number; delaySec: number } = { limit: 2, delaySec: 1 },
+    retry: { limit: number; delaySec: number; timeoutSec?: number } = { limit: 2, delaySec: 1 },
   ): Promise<T> =>
     step.do(
       name,
-      { retries: { limit: retry.limit, delay: `${retry.delaySec} seconds`, backoff: 'constant' } },
+      { retries: { limit: retry.limit, delay: `${retry.delaySec} seconds`, backoff: 'constant' },
+        ...(retry.timeoutSec === undefined ? {} : { timeout: `${retry.timeoutSec} seconds` as `${number} seconds` }) },
       (async (context: unknown) => {
         try {
           return await fn(context as StepAttempt);

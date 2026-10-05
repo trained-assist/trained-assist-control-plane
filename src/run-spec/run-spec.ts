@@ -214,6 +214,7 @@ export interface RunSpecInput {
 export interface RunSpecPolicy {
   inputRefs?: InputRef[];
   timeoutMs?: number;
+  startupTimeoutMs?: number;
   cwd: string;
   envAllowlist: string[];
   outputs: OutputSpec[];
@@ -312,6 +313,11 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
     throw new RunSpecMappingError(`RUN_SPEC_TIMEOUT_MS: expected 1..${MAX_TIMEOUT_MS}`, 'RUN_SPEC_TIMEOUT_MS');
   }
 
+  const startupTimeoutMs = Number(env.RUN_SPEC_STARTUP_TIMEOUT_MS ?? (env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? 600_000 : 0));
+  if (!Number.isInteger(startupTimeoutMs) || startupTimeoutMs < 0 || startupTimeoutMs > MAX_TIMEOUT_MS) {
+    throw new RunSpecMappingError(`RUN_SPEC_STARTUP_TIMEOUT_MS: expected 0..${MAX_TIMEOUT_MS}`, 'RUN_SPEC_STARTUP_TIMEOUT_MS');
+  }
+
   const maxOutputBytes = env.RUN_SPEC_MAX_OUTPUT_BYTES ? Number(env.RUN_SPEC_MAX_OUTPUT_BYTES) : null;
   if (maxOutputBytes !== null && (!Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0)) {
     throw new RunSpecMappingError('RUN_SPEC_MAX_OUTPUT_BYTES: expected a positive integer', 'RUN_SPEC_MAX_OUTPUT_BYTES');
@@ -321,6 +327,7 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
     cwd,
     inputRefs: readJson<InputRef[]>(env.RUN_SPEC_INPUT_REFS, [], 'RUN_SPEC_INPUT_REFS'),
     ...(env.RUN_SPEC_TIMEOUT_MS || env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { timeoutMs } : {}),
+    ...(env.RUN_SPEC_STARTUP_TIMEOUT_MS || env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { startupTimeoutMs } : {}),
     envAllowlist,
     outputs,
     mcp,
