@@ -17,6 +17,13 @@ export class RunnerConflictError extends Error {
   }
 }
 
+export class RunnerArtifactManifestError extends Error {
+  constructor() {
+    super('runner artifact manifest has no valid reference');
+    this.name = 'RunnerArtifactManifestError';
+  }
+}
+
 /** Попытка неизвестна Runner'у. */
 export class RunnerNotFoundError extends Error {
   constructor(message: string) {

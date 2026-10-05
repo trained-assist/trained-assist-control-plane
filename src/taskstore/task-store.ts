@@ -1188,12 +1188,24 @@ export class TaskStore {
           input.runId ?? null,
           now,
         ),
+      this.db.prepare(
+        `UPDATE task_artifacts SET size_bytes = COALESCE(size_bytes, ?), checksum = COALESCE(checksum, ?)
+         WHERE user_task_id = ? AND artifact_ref = ? AND run_id IS ?
+           AND (size_bytes IS NULL OR ? IS NULL OR size_bytes = ?)
+           AND (checksum IS NULL OR ? IS NULL OR checksum = ?)`,
+      ).bind(input.sizeBytes ?? null, input.checksum ?? null, input.taskId, input.artifactRef, input.runId ?? null,
+        input.sizeBytes ?? null, input.sizeBytes ?? null, input.checksum ?? null, input.checksum ?? null),
     ]);
     const artifact = (await this.db
       .prepare(`SELECT * FROM task_artifacts WHERE user_task_id = ? AND artifact_ref = ?`)
       .bind(input.taskId, input.artifactRef)
       .first<ArtifactRow>()) ?? null;
     if (!artifact) throw new TaskStoreError(`artifact record failed: ${input.artifactRef}`, input.taskId);
+    if (artifact.run_id !== (input.runId ?? null)
+      || (input.sizeBytes != null && artifact.size_bytes !== input.sizeBytes)
+      || (input.checksum != null && artifact.checksum !== input.checksum)) {
+      throw new TaskStoreError('artifact identity or metadata conflict', input.taskId);
+    }
     if (results[0]!.meta.changes === 1) {
       await this.logEvent({
         taskId: input.taskId,

@@ -16,6 +16,8 @@
 import type { TaskStore, TaskEventKind } from '../taskstore';
 import type { RunnerApiAdapter, RunnerEvent, RunnerResult, RunnerStatusView } from './runner-api-adapter';
 import { extractEngineText, type EngineText } from './engine-text';
+import { runnerArtifactRef } from './runner-api-adapter';
+import { RunnerArtifactManifestError } from './errors';
 
 export interface AwaitRunnerResultOptions {
   runId: string;
@@ -53,7 +55,7 @@ export interface RunnerAnswer {
 
 export type AwaitRunnerResult =
   | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null; answer?: RunnerAnswer }
-  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
+  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' | 'runner_artifact_manifest_invalid' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
 const RUNNER_EVENT_KIND: Record<string, TaskEventKind> = {
@@ -163,8 +165,19 @@ async function finalize(
   // outputRefs пуст, а артефакт виден только здесь). Дедуп — на уровне ссылки.
   // Этот же набор — источник для `task_artifacts` и для `result.artifacts` плана:
   // второго источника ссылок нет.
-  const manifests = await adapter.artifacts(opts.runId);
-  const byRef = new Map(manifests.map((m) => [m.storageKey || m.artifactId, m]));
+  let byRef;
+  try {
+    const manifests = await adapter.artifacts(opts.runId);
+    byRef = new Map(manifests.map(manifest => [runnerArtifactRef(manifest), manifest]));
+    if (!Array.isArray(result.outputRefs) || result.outputRefs.some(ref => typeof ref !== 'string' || !ref.trim() || ref !== ref.trim())) {
+      throw new RunnerArtifactManifestError();
+    }
+  } catch (error) {
+    if (!(error instanceof RunnerArtifactManifestError)) throw error;
+    await store.logEvent({ taskId: opts.taskId, generation: opts.generation, source: 'executor', kind: 'error',
+      payload: { class: 'runner_artifact_manifest_invalid', runId: opts.runId, reconciliationRequired: true } });
+    return { ok: false, reason: 'runner_artifact_manifest_invalid' };
+  }
   const artifactRefs = [...new Set([...result.outputRefs, ...byRef.keys()])];
   const artifacts: TaskArtifactManifest[] = artifactRefs.map((ref) => {
     const manifest = byRef.get(ref);
