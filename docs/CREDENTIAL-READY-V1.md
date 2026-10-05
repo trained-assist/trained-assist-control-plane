@@ -96,3 +96,11 @@ agent work from a queued/woken intent alone.
 Validation: `tests/credential-ready.test.ts` uses real D1 migrations and synthetic
 host refs, with workflow wake and Runner submit fixtures. It proves local guards,
 durability, dedup and continuation routing, not a live provider/Runner connection.
+
+Migration compatibility: the guard uses a trigger `WHEN` predicate and a single
+`SELECT RAISE`, avoiding nested `CASE ... END` in the trigger body. The remote
+D1 migration initially failed with `incomplete input`; local parsers did not
+reproduce that failure. `node tools/credential-migration-selfcheck.mjs` checks
+Wrangler statement boundaries and SQLite installation. Wrangler 4.146.0 local
+migration application also passes. Remote D1 acceptance still needs the deployment
+owner's verification; these local checks do not prove the server parser fix.

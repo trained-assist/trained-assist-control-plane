@@ -19,8 +19,7 @@ CREATE INDEX credential_continuations_pending ON credential_completions(continua
 
 CREATE TRIGGER credential_ready_guard BEFORE INSERT ON credential_completions
 WHEN NOT EXISTS (SELECT 1 FROM credential_completions WHERE host_principal_id = NEW.host_principal_id AND event_id = NEW.event_id)
-BEGIN
-    SELECT CASE WHEN NOT EXISTS (
+    AND NOT EXISTS (
         SELECT 1 FROM awaiting_inputs awaiting JOIN durable_tasks task ON task.id = awaiting.user_task_id
         WHERE awaiting.awaiting_input_id = NEW.awaiting_input_id AND awaiting.user_task_id = NEW.user_task_id
           AND awaiting.purpose = 'credential' AND awaiting.status = 'open' AND awaiting.deadline_at > NEW.created_at
@@ -33,7 +32,9 @@ BEGIN
           AND json_extract(awaiting.schema_json, '$.credential.bindingRef') = NEW.binding_ref
           AND json_extract(awaiting.schema_json, '$.credential.providerSessionRef') = NEW.provider_session_ref
           AND NOT EXISTS (SELECT 1 FROM executions execution WHERE execution.task_id = task.id AND (execution.session_id IS NOT NULL OR execution.status IN ('unknown', 'interrupted')))
-    ) THEN RAISE(ABORT, 'credential_wait_mismatch') END;
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'credential_wait_mismatch');
 END;
 
 CREATE TRIGGER credential_ready_apply AFTER INSERT ON credential_completions
