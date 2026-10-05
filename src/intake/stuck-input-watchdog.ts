@@ -298,7 +298,7 @@ export async function enqueueStuckInputNotification(
     return false;
   }
   const task = ctx.task;
-  await store.queueDelivery({
+  const { queued } = await store.queueDelivery({
     taskId: task.id,
     logicalMessageId: `stuck_input:${task.id}`,
     channel: opts.channel,
@@ -314,5 +314,8 @@ export async function enqueueStuckInputNotification(
     audienceId: task.audience_id,
     conversationId: task.conversation_id,
   });
-  return true;
+  // Report whether a NEW row appeared, not that we asked. The outbox is
+  // idempotent per logical_message_id, so a repeat pass would otherwise count as
+  // a fresh notification and make watchdog_health look busy on every tick.
+  return queued;
 }
