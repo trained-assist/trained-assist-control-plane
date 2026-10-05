@@ -245,7 +245,12 @@ export function gatewayDeliveryAdapter(opts: { baseUrl: string; secret: string |
         }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (!res.ok) throw new Error(`gateway delivery failed: ${res.status}`);
+      if (!res.ok) {
+        // Хост и ответ — иначе в логе только «404», и непонятно, куда ходили:
+        // именно так выглядел диагностический тупик при первой приёмке (2026-10-04).
+        const snippet = (await res.text().catch(() => '')).slice(0, 200);
+        throw new Error(`gateway delivery failed: ${res.status} ${new URL(opts.baseUrl).host}/deliver — ${snippet || res.statusText}`);
+      }
       const body = (await res.json().catch(() => ({}))) as { providerMessageId?: string | null };
       // Без providerMessageId доставка не подтверждена: доставка — это факт
       // принятия каналом, а не «ответ 200».
