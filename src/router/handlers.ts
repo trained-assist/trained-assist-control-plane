@@ -145,6 +145,8 @@ export interface AgentWorkOrder {
 export function agentWorkOrder(params: {
   envelope: { userTaskId: string; profileId: string; conversationId: string | null; requestId: string | null };
   prepared: PreparedInput;
+  goal?: string;
+  preservedConstraints?: string[];
   reasonCode: string;
   requiresExternalAction: boolean;
   authorizationRef: string;
@@ -155,8 +157,8 @@ export function agentWorkOrder(params: {
     profileId: params.envelope.profileId,
     conversationId: params.envelope.conversationId,
     originalRequestRef: `task:${params.envelope.userTaskId}:request:${params.envelope.requestId ?? 'none'}`,
-    goal: params.prepared.text,
-    preservedConstraints: [],
+    goal: params.goal ?? params.prepared.text,
+    preservedConstraints: params.preservedConstraints ?? [],
     requiredCapabilities: params.catalogCapabilityIds,
     reasonCode: params.reasonCode,
     escalationReason: params.reasonCode,
@@ -165,5 +167,4 @@ export function agentWorkOrder(params: {
     requiresConfirmation: params.requiresExternalAction,
   };
 }
-
 

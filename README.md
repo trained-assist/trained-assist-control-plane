@@ -2,7 +2,7 @@
 
 Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workflows), поверх них — Input/Router/Output/GTD/Journal/Reporting.
 
-**Статус (04.10.2026): M1.1, M1.2, P04 (приём+квитанция), P05/P06 (поток событий, replay, восстановление), P16 (route policy и высокоточные правила fast path), P22 (расписание) и P23 (GTD opt-in и bounded control) реализованы и покрыты тестами; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (все прогоны локальные, miniflare; `database_id` в `wrangler.jsonc` — placeholder до команды владельца). Карточки эпика M1 — [trained-agent-architecture#109](https://github.com/trained-assist/trained-agent-architecture/issues/109), PR: #2 (каркас+CI), #3 (Task Store), #5 (Workflow Port), #6 (приём+квитанция), #7 (P05/P06).
+**Статус (05.10.2026): M1.1, M1.2, P04–P06, P16–P17, P20, P22 и P23 реализованы в локальном control plane; деплой на реальный аккаунт Cloudflare НЕ выполнялся** (miniflare; `database_id` в `wrangler.jsonc` — placeholder). P17 пока использует sandbox `FixedModelPort`, не live provider. P20 использует sandbox catalog. Новый R4-срез передаёт проверенный результат Router в существующий Runner launch как ограниченный task-level brief; production/legacy не меняются. Карточки M1 — [trained-assist-control-plane issues](https://github.com/trained-assist/trained-agent-control-plane/issues).
 
 ## Что здесь лежит
 
@@ -292,12 +292,13 @@ npm run check:evidence                     # негативные проверк
 
 ### Чего эта карточка не доказывает
 
-- Recipe — заглушка без модели (`ROUTER_RECIPE_STUB`): настоящий вызов (одна модель без инструментов)
-  и его таймауты/отказы — P17.
+- Recipe работает через sandbox `FixedModelPort` (`ROUTER_RECIPE_SCRIPT`/`ROUTER_RECIPE_FAULT`): live provider, его usage и реальные таймауты здесь не доказаны.
 - Каталог возможностей песочничный (12 capability) и выдаётся binding'ом `ROUTER_GRANTS`: компилятор
   каталога, brief и чтение реальных данных capability — P14/P19/P20, credential broker прав — P13.
-- Исполнитель не запускается: доказательство «агент не стартовал» — это отсутствие `run_started` в
-  Task Store и `agentDispatchAttempts`, а не прогон реального OpenCode (M1.3/P17).
+- Fast path может запросить Output-owned продолжение с тем же `userTaskId`; только явные
+  `continue: true` и `ROUTER_CONTINUATION_ENABLED=true` выдают его Workflow Port. Код сборки RunSpec
+  передаёт исходный текст отдельно от launch brief. Это не доказательство live provider model,
+  полного MCP registry или production Runner deployment.
 - Корпус синтетический (35 диалогов, P18), ground truth по живым логам не ревьюирован
   (`human_reviewed = 0`): нулевая ошибка на корпусе не доказывает нулевую ошибку в проде (§11.9).
 - Задержка и стоимость на живых данных не измерены: измеряется только маршрут и признаки.
@@ -341,6 +342,8 @@ npm run check:evidence                     # негативные проверк
 - **HTTP**: `POST /route` возвращает блок `brief` (статус, briefId, размер, бюджет, кэш, Tier-1 и
   Tier-2). Журнал: событие `routing.brief` с `profileId`, `userTaskId`, `runId`, `requestId`,
   ключом кэша, попаданием, байтами, числом entries/кандидатов и причиной деградации.
+- **Первый Router result → Runner launch** ([R4 #53](https://github.com/trained-assist/trained-agent-control-plane/issues/53)) передаёт `nextGoal`, ограничения и только явно выбранные capability IDs в deterministic `execution-context-v1`. Исходный принятый текст остаётся неизменённым `input.inlinePrompt`; launch brief идёт в существующем `instructions` поле. Это task-level input, не отдельная system role. Manifest версии, snapshot refs, размера и IDs пишется без текста brief.
+- Capability hints сверяются с authorization и тем же P20 snapshot. Описание и `enabled` в каталоге не grant-ят tool и не доказывают, что он смонтирован в Runner; brief велит использовать только реально доступные runtime tools. Полный runtime MCP mounting — отдельный контрактный шаг.
 
 ### Проверка
 
@@ -369,7 +372,7 @@ npm run check:evidence                     # негативные проверк
 - Кандидаты выбираются по явным именам/алиасам каталога; семантический retrieval по смыслу
   (векторный/BM25) не делался — в контракте каталога его нет, а «угадывание» кандидатов по
   названию запрещено.
-- Исполнитель по-прежнему не запускается: discovery-индекс собирается, запуск — за M1.3/P17.
+- Runner path уже имеет host-controlled continuation и получает task-level launch brief, когда включены sandbox bindings. Полный M1.3 acceptance (async `unknown`, artifacts и live adapter contract — [#40](https://github.com/trained-assist/trained-agent-control-plane/issues/40)), real provider, production deploy и реальные MCP bindings остаются отдельными доказательствами.
 
 ## Контрактные решения
 
@@ -383,7 +386,7 @@ npm run check:evidence                     # негативные проверк
 ## Что осталось
 
 - **Деплой и замеры на реальном аккаунте Cloudflare** — только по явной команде владельца (там же: настоящий `database_id`, latency пробуждения после `wrangler deploy` = [#91](https://github.com/trained-assist/trained-agent-architecture/issues/91), поведение под старым кодом = [#92](https://github.com/trained-assist/trained-agent-architecture/issues/92)). Токены — GCP Secret Manager / GitHub Secrets, в репо их нет и не будет.
-- **M1.3** — подключение настоящего Runner (ai-agent-runner): idempotent submit, события, cancellation, финализация артефактов.
+- **M1.3** — закрыть несовпадения async Runner contract и подтвердить полный lifecycle/artifact path по [#40](https://github.com/trained-assist/trained-agent-control-plane/issues/40); fast-path route→Output continuation→RunSpec уже использует общий запуск и идемпотентный adapter.
 - **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter). **Web adapter и сквозная приёмка — в PR `feat/m1-web-slice`** (страница разговора, клиент к API, сквозной прогон с рестартом); `deliveries` как таблица и единственный delivery owner — остаются на шаг 8.
 - **M1.5** — пилот и rollback: реализован в `src/pilot/`. Конфиг-гейт (feature flag `PILOT_ENABLED` + cohort `PILOT_COHORT_PROFILE_IDS`), маршрутизация новых задач на новый control plane, rollback мгновенно возвращает на legacy, durable Task Store сохраняет состояние задач, начатых на новом plane. Runbook: `docs/M1-PILOT-ROLLBACK-RUNBOOK.md`.
 - **GTD (P23) — следующие шаги, не в этой карточке**: планы/плейбуки и step gates (P24), подключение настоящего Runner'а к managed-шагам (M1.3/#122), решение владельца о том, кто вызывает `tick` по часам в проде (Cloudflare Cron Trigger и т.п.), когорта записей контроля при пилоте/rollback (M1, шаг 8).

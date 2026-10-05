@@ -22,6 +22,7 @@
  * тела запроса: `profileId` приходит из `durable_tasks.profile_id`.
  */
 import { logStructured } from '../logging/structured-log';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
 export const RUN_SPEC_VERSION = 'run-spec-v1';
@@ -106,6 +107,8 @@ export interface RunSpec {
   envAllowlist: string[];
   limits: RunLimits;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  /** Bounded task-level launch brief; Runner appends it to the accepted prompt. */
+  instructions?: string;
   outputs?: OutputSpec[];
   mcp?: McpSpec;
   credentialBindings?: CredentialBinding[];
@@ -172,6 +175,7 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.repository) body.repository = spec.repository;
   if (spec.result) body.result = spec.result;
   if (spec.traceId) body.traceId = spec.traceId;
+  if (spec.instructions) body.instructions = spec.instructions;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
 }
@@ -380,6 +384,9 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   const inlinePrompt = promptNormalized
     ? trimmedPrompt.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/[ \t]+/g, ' ').trim()
     : trimmedPrompt;
+  const instructions = input.instructions?.trim() || undefined;
+  if (instructions && instructions.length > 10_000) fail('instructions', 'instructions: longer than Runner limit 10000');
+  if (instructions && CONTROL_CHARS.test(instructions)) fail('instructions', 'instructions: control characters are not allowed');
 
   const runId = `run_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}_${input.ownerGeneration}`;
   const jobId = `job_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}`;
@@ -405,6 +412,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
       ...(inlinePrompt ? { inlinePrompt } : {}),
       ...(refs.length ? { refs } : {}),
     },
+    ...(instructions ? { instructions } : {}),
     ...(policy.outputs.length ? { outputs: policy.outputs } : {}),
     ...(policy.mcp ? { mcp: policy.mcp } : {}),
     ...(policy.repository ? { repository: policy.repository } : {}),
@@ -492,6 +500,12 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
         }
       }
     }
+  }
+
+  if (spec.instructions !== undefined) {
+    if (typeof spec.instructions !== 'string' || spec.instructions.length === 0) errors.push('spec.instructions: expected a non-empty string');
+    else if (spec.instructions.length > 10_000) errors.push('spec.instructions: longer than 10000');
+    else if (CONTROL_CHARS.test(spec.instructions)) errors.push('spec.instructions: control characters are not allowed');
   }
 
   if (spec.outputs !== undefined) {
@@ -622,6 +636,8 @@ export function logRunSpecBuilt(fields: {
   mcpNotTransmitted?: boolean;
   /** Поля RunSpec, которые Runner выводит сам и в submit не передаются. */
   untransmitted?: string[];
+  /** Без текстового содержимого: манифест launch brief из first-stage Router. */
+  executionContext?: ExecutionContextManifest | null;
   reason?: string;
 }): void {
   logStructured({
@@ -637,5 +653,6 @@ export function logRunSpecBuilt(fields: {
     mcpServers: fields.mcpServers,
     ...(fields.mcpNotTransmitted === undefined ? {} : { mcpNotTransmitted: fields.mcpNotTransmitted }),
     ...(fields.untransmitted ? { untransmitted: fields.untransmitted } : {}),
+    ...(fields.executionContext ? { executionContext: fields.executionContext } : {}),
   });
 }

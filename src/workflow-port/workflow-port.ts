@@ -15,6 +15,7 @@ import { isTerminalStatus } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
   if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
@@ -126,6 +127,7 @@ export interface WorkflowPortApi {
     opts?: {
       reason?: string;
       instructions?: string;
+      executionContext?: ExecutionContextManifest;
       previousRunId?: string | null;
       /** Движок новой попытки (P17): продолжение fast path фиксирует терминального исполнителя. */
       engine?: string | null;
@@ -402,6 +404,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
     opts: {
       reason?: string;
       instructions?: string;
+      executionContext?: ExecutionContextManifest;
       previousRunId?: string | null;
       awaitingPurpose?: AwaitingPurpose | null;
       awaitingOptions?: { id: string; label: string }[] | null;
@@ -422,6 +425,15 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // поколением (A3 §3.2.5: сверка и отзыв прав прежнего процесса до нового
     // запуска).
     const { run, generation } = await this.store.resumeRun(taskId, opts);
+    if (opts.executionContext) {
+      await this.store.logEvent({
+        taskId,
+        kind: 'progress',
+        generation,
+        source: 'router',
+        payload: { event: 'execution_context.attached', ...opts.executionContext },
+      });
+    }
 
     // Остановка прежнего экземпляра и запуск нового с новым поколением.
     // terminate и delete — РАЗНЫЕ шаги: упавший/завершённый экземпляр нельзя
@@ -467,6 +479,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
         question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
         goal: task.goal,
         instructions: opts.instructions ?? null,
+        executionContext: opts.executionContext ?? null,
         runnerPollSec: opts.runnerPollSec,
         runnerTimeoutSec: opts.runnerTimeoutSec,
       },

@@ -25,6 +25,7 @@ import {
   scriptedReply,
 } from '../src/router/recipe/fixed-model';
 import type { HostFacts, PreparedInput, RoutingEnvelope, RoutingInput } from '../src/router/router-types';
+import { continueFastPathEscalation } from '../src/output/continuation';
 
 const catalog = sandboxCapabilityCatalog();
 
@@ -137,7 +138,8 @@ describe('P17 · один полезный вызов: reply / clarify / needs_e
         scriptedAgentDecision({
           nextGoal: 'найди пять конкурентов и сравни цены',
           reasonCode: 'ADAPTIVE_TOOL_LOOP',
-          requiredCapabilities: ['web-search'],
+          preservedConstraints: ['не потеряй исходные даты'],
+          requiredCapabilities: ['google-drive.read'],
         }),
       ],
     });
@@ -149,14 +151,47 @@ describe('P17 · один полезный вызов: reply / clarify / needs_e
     expect(result.decision.replyAllowed).toBe(false);
     expect(result.reply).toBeNull();
     expect(result.workOrder?.executor).toBe('opencode');
+    expect(result.workOrder?.goal).toBe('найди пять конкурентов и сравни цены');
+    expect(result.continuation?.goal).toBe('найди пять конкурентов и сравни цены');
     expect(result.continuation).not.toBeNull();
     expect(result.continuation?.userTaskId).toBe('ut-1');
     expect(result.continuation?.reasonCode).toBe('ADAPTIVE_TOOL_LOOP');
-    expect(result.continuation?.preservedConstraints).toEqual([]);
-    // Возможности — названные решением, а не весь каталог.
-    expect(result.continuation?.requiredCapabilities).toEqual(['web-search']);
+    expect(result.continuation?.preservedConstraints).toEqual(['не потеряй исходные даты']);
+    // В prompt brief попадает только capability, выбранная моделью и найденная
+    // в том же авторизованном P20 snapshot. Сам brief не grant-ит этот tool.
+    expect(result.continuation?.selectedCapabilityIds).toEqual(['google-drive.read']);
+    expect(result.continuation?.executionContext.instructions).toContain('найди пять конкурентов и сравни цены');
+    expect(result.continuation?.executionContext.instructions).toContain('google-drive.read@1');
+    expect(result.continuation?.executionContext.instructions).toContain('не потеряй исходные даты');
+    expect(result.continuation?.executionContext.instructions).toContain('Используй только инструменты, реально доступные');
+    expect(result.continuation?.executionContext.manifest.includedCapabilityIds).toEqual(['google-drive.read']);
+    expect(result.continuation?.requiredCapabilities).toEqual(['google-drive.read']);
     // Роутер продолжение не выдаёт: владелец — Output.
     expect(result.decision.jobRef).toBeNull();
+  });
+
+  it('Output forwards the host-built launch brief into the existing Workflow resume', async () => {
+    const model = scriptedFixedModel({ script: [scriptedAgentDecision({
+      nextGoal: 'сравнить текущие тарифы',
+      reasonCode: 'NEEDS_CURRENT_USER_DATA',
+      requiredCapabilities: ['google-drive.read'],
+    })] });
+    const result = await routeWith(TEXT_WORK, model);
+    const request = result.continuation!;
+    const resumed: Array<{ instructions?: string; executionContext?: unknown }> = [];
+    const outcome = await continueFastPathEscalation(request, {
+      agentAllowed: true,
+      port: { resume: async (_taskId, opts) => { resumed.push(opts); return { runId: 'run-output', generation: 2 }; } },
+      store: {
+        taskOf: async () => ({ status: 'active', generation: 1 }),
+        gtdIdOf: async () => null,
+        continuationOf: async () => null,
+        recordContinuation: async () => {},
+      },
+    });
+    expect(outcome.created).toBe(true);
+    expect(resumed[0]?.instructions).toBe(request.executionContext.instructions);
+    expect(resumed[0]?.executionContext).toEqual(request.executionContext.manifest);
   });
 
   it('ограничение из исходного текста не теряется в запросе продолжения', async () => {
@@ -174,6 +209,21 @@ describe('P17 · один полезный вызов: reply / clarify / needs_e
     // Подтверждение решает хост по запрету в тексте, а не самооценка модели.
     expect(result.continuation?.requiresConfirmation).toBe(true);
     expect(result.decision.requiresExternalAction).toBe(true);
+  });
+
+  it('неизвестный capability ID из ответа модели не проходит к Runner', async () => {
+    const model = scriptedFixedModel({
+      script: [scriptedAgentDecision({
+        nextGoal: 'сделай исследование',
+        reasonCode: 'ADAPTIVE_TOOL_LOOP',
+        requiredCapabilities: ['internal.admin.delete_all'],
+      })],
+    });
+    const result = await routeWith(TEXT_WORK, model);
+    expect(result.decision.outcome).toBe('blocked');
+    expect(result.decision.reasonCode).toBe('UNKNOWN_CAPABILITY_VERSION');
+    expect(result.decision.needsExecutor).toBe(false);
+    expect(result.continuation).toBeNull();
   });
 });
 
