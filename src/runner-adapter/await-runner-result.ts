@@ -203,7 +203,7 @@ async function finalize(
     });
   }
 
-  const noExportRequired = opts.declaredOutputPaths?.length === 0
+  const noExportRequired = Array.isArray(opts.declaredOutputPaths) && opts.declaredOutputPaths.length === 0
     && result.persistence === 'not_required' && artifactRefs.length === 0;
   if (result.persistence !== 'persisted' && !noExportRequired) {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.

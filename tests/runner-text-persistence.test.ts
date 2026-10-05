@@ -63,7 +63,9 @@ describe('text-only native persistence contract', () => {
     await expect(conversationPlan(context, store, params, deps)).rejects.toBe(suspension);
     expect(await store.requireTask(taskId)).toMatchObject({ status: 'active', generation: 1 });
     coldResume = true;
-    expect((await conversationPlan(context, store, params, deps)).ok).toBe(ok);
+    const changedHostPolicy = { ...deps, runSpecPolicy: { ...deps.runSpecPolicy,
+      outputs: declared ? [] : [{ path: 'outputs/new-policy.csv' }] } };
+    expect((await conversationPlan(context, store, params, changedHostPolicy)).ok).toBe(ok);
     expect(submit).toHaveBeenCalledOnce();
     const task = await store.requireTask(taskId);
     expect(task).toMatchObject({ status: ok ? 'done' : 'failed', generation: 1 });
@@ -77,6 +79,31 @@ describe('text-only native persistence contract', () => {
     expect(await store.listArtifacts(taskId)).toHaveLength(refs ? 1 : 0);
     expect(await conversationPlan(context, store, params, deps)).toMatchObject({ reason: 'already_terminal' });
     expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it('cached historical submit receipts without frozen output expectations fail closed', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = `ut-text-persistence-${++sequence}`;
+    const runId = `run_40085128-f369-4dea-a3e2-${String(sequence).padStart(12, '0')}`;
+    const profileId = 'integration-telegram-ux-v1';
+    await store.admitTask({ id: taskId, profileId, goal: 'historical receipt' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const submit = vi.fn(async () => { throw new Error('Historical submit must not repeat'); });
+    const adapter = { submit, status: async () => ({ state: 'succeeded', answer: '42' }),
+      events: async () => ({ events: [], hasMore: false }), artifacts: async () => [],
+      result: async () => ({ runId, ownerGeneration: 1, outcome: 'succeeded', exitReason: 'completed', outputRefs: [], persistence: 'not_required' }),
+    } as unknown as RunnerApiAdapter;
+    const context: StepCtx = {
+      step: async (name, callback) => name === 'submit-runner'
+        ? { requestId: 'historical-request', userTaskId: taskId, runId, deduplicated: false } as never
+        : callback({ attempt: 1 }),
+      sleep: async () => {}, waitFor: async () => { throw new Error('Unexpected awaiting'); },
+    };
+    expect(await conversationPlan(context, store, { taskId, profileId, generation: 1, runId: attempt.id,
+      runnerEngine: 'dynamic-ip-azure-agent-run' }, { adapter, runSpecPolicy: defaultRunSpecPolicy() }))
+      .toMatchObject({ ok: false, reason: 'export_not_persisted' });
+    expect(submit).not.toHaveBeenCalled();
+    expect(await store.requireTask(taskId)).toMatchObject({ status: 'failed', generation: 1 });
   });
 
   it.each([
