@@ -492,6 +492,7 @@ export async function conversationPlan(
   // статус задачи не меняется), а повтор с тем же ключом возвращает тот же
   // Run, а не второй.
   let runnerRunId: string | null = null;
+  let runnerDeclaredOutputs: string[] | undefined;
   let runnerResultTimeoutSec = p.runnerTimeoutSec ?? 120;
   if (adapter) {
     const runSpecPolicy = deps.runSpecPolicy ?? defaultRunSpecPolicy();
@@ -516,6 +517,7 @@ export async function conversationPlan(
       runSpecPolicy,
     );
     runnerResultTimeoutSec = (runSpec.spec.limits.timeoutMs + (runSpecPolicy.startupTimeoutMs ?? 0)) / 1000;
+    runnerDeclaredOutputs = runSpec.spec.outputs?.map(output => output.path) ?? [];
     logRunSpecBuilt({
       profileId: taskProfileId,
       userTaskId: taskId,
@@ -658,6 +660,7 @@ export async function conversationPlan(
           taskId,
           generation,
           engineName: p.runnerEngine ?? 'opencode',
+          declaredOutputPaths: runnerDeclaredOutputs,
           pollSec: p.runnerPollSec ?? 1,
           timeoutSec: runnerResultTimeoutSec,
         }),
