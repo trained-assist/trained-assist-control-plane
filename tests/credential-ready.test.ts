@@ -47,6 +47,57 @@ function wakePort(store: TaskStore, sendEvent = vi.fn(async () => {})) {
 }
 
 describe('verified credential completion', () => {
+  it('uses only host-configured engine and budget at the HTTP readiness boundary', async () => {
+    const { store, taskId, event, awaitingInputId } = await parked();
+    const secret = 'credential-engine-test-secret';
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async () => ({})) };
+    await store.upsertPrincipal({ principalId: requirement.hostPrincipalId, profileId: event.profileId, scopes: ['tasks:signal'] });
+    await store.upsertPrincipal({ principalId: 'gateway-fixture', profileId: event.profileId, scopes: ['tasks:signal'] });
+    const bindings = { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow, PRINCIPAL_SECRET: secret,
+      CREDENTIAL_HOST_PRINCIPALS: requirement.hostPrincipalId, ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '900000' };
+    const request = async (principal: string) => worker.fetch(new Request(`https://cp.test/awaiting/${awaitingInputId}/credential-ready`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': principal,
+        'x-principal-sig': await signPrincipal(principal, secret) },
+      body: JSON.stringify({ ...event, status: 'ready', runnerEngine: 'opencode', runnerTimeoutSec: 1, runnerPollSec: 99 }),
+    }), bindings);
+    expect((await request('gateway-fixture')).status).toBe(403);
+    expect(workflow.create).not.toHaveBeenCalled();
+    const response = await request(requirement.hostPrincipalId);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ delivered: true });
+    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+      runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 900, runnerPollSec: 1, awaitingInputId,
+    }) });
+  });
+
+  it.each(['http', 'scheduled'] as const)('uses host settings for %s recovery of a pre-execution intent', async entrypoint => {
+    const { store, taskId, event, awaitingInputId } = await parked();
+    await store.completeCredentialAwaiting(event);
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async () => ({})) };
+    const bindings = { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
+      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000', DELIVERY_ADAPTER: 'local' };
+    if (entrypoint === 'http') {
+      expect((await worker.fetch(new Request('https://cp.test/recover', { method: 'POST',
+        body: JSON.stringify({ runnerEngine: 'opencode', runnerTimeoutSec: 1 }),
+      }), bindings)).status).toBe(200);
+    } else {
+      await worker.scheduled({} as ScheduledEvent, bindings, { waitUntil: () => {} } as unknown as ExecutionContext);
+    }
+    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+      runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 600, runnerPollSec: 1, awaitingInputId,
+    }) });
+  });
+
+  it.each([undefined, 'invalid', '0'])('does not start credential work without a valid host timeout (%s)', async timeout => {
+    const { store, taskId, event } = await parked();
+    await store.completeCredentialAwaiting(event);
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };
+    await worker.fetch(new Request('https://cp.test/recover'), { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
+      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', ...{ RUN_SPEC_TIMEOUT_MS: timeout } });
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await store.listRuns(taskId)).toHaveLength(0);
+  });
+
   it('keeps a pre-execution continuation pending without trusted execution settings', async () => {
     const { store, taskId, event } = await parked();
     const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };

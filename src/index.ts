@@ -262,6 +262,23 @@ const principalOf = async (req: Request, auth: PrincipalAuth): Promise<string> =
 const scheduleClockOf = (env: Env): Clock =>
   env.SCHEDULE_CLOCK ? new VirtualClock(Number(env.SCHEDULE_CLOCK)) : systemClock;
 
+const credentialExecutionOf = (env: Env) => {
+  const runnerEngine = env.ROUTER_AGENT_ENGINE?.trim();
+  if (!runnerEngine) return undefined;
+  try {
+    const bindings = env as unknown as Record<string, string | undefined>;
+    const policy = runSpecPolicyOf(bindings) as { timeoutMs?: number };
+    const timeoutMs = policy.timeoutMs ?? (bindings.RUN_SPEC_TIMEOUT_MS ? Number(bindings.RUN_SPEC_TIMEOUT_MS) : undefined);
+    if (!timeoutMs) return undefined;
+    return { runnerEngine, runnerTimeoutSec: timeoutMs / 1000, runnerPollSec: 1 };
+  } catch {
+    return undefined;
+  }
+};
+
+const workflowPortOf = (env: Env, store: TaskStore) =>
+  new CfWorkflowPort(env.TASK_WORKFLOW, store, credentialExecutionOf(env));
+
 const scheduleServiceOf = (env: Env, store: TaskStore, port: CfWorkflowPort, clock?: Clock): ScheduleService =>
   new ScheduleService({
     store: new ScheduleStore(env.DB),
@@ -274,7 +291,7 @@ const gtdServiceOf = (env: Env, store: TaskStore, clock?: Clock): GtdService =>
   new GtdService({
     store: new GtdStore(env.DB),
     tasks: store,
-    port: new CfWorkflowPort(env.TASK_WORKFLOW, store),
+    port: workflowPortOf(env, store),
     clock: clock ?? scheduleClockOf(env),
   });
 
@@ -1004,7 +1021,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
-     const port = new CfWorkflowPort(env.TASK_WORKFLOW, store);
+     const port = workflowPortOf(env, store);
     // Проверяющая аутентификация: секрет только в binding, в запросе его нет.
     const auth = principalAuthOf(env as unknown as Record<string, string | undefined>);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
@@ -1439,7 +1456,7 @@ const startResult = await port.submit(input);
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
     const adapter = await resolveDeliveryAdapter(env);
-    await new CfWorkflowPort(env.TASK_WORKFLOW, store).recoverCredentialContinuations();
+    await workflowPortOf(env, store).recoverCredentialContinuations();
 
     // Детектор наблюдает и уведомляет; переход состояния и запуск выполняет
     // существующий авторитетный владелец (Output/Router), не планировщик.
