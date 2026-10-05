@@ -19,7 +19,7 @@ owner-only files (`0600`, no symlinks):
 
 ```json
 {
-  "version": "credential-boundary-verify-v1",
+  "version": "credential-boundary-verify-v2",
   "cpOrigin": "https://OWNED_CONTROL_PLANE_HOST",
   "statusMethod": "GET",
   "taskId": "ut-example",
@@ -34,7 +34,8 @@ owner-only files (`0600`, no symlinks):
   "generation": 1,
   "waitVersion": 1,
   "runId": "run_00000000-0000-0000-0000-000000000000",
-  "engine": "dynamic-ip-azure-agent-run"
+  "orchestrationEngine": "cloudflare-workflows",
+  "nativeEngine": "dynamic-ip-azure-agent-run"
 }
 ```
 
@@ -43,6 +44,12 @@ canonical Runner ID. `statusMethod` may be `GET` or `POST`; the latter sends onl
 `{taskId}` to the read-only `/status` projection. This is not a continuation POST.
 The expectation schema rejects unknown keys; the origin has no path, credentials,
 query or fragment. Private binding values are never arguments or printed output.
+
+Schema v2 replaces the ambiguous v1 `engine` field; v1 inputs refuse rather than
+being silently reinterpreted. Use a separately reviewed v2 expectation; do not
+rewrite checkpoint evidence or relax assertions to make an old run pass.
+`orchestrationEngine` identifies the CP attempt owner. `nativeEngine` expresses
+the expected Runner selection, not proof of that selection.
 
 ```sh
 node tools/credential-boundary-verify.mjs verify \
@@ -66,8 +73,25 @@ retry, checkpoint write, credential provisioning, or mutation endpoint.
   JSON and projection, no native checkpoint, answer timestamp and signal identity.
 - Task: same task/conversation/generation, terminal `done`, answered-wait projection
   and exactly one consumed, unrejected typed credential-ready signal.
-- Native execution: one total attempt, exact canonical session/engine/generation,
-  successful completion after readiness, persisted native final-answer channel.
+- Workflow execution: one total attempt, exact canonical Runner session and CP
+  orchestration engine/generation, Workflow start after readiness and successful
+  completion, with a persisted native final-answer channel.
+
+Original CP `WorkflowPort.submit` sets `engine: "cloudflare-workflows"`
+(`src/workflow-port/workflow-port.ts:263`). `TaskStore.startRun` persists that
+label and Workflow `started_at`; neither field describes native launch.
+`TaskStore.attachRunnerRun` updates only `session_id`
+(`src/taskstore/task-store.ts:701`). Runner selection is separately supplied as
+`runnerEngine` by the conversation plan.
+
+The verifier emits `successfulWorkflowAttemptCount: 1`,
+`workflowStartedAfterReadiness: true`, `nativeFinalAnswerChannelVerified: true`,
+**`nativeEngineVerified: false`** and **`nativeLaunchTimeVerified: false`**.
+A canonical UUID or answer-channel marker alone never proves selected engine or
+native launch time. Selected-native acceptance additionally needs independently
+scoped Runner status/capabilities and parent-owned configured-engine/native-job
+evidence for this exact run. This tool does not obtain or validate that evidence;
+changing local metadata cannot make those flags true.
 
 `/status` at this revision does not expose task `profile_id`; actor scope is checked
 using the signed dedicated host binding, checkpoint and wait `respondent_scope`.
@@ -77,8 +101,10 @@ snapshot; disagreement fails closed rather than replaying or repairing anything.
 Checkpoint flags/acknowledgements are operator evidence, not a new independent
 OAuth check or cryptographic proof of event causality. The verifier does not query
 the completion table or assert how many workflow wake hints were sent. A pass
-proves the observed durable boundary and one successful native attempt, not broker
-readiness, an existing native-checkpoint resume, CSV correctness or outbound delivery.
+proves the durable boundary, one successful Workflow attempt after readiness and
+the native final-answer channel. It does not prove selected native-engine identity,
+native launch time, broker readiness, native-checkpoint resume, CSV correctness
+or outbound delivery.
 
 ## Immutable CSV readback: separate acceptance step
 
