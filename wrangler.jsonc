@@ -3,6 +3,18 @@
   "name": "trained-assist-control-plane",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
+  // Cloudflare error 1042: by default a Worker may NOT fetch another Worker of the
+  // SAME zone/account over a public hostname — the request is answered 404/1042
+  // before it ever reaches the target's routes. Both the control plane and the
+  // Telegram gateway live in this account, so the C02.1 seam (control plane → POST
+  // /deliver) cannot work without this flag; it makes such fetches resolve like a
+  // public client would, going out via the public internet.
+  //
+  // Chosen over a service binding on purpose: the seam addresses the gateway by
+  // URL (GATEWAY_DELIVERY_URL), so staging and prod point at different gateways
+  // with the same code. A service binding would bind by worker name and remove that
+  // indirection.
+  "compatibility_flags": ["global_fetch_strictly_public"],
   // Песочница на workers.dev: публичный URL нужен для прогона «Cloudflare → VM
   // Runner». Доступ закрыт проверяющей аутентификацией (HMAC по binding
   // PRINCIPAL_SECRET) — без подписи любой запрос получает 401.

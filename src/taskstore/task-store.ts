@@ -610,6 +610,25 @@ export class TaskStore {
     return this.requirePendingInput(batchId);
   }
 
+  /** Пакет по id; null — уже снят накопителем. */
+  async getPendingInput(batchId: string): Promise<PendingInputRow | null> {
+    return this.db.prepare('SELECT * FROM pending_inputs WHERE batch_id = ?').bind(batchId).first<PendingInputRow>();
+  }
+
+  /**
+   * Пакет снят осознанно (запуск, отмена, /clean_buffer) — детектор не должен
+   * превращать решение пользователя в «зависший ввод». Строка остаётся в базе с
+   * prep_state, но больше не попадает в выборку детектора (user_task_id IS NULL
+   * И deadline в прошлом), поэтому отдельный статус не нужен: важно лишь, чтобы
+   * пакет перестал быть просроченным.
+   */
+  async dropPendingInput(batchId: string, _reason: string): Promise<void> {
+    await this.db
+      .prepare('UPDATE pending_inputs SET deadline_at = NULL, updated_at = ? WHERE batch_id = ?')
+      .bind(Date.now(), batchId)
+      .run();
+  }
+
   async requirePendingInput(batchId: string): Promise<PendingInputRow> {
     const row = await this.db
       .prepare('SELECT * FROM pending_inputs WHERE batch_id = ?')
