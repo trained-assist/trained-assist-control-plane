@@ -1651,7 +1651,7 @@ export class TaskStore {
    */
   async confirmCancel(
     taskId: string,
-    opts: { source?: EventSource; reason?: string } = {},
+    opts: { source?: EventSource; reason?: string; expectedGeneration?: number } = {},
   ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
     const now = Date.now();
     const before = await this.getTask(taskId);
@@ -1661,17 +1661,21 @@ export class TaskStore {
     if (isTerminalStatus(before.status)) {
       return { cancelled: false, generation: before.generation, status: before.status };
     }
+    if (opts.expectedGeneration !== undefined && before.generation !== opts.expectedGeneration) {
+      return { cancelled: false, generation: before.generation, status: before.status };
+    }
 
     const results = await this.db.batch([
       this.db
         .prepare(
           `UPDATE durable_tasks SET status = 'cancelled', updated_at = ?, revision = revision + 1
-           WHERE id = ? AND ${NON_TERMINAL_SQL}`,
+           WHERE id = ? AND ${NON_TERMINAL_SQL} AND (? IS NULL OR generation = ?)`,
         )
-        .bind(now, taskId),
+        .bind(now, taskId, opts.expectedGeneration ?? null, opts.expectedGeneration ?? null),
       this.db
-        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'`)
-        .bind(taskId),
+        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND generation = ? AND status = 'cancelled'))`)
+        .bind(taskId, opts.expectedGeneration ?? null, taskId, opts.expectedGeneration ?? null),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const row = await this.requireTask(taskId);
