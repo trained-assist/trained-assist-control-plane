@@ -12,8 +12,10 @@ import {
   untransmittedRunSpecFields,
   validateRunSpec,
   type RunSpec,
+  type RunSpecInput,
   type RunSpecPolicy,
 } from '../src/run-spec/run-spec';
+import { RunnerApiAdapter } from '../src/runner-adapter';
 import { describe, expect, it } from 'vitest';
 
 const baseInput = {
@@ -265,7 +267,7 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     );
   });
 
-  it('MCP объявляется в mapping, но в submit не переносится — факт виден', () => {
+  it('MCP переносится в submit, а не выбрасывается: факт виден и в теле, и в списке непереданных', () => {
     const built = buildRunSpec(
       baseInput,
       runSpecPolicyOf({
@@ -273,8 +275,170 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
       }),
     );
     expect(built.spec.mcp?.servers).toHaveLength(1);
-    expect('mcp' in toSubmitRequest(built.spec)).toBe(false);
-    expect(untransmittedRunSpecFields(built.spec)).toContain('mcp');
+    expect(toSubmitRequest(built.spec).mcp).toEqual(built.spec.mcp);
+    expect(untransmittedRunSpecFields(built.spec)).not.toContain('mcp');
+  });
+});
+
+describe('run-spec: удалённый MCP (transport remote)', () => {
+  const remotePolicy = (server: Record<string, unknown>) =>
+    runSpecPolicyOf({ RUN_SPEC_MCP: JSON.stringify({ servers: [server] }) });
+
+  const remoteServer = (overrides: Record<string, unknown> = {}) => ({
+    serverId: 'google-documents',
+    transport: 'remote',
+    url: 'https://documents.example.com/mcp',
+    bindingRef: 'google-documents-v1',
+    allowedTools: ['gdrive_create_spreadsheet', 'gdrive_read_sheet', 'gdrive_write_sheet'],
+    toolTimeoutMs: 60_000,
+    ...overrides,
+  });
+
+  it('хостовая политика RUN_SPEC_MCP собирает remote-сервер и проходит локальную проверку контракта', () => {
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+
+    expect(built.version).toBe('run-spec-v3');
+    expect(built.spec.mcp).toEqual({ servers: [remoteServer()] });
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+    expect(built.spec.credentialBindings).toBeUndefined();
+  });
+
+  it('в submit уходит ровно объявленное: transport, url, bindingRef, allowedTools — и никаких секретов', () => {
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+    const body = toSubmitRequest(built.spec);
+
+    expect(body.mcp).toEqual(built.spec.mcp);
+    const wire = JSON.stringify(body.mcp).toLowerCase();
+    for (const forbidden of ['headers', 'authorization', 'token', 'secret', 'password', 'envallowlist', 'command', 'args', 'runauth']) {
+      expect(wire).not.toContain(forbidden);
+    }
+    expect(untransmittedRunSpecFields(built.spec)).not.toContain('mcp');
+  });
+
+  it('клиентский mcp во входе отклоняется: MCP — хостовая политика', () => {
+    const injected = {
+      ...baseInput,
+      mcp: { servers: [{ serverId: 'x', transport: 'remote', url: 'https://a.example.com/mcp', allowedTools: ['t'] }] },
+    } as unknown as RunSpecInput;
+    expect(() => buildRunSpec(injected, policy)).toThrow(RunSpecMappingError);
+  });
+
+  it('смешанный список stdio + remote сохраняется целиком в RunSpec и в теле submit', () => {
+    const mixed = runSpecPolicyOf({
+      RUN_SPEC_MCP: JSON.stringify({
+        servers: [
+          { serverId: 'fs', transport: 'stdio', command: 'node', args: ['server.mjs'], envAllowlist: ['HOME'], allowedTools: ['read_file'] },
+          { serverId: 'jira', transport: 'remote', url: 'https://mcp.example.com/jira', bindingRef: 'mcp-jira', allowedTools: ['create_issue'] },
+        ],
+      }),
+    });
+    const built = buildRunSpec(baseInput, mixed);
+
+    expect(built.spec.mcp?.servers.map((s) => s.serverId)).toEqual(['fs', 'jira']);
+    expect(toSubmitRequest(built.spec).mcp?.servers.map((s) => s.transport)).toEqual(['stdio', 'remote']);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('URL с учётными данными, query, fragment, управляющими символами или не-absolute отклоняется', () => {
+    for (const url of [
+      'https://user:pass@mcp.example.com/jira',
+      'https://mcp.example.com/jira?token=abc',
+      'https://mcp.example.com/jira#frag',
+      '/mcp',
+      'mcp.example.com/jira',
+      'ftp://mcp.example.com',
+      'http://mcp.example.com/mcp',
+      `https://mcp.example.com/${'a'.repeat(2000)}`,
+      'https://mcp.example.com/ja\x00ra',
+    ]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ url })))).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('заголовки/токены/секреты и stdio-поля в remote-сервере отклоняются как неизвестные', () => {
+    for (const extra of [
+      { headers: { authorization: 'Bearer x' } },
+      { auth: 'Bearer x' },
+      { token: 'x' },
+      { secrets: ['x'] },
+      { runAuth: { scope: 'jira' } },
+      { command: 'node' },
+      { args: ['server.mjs'] },
+      { envAllowlist: ['TOKEN'] },
+      { readinessTimeoutMs: 20_000 },
+    ]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer(extra)))).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('неизвестный transport и небезопасный bindingRef отклоняются', () => {
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ transport: 'http' })))).toThrow(RunSpecMappingError);
+    for (const bindingRef of [undefined, '', '   ', 'ref\x00x', 'r'.repeat(301)]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ bindingRef })))).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('tool timeout follows the bounded Runner contract', () => {
+    for (const toolTimeoutMs of [0, -1, 1.5, 120_001]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs })))).toThrow(RunSpecMappingError);
+    }
+    expect(buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs: 120_000 }))).spec.mcp).toBeDefined();
+  });
+
+  it('повторяющийся serverId и общий инструмент у stdio и remote отклоняются', () => {
+    const dupServer = runSpecPolicyOf({
+      RUN_SPEC_MCP: JSON.stringify({
+        servers: [
+          { serverId: 'jira', transport: 'remote', url: 'https://a.example.com/mcp', bindingRef: 'mcp-jira', allowedTools: ['search'] },
+          { serverId: 'jira', transport: 'remote', url: 'https://b.example.com/mcp', bindingRef: 'mcp-other', allowedTools: ['other'] },
+        ],
+      }),
+    });
+    expect(() => buildRunSpec(baseInput, dupServer)).toThrow(/duplicate server id/);
+
+    const crossTransportTool = runSpecPolicyOf({
+      RUN_SPEC_MCP: JSON.stringify({
+        servers: [
+          { serverId: 'fs', transport: 'stdio', command: 'node', allowedTools: ['search'] },
+          { serverId: 'jira', transport: 'remote', url: 'https://a.example.com/mcp', bindingRef: 'mcp-jira', allowedTools: ['search'] },
+        ],
+      }),
+    });
+    expect(() => buildRunSpec(baseInput, crossTransportTool)).toThrow(/already declared/);
+  });
+
+  it('rejects extra MCP envelope fields instead of serializing hidden auth metadata', () => {
+    const hostPolicy = runSpecPolicyOf({ RUN_SPEC_MCP: JSON.stringify({ servers: [remoteServer()], headers: { authorization: 'fixture-only' } }) });
+    expect(() => buildRunSpec(baseInput, hostPolicy)).toThrow(/unsupported field for remote metadata/);
+  });
+
+  it('allows only a bounded explicit tool declaration without treating it as enforcement', () => {
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: [] })))).toThrow(/at least one tool/);
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: ['read', 'read'] })))).toThrow(/already declared/);
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: Array.from({ length: 51 }, (_, index) => `tool_${index}`) })))).toThrow(/at most 50/);
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs: undefined })));
+    expect(toSubmitRequest(built.spec).mcp?.servers[0]).toEqual(remoteServer({ toolTimeoutMs: undefined }));
+  });
+
+  it('adapter.submit с runSpec отправляет ровно проекцию: mcp в теле, служебные поля и секреты — нет', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ requestId: 'req-1', userTaskId: 'ut-abc123', runId: 'run-1', deduplicated: false }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', fetchImpl);
+
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+    const receipt = await adapter.submit({ userTaskId: 'ut-abc123', idempotencyKey: 'k1', runSpec: built.spec });
+
+    expect(receipt.runId).toBe('run-1');
+    expect(bodies[0]!['mcp']).toEqual(toSubmitRequest(built.spec).mcp);
+    expect(bodies[0]!['contractVersion']).toBeUndefined();
+    expect(bodies[0]!['cwd']).toBeUndefined();
+    expect(JSON.stringify(bodies[0])).not.toContain('Bearer');
   });
 });
 

@@ -24,7 +24,7 @@
 import { logStructured } from '../logging/structured-log';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v2';
+export const RUN_SPEC_VERSION = 'run-spec-v3';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -53,7 +53,7 @@ export interface OutputSpec {
   mime?: string;
 }
 
-export interface McpServerSpec {
+export interface StdioMcpServerSpec {
   serverId: string;
   transport: 'stdio';
   command: string;
@@ -64,6 +64,17 @@ export interface McpServerSpec {
   readinessTimeoutMs?: number;
   toolTimeoutMs?: number;
 }
+
+export interface RemoteMcpServerSpec {
+  serverId: string;
+  transport: 'remote';
+  url: string;
+  bindingRef: string;
+  allowedTools: string[];
+  toolTimeoutMs?: number;
+}
+
+export type McpServerSpec = StdioMcpServerSpec | RemoteMcpServerSpec;
 
 export interface McpSpec {
   servers: McpServerSpec[];
@@ -146,6 +157,7 @@ export interface SubmitRequest {
   budget?: BudgetSpec;
   result?: ResultPolicy;
   outputs?: OutputSpec[];
+  mcp?: McpSpec;
   traceId?: string;
   instructions?: string;
   repository?: RepositorySpec;
@@ -154,10 +166,10 @@ export interface SubmitRequest {
 /**
  * Проекция RunSpec → тело `POST /v1/runs`.
  *
- * `mcp` объявляется в mapping'е (хостовая политика, версионирована), но
- * контракт submit его не переносит: отправка была бы отклонена как
- * «unknown field». Поэтому MCP честно НЕ передаётся, а факт виден в логе
- * (`run_spec.mcp_not_transmitted`) — молчаливое выбрасывание хуже.
+ * `mcp` переносится дословно: объявление MCP-серверов — хостовая политика, и
+ * Runner разрешает opaque bindingRef в scoped runAuth; allowedTools — декларация,
+ * а не enforcement. Значений секретов в remote metadata нет. Поля,
+ * которые Runner выводит сам, перечислены в `untransmittedRunSpecFields`.
  */
 export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   const body: SubmitRequest = {
@@ -171,6 +183,7 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.outputs) body.outputs = spec.outputs;
   if (spec.repository) body.repository = spec.repository;
   if (spec.result) body.result = spec.result;
+  if (spec.mcp) body.mcp = spec.mcp;
   if (spec.traceId) body.traceId = spec.traceId;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
@@ -179,7 +192,6 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
 /** Поля RunSpec, которые контракт submit не переносит (для лога и отчёта). */
 export function untransmittedRunSpecFields(spec: RunSpec): string[] {
   const fields: string[] = [];
-  if (spec.mcp) fields.push('mcp');
   for (const key of ['contractVersion', 'jobId', 'runId', 'operationId', 'profileId', 'ownerGeneration', 'cwd'] as const) {
     fields.push(key);
   }
@@ -256,6 +268,18 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const REPOSITORY_FULL_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
 const PROMPT_CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+const MAX_MCP_URL_CHARS = 2000;
+const MAX_MCP_BINDING_REF_CHARS = 300;
+const MAX_MCP_TOOL_TIMEOUT_MS = 120_000;
+const REMOTE_MCP_SERVER_KEYS = new Set([
+  'serverId',
+  'transport',
+  'url',
+  'bindingRef',
+  'allowedTools',
+  'toolTimeoutMs',
+]);
 
 function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
   if (!raw) return fallback;
@@ -353,10 +377,13 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
  * входной тип.
  */
 export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltRunSpec {
-  const errors: string[] = [];
   const fail = (field: string, message: string): never => {
     throw new RunSpecMappingError(message, field);
   };
+
+  if ('mcp' in input) {
+    fail('mcp', 'mcp: host-owned field must not come from the client input');
+  }
 
   if (!SAFE_ID.test(input.userTaskId)) fail('userTaskId', 'userTaskId: expected a safe id');
   if (input.profileId.length === 0 || input.profileId.length > 200) fail('profileId', 'profileId: expected 1..200 chars');
@@ -437,6 +464,35 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if (!validation.ok) fail('spec', `built RunSpec is rejected by the Runner contract: ${validation.errors.join('; ')}`);
 
   return { spec, version: RUN_SPEC_VERSION, promptNormalized, runId, jobId, operationId };
+}
+
+function isSafeBindingRef(value: unknown): boolean {
+  return (
+    typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= MAX_MCP_BINDING_REF_CHARS
+    && !CONTROL_CHARS.test(value)
+  );
+}
+
+function remoteMcpUrlErrors(url: unknown, path: string): string[] {
+  if (typeof url !== 'string' || url.length === 0 || url.length > MAX_MCP_URL_CHARS) {
+    return [`${path}: expected an absolute HTTPS URL of 1..${MAX_MCP_URL_CHARS} chars`];
+  }
+  if (CONTROL_CHARS.test(url)) return [`${path}: unsupported control characters`];
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return [`${path}: expected an absolute HTTPS URL`];
+  }
+  const errors: string[] = [];
+  if (parsed.protocol !== 'https:') errors.push(`${path}: expected HTTPS`);
+  if (parsed.hostname.length === 0) errors.push(`${path}: expected a nonempty hostname`);
+  if (parsed.username.length > 0 || parsed.password.length > 0) errors.push(`${path}: must not carry credentials`);
+  if (parsed.search.length > 0) errors.push(`${path}: must not carry a query`);
+  if (parsed.hash.length > 0) errors.push(`${path}: must not carry a fragment`);
+  return errors;
 }
 
 // ── Локальная проверка по контракту Runner'а ───────────────────────────────
@@ -548,6 +604,12 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
       errors.push('spec.mcp.servers: expected a non-empty array');
     } else {
       const toolOwner = new Map<string, string>();
+      const serverIds = new Set<string>();
+      if (spec.mcp.servers.some((server) => server?.transport === 'remote')) {
+        for (const key of Object.keys(spec.mcp)) {
+          if (key !== 'servers') errors.push('spec.mcp: unsupported field for remote metadata');
+        }
+      }
       spec.mcp.servers.forEach((server, i) => {
         const path = `spec.mcp.servers[${i}]`;
         if (typeof server !== 'object' || server === null) {
@@ -555,8 +617,9 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
           return;
         }
         if (!SAFE_ID.test(server.serverId)) errors.push(`${path}.serverId: expected a safe id`);
-        if (server.transport !== 'stdio') errors.push(`${path}.transport: expected "stdio"`);
-        if (typeof server.command !== 'string' || server.command.length === 0 || server.command.length > 512) errors.push(`${path}.command: expected 1..512 chars`);
+        else if (serverIds.has(server.serverId)) errors.push(`${path}.serverId: duplicate server id "${server.serverId}"`);
+        else serverIds.add(server.serverId);
+
         if (!Array.isArray(server.allowedTools) || server.allowedTools.length === 0) {
           errors.push(`${path}.allowedTools: at least one tool is required`);
         } else {
@@ -570,6 +633,30 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
             else toolOwner.set(tool, server.serverId);
           });
         }
+
+        if (server.transport === 'remote') {
+          if (!isSafeBindingRef(server.bindingRef)) {
+            errors.push(`${path}.bindingRef: expected 1..${MAX_MCP_BINDING_REF_CHARS} chars without control characters`);
+          }
+          if (Array.isArray(server.allowedTools) && server.allowedTools.length > 50) {
+            errors.push(`${path}.allowedTools: at most 50 tools are allowed`);
+          }
+          if (server.toolTimeoutMs !== undefined && (!Number.isInteger(server.toolTimeoutMs) || server.toolTimeoutMs <= 0 || server.toolTimeoutMs > MAX_MCP_TOOL_TIMEOUT_MS)) {
+            errors.push(`${path}.toolTimeoutMs: expected an integer in [1, ${MAX_MCP_TOOL_TIMEOUT_MS}]`);
+          }
+          for (const key of Object.keys(server)) {
+            if (!REMOTE_MCP_SERVER_KEYS.has(key)) {
+              errors.push(`${path}.${key}: unsupported field for transport "remote"`);
+            }
+          }
+          errors.push(...remoteMcpUrlErrors(server.url, `${path}.url`));
+          return;
+        }
+        if (server.transport !== 'stdio') {
+          errors.push(`${path}.transport: expected "stdio" or "remote"`);
+          return;
+        }
+        if (typeof server.command !== 'string' || server.command.length === 0 || server.command.length > 512) errors.push(`${path}.command: expected 1..512 chars`);
         if (server.envAllowlist !== undefined) {
           if (!Array.isArray(server.envAllowlist)) errors.push(`${path}.envAllowlist: expected an array`);
           else server.envAllowlist.forEach((name, j) => {
@@ -639,7 +726,7 @@ export function logRunSpecBuilt(fields: {
   refs: number;
   outputs: number;
   mcpServers: number;
-  /** true, если MCP объявлен, но контракт submit его не переносит. */
+  /** Всегда false: `mcp` переносится в тело submit вместе с остальным RunSpec. */
   mcpNotTransmitted?: boolean;
   /** Поля RunSpec, которые Runner выводит сам и в submit не передаются. */
   untransmitted?: string[];
