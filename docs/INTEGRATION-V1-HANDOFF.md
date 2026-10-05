@@ -7,12 +7,12 @@ The deployed contour is isolated test infrastructure. Production traffic is unch
 
 | Component | Source / review | Runtime |
 | --- | --- | --- |
-| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), `844fdef` | Separate sandbox Worker; bot token and chat allowlist pending |
+| Telegram gateway | [PR351](https://github.com/trained-assist/trained-assist-tg-bot/pull/351), `844fdef` | Separate sandbox Worker; temporary owner-approved test bot, single private chat allowlist and signed webhook configured; delivery acceptance pending |
 | Communication methods | [PR18](https://github.com/trained-assist/trained-assist-communication-skills/pull/18), `4a64612` | Separate communication Worker |
 | Control plane | [PR43](https://github.com/trained-assist/trained-assist-control-plane/pull/43); deployed runtime code includes `c41db51` | Separate Worker, D1 and Workflow; scoped credential host enabled |
 | Runner | [PR131](https://github.com/trained-assist/ai-agent-runner/pull/131), `97956c5` | Own permanent, boot-enabled VM unit; separate key registry/journal; Google MCP off |
 | Native execution | [PR2](https://github.com/vovalikessmoothy-png/opencode-gha-runner/pull/2), execution source `47379f6`; [owned deployment PR3](https://github.com/vovalikessmoothy-png/opencode-gha-runner/pull/3) | Own Worker/KV and strong host-only claim authentication |
-| Google activation primitives | [PR24](https://github.com/trained-assist/trained-assist-documents-skill/pull/24), `1466a33`; owner-target PR22 and provider-verifier PR23 | Reviewed/tested source composition; live Google MCP remains off |
+| Google activation primitives | [PR24](https://github.com/trained-assist/trained-assist-documents-skill/pull/24), `f8eea06`; owner-target PR22, provider-verifier PR23 and source-protection PR25 | Reviewed/tested source composition; scoped writes require operation IDs and a host-pinned protected source; live Google MCP remains off |
 
 Runner HTTPS uses a VM-side development Quick Tunnel. The laptop relay is stopped.
 Each new connector process receives a new URL: update the owned Runner public URL and
@@ -30,8 +30,8 @@ hostname remain the production transport gate. Shared units/tunnels stay unchang
 | User/preflight/wrong-binding readiness | PASS refusal | Ordinary principal 403; preflight and changed binding 409; one durable credential completion/signal retained |
 | Own Runner restart | PASS terminal recovery | Both canonical CSV results/artifacts unchanged, one admission/dispatch/model launch each |
 | Mandatory output omitted | PASS expected failure | `ut-3364752a81741b5e0e54`, `run_caf880bb-ce25-441f-99b8-9b1aec48f9e3`; task failed/finished, one failed attempt, `ARTIFACTS_MISSING`, zero artifacts |
-| Real Telegram ingress/delivery | BLOCKED | Rotated test bot, allowed chat/user and webhook handoff pending |
-| Real Google Sheet and monthly follow-up | BLOCKED | Dedicated approved Sheet and live scoped MCP activation pending |
+| Real Telegram ingress/delivery | PENDING | Owner chat discovered with a one-time challenge; signed test webhook and single-chat allowlist configured; real quick-answer delivery and post-handoff user message still need verification |
+| Real Google Sheet and monthly follow-up | BLOCKED | Dedicated Sheet approved; exact SA authenticates, but Drive metadata returns 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
 Both successful CSV outputs have 35 bytes, SHA-256
 `8072bf3523ee80345e5a10a08070f0d50779c65cb5d3b611702cbab39ea95da6`,
@@ -84,12 +84,18 @@ Unknown outcomes require reconciliation of the existing task, not a fresh reques
 
 ## Activation gates and limits
 
-- Test bot credentials must be rotated after the diagnostic disclosure; share only
-  their Secret Manager reference. Obtain the test chat/user allowlist and explicit
-  webhook handoff before configuring the isolated gateway.
+- The owner authorized temporary test-bot credentials and webhook handoff. The
+  discovered private chat is the only allowed destination; no wildcard is used.
+  Delete the temporary bot or rotate its disclosed token after testing. Production
+  credentials must use Secret Manager references and must not be shared in chat.
 - Use an empty owner-approved Sheet shared to the dedicated test service account.
   Configure trusted per-task owner authorization and scoped HTTPS MCP forwarding
   before agent admission; credentials and owner authorization stay on the host.
+  Pin `protectedSourceSheetName` before minting: scoped model writes require a valid
+  operation ID, refuse the protected source even if caller arguments omit or lie
+  about it, and use verified immutable new-tab operations. See the
+  [two-phase Google operator](AGENT-GOOGLE-SHEET-LIVE-RUN.md); prepare accepts a
+  stable task without dispatch, and ambiguous starts require reconciliation.
 - Provider attestation exercised real account authentication and zero Google
   artifact calls. Automatic provider-form handoff and Sheet work remain separate gates.
 - Recovery currently changes Runner result timestamps. Artifact identity and launch
