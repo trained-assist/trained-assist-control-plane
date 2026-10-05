@@ -25,11 +25,18 @@ Each private binding has exactly the operator-facing fields:
 client bindings locally; signatures must be exactly 64 lowercase hexadecimal
 characters. Do not paste signatures into terminals or commit files. Transport
 uses `redirect: 'error'`; CP JSON responses are bounded to 1 MiB and object-shaped.
-Private input JSON has `goal`, `csvRef`, `bindingRef`, `providerSessionRef`.
-Use the actual public `raw.githubusercontent.com` CSV fixture URL pinned to
-sourceSha `a4acd6c` (or its full 40-character commit SHA), never a moving branch.
+Private input JSON has `goal`, `csvOwnerRepo`, `csvRef`, `bindingRef`,
+`providerSessionRef`. Parent supplies the verified fixture `csvOwnerRepo`; no
+repository name is guessed by the harness. `csvRef` must match exactly:
+`https://raw.githubusercontent.com/<csvOwnerRepo>/a4acd6c1f428d56abb1fdb6610889528f3049fb5/fixtures/integration-v1/category-source.csv`.
+Short SHA, moving branch, wrong repository/path or query is refused.
 The submitted goal explicitly requires download followed by reading the downloaded
 file before computation. This harness itself never reads artifact bytes.
+Intake sends explicit `profileId: integration-v1` (verified against the principal
+by `IntakeService`) and text-only `inputItems`; the URL appears only in that text.
+It sends no `artifactRefs`, because the current Runner rejects nonempty input
+refs without durable workspace support. Fresh/retry HTTP receipt statuses are
+201/200 in the actual worker intake route, not an invented fixture contract.
 Opaque binding/session refs must correspond to the actual isolated provider
 verification context, not a credential value. Goal must not claim a Sheet target.
 
@@ -37,7 +44,7 @@ verification context, not a credential value. Goal must not claim a Sheet target
 node tools/credential-boundary-prepare.mjs prepare \
   /private/user-client-binding.json /private/host-client-binding.json \
   /private/csv-boundary-input.json /private/new-boundary-state.json
-node --test tools/credential-boundary-prepare.test.mjs
+node --experimental-transform-types --test tools/credential-boundary-prepare.test.mjs
 ```
 
 Run preparation only when parent authorizes the live HTTP writes. A fresh UUID

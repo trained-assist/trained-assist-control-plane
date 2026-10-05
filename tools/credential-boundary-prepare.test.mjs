@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareBoundary, privateClient } from './credential-boundary-prepare.mjs';
+import { normalizeEnvelope, artifactRefsOf } from '../src/intake/envelope.ts';
 
 function fixture(overrides = {}) {
   const calls = [];
@@ -33,7 +34,8 @@ function fixture(overrides = {}) {
   const origin = 'https://cp.fixture';
   return { calls, input: { user: { principalId: 'integration-v1-user', origin, call },
     host: { principalId: 'integration-v1-google-host', origin, call },
-    goal: 'Process the provided CSV; no Sheet target is claimed.', csvRef: 'https://raw.githubusercontent.com/fixture/repo/a4acd6c/input.csv',
+    goal: 'Process the provided CSV; no Sheet target is claimed.', csvOwnerRepo: 'fixture/repo',
+    csvRef: 'https://raw.githubusercontent.com/fixture/repo/a4acd6c1f428d56abb1fdb6610889528f3049fb5/fixtures/integration-v1/category-source.csv',
     bindingRef: 'isolated-google-binding', providerSessionRef: 'isolated-google-session', nonce: 'fixture-nonce' } };
 }
 
@@ -49,6 +51,12 @@ test('prepares a fresh receipt and exact bound wait, never dispatches or attests
   assert.ok(calls.every(value => !/credential-ready|\/route|\/start|\/recover/.test(value.path)));
   assert.equal(calls.filter(value => value.path === '/intake').length, 2);
   assert.match(calls.find(value => value.path === '/intake').body.inputItems[0].text, /Download it, then read the downloaded file/);
+  const envelope = calls.find(value => value.path === '/intake').body;
+  assert.equal(envelope.profileId, 'integration-v1');
+  const normalized = normalizeEnvelope(envelope);
+  assert.deepEqual(Object.keys(envelope.inputItems[0]), ['text']);
+  assert.deepEqual(normalized.inputItems, [{ text: envelope.inputItems[0].text, artifactRefs: undefined, snapshotId: undefined }]);
+  assert.deepEqual(artifactRefsOf(normalized), []);
   assert.deepEqual(calls.find(value => value.path === '/awaiting').body.credential, {
     provider: 'google', bindingRef: input.bindingRef, providerSessionRef: input.providerSessionRef,
   });
@@ -73,6 +81,13 @@ test('refuses the user principal as credential host before any requests', async 
   immutable.input.csvRef = 'https://raw.githubusercontent.com/fixture/repo/main/input.csv';
   await assert.rejects(prepareBoundary(immutable.input), /immutable_csv_source_a4acd6c_required/);
   assert.equal(immutable.calls.length, 0);
+  for (const csvRef of [input.csvRef.replace('a4acd6c1f428d56abb1fdb6610889528f3049fb5', 'a4acd6c'),
+    input.csvRef.replace('category-source.csv', 'other.csv'), input.csvRef.replace('fixture/repo', 'fixture/other')]) {
+    const invalid = fixture();
+    invalid.input.csvRef = csvRef;
+    await assert.rejects(prepareBoundary(invalid.input), /immutable_csv_source_a4acd6c_required/);
+    assert.equal(invalid.calls.length, 0);
+  }
 });
 
 test('private transport refuses event, model-start, recovery and foreign-origin paths', async () => {
