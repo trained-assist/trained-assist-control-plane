@@ -25,6 +25,7 @@ hostname remain the production transport gate. Shared units/tunnels stay unchang
 | --- | --- | --- |
 | Health, capabilities | PASS inside CP, zero engine attempts | `ut-957c7b8310c081cc1ba6`, `ut-61bf383b0a84408d26d1`; receipt/route replays stable; 10.8 / 10.5 seconds |
 | Download/read CSV, calculate/write output | PASS | `ut-7674dc3a830519e82f8a`, generation 1, `run_f6ea41fa-dc2e-46d9-8616-f983af96f1b1`; one successful attempt |
+| Telegram to actual native CSV agent to answer | PASS controlled ingress | `ut-964d6b22964427ed3927`, generation 1, canonical `run_026cf629-219c-445f-92b1-063212bcf893`; one Runner admission/dispatch, successful GHA `37284796273` attempt 1, eight completed engine tools, verified committed CSV and Telegram receipt1373/terminal1374; 195.5 seconds end-to-end |
 | Pre-admission transport failure | PASS recovery | Same CSV task; zero admissions before explicit replay from `submit-runner`; no replacement task/generation |
 | Verified provider wait and continuation | PASS controlled subboundary | `ut-8e39dd5dc2b208ce15f5`, `run_d3a0f0b8-52ca-4018-a8b0-254f26d67ccd`; fresh actual OAuth/Drive account verification, exact host event and duplicate replay; same task/generation, one successful attempt |
 | User/preflight/wrong-binding readiness | PASS refusal | Ordinary principal 403; preflight and changed binding 409; one durable credential completion/signal retained |
@@ -32,6 +33,7 @@ hostname remain the production transport gate. Shared units/tunnels stay unchang
 | Mandatory output omitted | PASS expected failure | `ut-3364752a81741b5e0e54`, `run_caf880bb-ce25-441f-99b8-9b1aec48f9e3`; task failed/finished, one failed attempt, `ARTIFACTS_MISSING`, zero artifacts |
 | Historical Telegram delivery | FAIL replay safety, quarantined | Old capabilities receipt/terminal provider IDs changed on independent readback; both old tasks and four delivery records quarantined, not resent or relabelled as successful |
 | Post-cutover controlled Telegram health/capabilities | PASS scoped quick-answer delivery | `ut-4593cff37c0fbd03ecad` and `ut-90860cc5c147cbf22d63`, generation 1, zero engine attempts; health receipt/terminal 1369/1370 remain unchanged after eight concurrent reconciliations; capabilities 1371/1372 after exact-body reconciliation of initial HTTP 500; genuine human smoke still pending |
+| Delivery owner across Worker redeploy | PASS scoped durability | Historical quarantine and all six new health/capabilities/CSV provider IDs preserved after same-source Worker redeploy and eight concurrent reconciliations; each new delivery has one attempt. This is not a forced Durable Object eviction or live provider-ACK-loss test |
 | Real Google Sheet and monthly follow-up | BLOCKED | Dedicated Sheet approved; exact SA authenticates, but Drive metadata returns 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
 Both successful CSV outputs have 35 bytes, SHA-256
@@ -116,7 +118,12 @@ Unknown outcomes require reconciliation of the existing task, not a fresh reques
 - Provider attestation exercised real account authentication and zero Google
   artifact calls. Automatic provider-form handoff and Sheet work remain separate gates.
 - Recovery currently changes Runner result timestamps. Artifact identity and launch
-  counts survive; recovered timestamps cannot measure original engine execution.
+counts survive; recovered timestamps cannot measure original engine execution.
+- The controlled Telegram CSV independently verifies the same 35-byte/category
+  fixture, committed as `a5d9296b56abe4f0ad109563399df7111cda0d44`. Google was not
+  invoked. The initial public smoke run IDs reflected a synthetic routing-history
+  ID; authenticated CP/Runner/native evidence establishes the canonical UUID
+  above. Do not use a routing-history ID as proof of native engine execution.
 - The shared legacy native gateway remains outside the owned strong-claim changes.
   Production needs least-privilege operator credentials and stable hosting.
 - Full Telegram/Google acceptance remains open in issue 140.
