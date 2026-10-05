@@ -17,7 +17,7 @@ import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
-import { confirmedExternalStop, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
+import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
   if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
@@ -102,6 +102,7 @@ export interface CancelResult {
   generation?: number;
   status?: string;
   nativeStops?: NativeStopEvidence[];
+  nativeStopState?: 'pending' | 'rejected' | 'unknown';
 }
 
 export interface PortStatusResult {
@@ -356,24 +357,78 @@ export class CfWorkflowPort implements WorkflowPortApi {
   async cancel(taskId: string, opts: { reason?: string } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
     const requested = await this.store.requestCancel(taskId, { reason: opts.reason });
     if (!requested.requested) {
-      const nativeStops = await this.nativeStopEvidence(taskId);
-      const runs = await this.store.listRuns(taskId);
-      const stopConfirmed = requested.status === 'cancelled' && nativeStops.length > 0
-        && runs.every(run => run.finished_at !== null)
-        && runs.filter(run => run.session_id).every(run => nativeStops.some(proof => proof.attemptId === run.id));
-      return { cancelled: stopConfirmed, generation: requested.generation, status: requested.status, stopConfirmed, nativeStops };
+      const verified = await this.verifyTerminalNativeStops(taskId, opts.reason);
+      const stopConfirmed = isTerminalStatus(requested.status ?? '') && verified.stopConfirmed;
+      return { cancelled: requested.status === 'cancelled' && stopConfirmed, generation: requested.generation,
+        status: requested.status, stopConfirmed, nativeStops: verified.nativeStops,
+        ...(verified.nativeStopState ? { nativeStopState: verified.nativeStopState } : {}) };
     }
 
     let terminated = false;
     let terminateError: string | null = null;
+    let instance: Awaited<ReturnType<Workflow['get']>> | null = null;
     try {
-      const instance = await this.wf.get(taskId);
-      await instance.terminate();
-      terminated = true;
+      instance = await this.wf.get(taskId);
+      let beforeTerminate: string | null = null;
+      try { beforeTerminate = (await instance.status()).status; } catch { /* older Workflow test doubles expose terminate only */ }
+      if (beforeTerminate && ['terminated', 'complete', 'errored'].includes(beforeTerminate)) terminated = true;
+      else { await instance.terminate(); terminated = true; }
     } catch (e) {
       terminateError = String((e as Error)?.message ?? e);
+      try {
+        instance ??= await this.wf.get(taskId);
+        const engineStatus = (await instance.status()).status;
+        terminated = ['terminated', 'complete', 'errored'].includes(engineStatus);
+      } catch { /* a failed terminate without terminal workflow evidence stays unresolved */ }
     }
 
+    const active = await this.store.activeRun(taskId);
+    const initialRuns = await this.store.listRuns(taskId);
+    const unsettled = initialRuns.filter(run => run.finished_at === null);
+    const nativeAttempts: RunAttemptRow[] = [];
+    for (const attempt of unsettled) {
+      if (attempt.session_id || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.id)) nativeAttempts.push(attempt);
+    }
+    const nativeStops: NativeStopEvidence[] = [];
+    let nativeStopState: CancelResult['nativeStopState'];
+    if (nativeAttempts.length > 0) {
+      const task = await this.store.requireTask(taskId);
+      let stopped = !!this.externalStop
+        && nativeAttempts.every(attempt => ['running', 'unknown', 'waiting'].includes(attempt.status));
+      try {
+        for (const attempt of nativeAttempts) {
+          const context = { taskId, profileId: task.profile_id, attemptId: attempt.id,
+            runId: attempt.session_id, ownerGeneration: attempt.generation, reason: opts.reason };
+          const outcome = this.externalStop ? await this.externalStop.stop(context) : null;
+          if (!outcome || !confirmedExternalStop(context, outcome)) stopped = false;
+          if (!outcome || outcome.state === 'unknown' || outcome.state === 'rejected') nativeStopState = outcome?.state ?? 'unknown';
+          else if (outcome.state === 'pending') nativeStopState = 'pending';
+          else if (outcome.state === 'stopped' && context.runId !== null) {
+            const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: attempt.id, runId: context.runId,
+              ownerGeneration: attempt.generation, state: outcome.result.outcome, exitObserved: true };
+            if (attempt.finished_at === null) {
+              const runOutcome = outcome.result.outcome === 'succeeded' ? 'success' : outcome.result.outcome;
+              await this.store.finishRun(attempt.id, runOutcome, { errorText: opts.reason ?? 'native_stop_confirmed' });
+            }
+            await this.store.recordNativeStopEvidence(taskId, [proof]);
+            nativeStops.push(proof);
+          }
+        }
+      } catch { stopped = false; }
+      if (!stopped) {
+        await this.store.logEvent({ taskId, kind: 'error', source: 'gateway',
+          payload: { where: 'cancel.external_stop', stopRequested: true, stopConfirmed: false } });
+        return { cancelled: false, generation: requested.generation, status: requested.status,
+          stopConfirmed: false, nativeStops: await this.nativeStopEvidence(taskId), nativeStopState: nativeStopState ?? 'unknown' };
+      }
+      const current = await this.store.requireTask(taskId);
+      const currentRuns = await this.store.listRuns(taskId);
+      if (current.generation !== requested.generation || JSON.stringify(currentRuns.map(run => [run.id, run.session_id, run.generation]))
+        !== JSON.stringify(initialRuns.map(run => [run.id, run.session_id, run.generation]))) {
+        return { cancelled: false, generation: current.generation, status: current.status,
+          stopConfirmed: false, nativeStops: await this.nativeStopEvidence(taskId), nativeStopState: 'unknown' };
+      }
+    }
     if (!terminated) {
       await this.store.logEvent({
         taskId,
@@ -381,44 +436,16 @@ export class CfWorkflowPort implements WorkflowPortApi {
         source: 'gateway',
         payload: { where: 'cancel.terminate', message: terminateError, stopRequested: true },
       });
-      return { cancelled: false, generation: requested.generation, status: requested.status, stopConfirmed: false };
+      return { cancelled: false, generation: requested.generation, status: requested.status,
+        stopConfirmed: false, nativeStops: await this.nativeStopEvidence(taskId), nativeStopState: nativeStopState ?? 'unknown' };
     }
-
-    const active = await this.store.activeRun(taskId);
-    const unsettled = (await this.store.listRuns(taskId)).filter(run => run.finished_at === null);
-    const nativeStops: NativeStopEvidence[] = [];
-    if (this.externalStop || unsettled.some(run => run.session_id)) {
-      const task = await this.store.requireTask(taskId);
-      let stopped = !!this.externalStop && unsettled.length > 0
-        && unsettled.every(attempt => ['running', 'unknown', 'waiting'].includes(attempt.status));
-      try {
-        for (const attempt of unsettled) {
-          const context = { taskId, profileId: task.profile_id, attemptId: attempt.id,
-            runId: attempt.session_id, ownerGeneration: attempt.generation, reason: opts.reason };
-          const outcome = this.externalStop ? await this.externalStop.stop(context) : null;
-          if (!outcome || !confirmedExternalStop(context, outcome)) stopped = false;
-          else if (outcome.state === 'stopped' && context.runId !== null) {
-            nativeStops.push({ taskId, profileId: task.profile_id, attemptId: attempt.id, runId: context.runId,
-              ownerGeneration: attempt.generation, state: outcome.result.outcome as NativeStopEvidence['state'], exitObserved: true });
-          }
-        }
-      } catch { stopped = false; }
-      if (!stopped) {
-        await this.store.logEvent({ taskId, kind: 'error', source: 'gateway',
-          payload: { where: 'cancel.external_stop', stopRequested: true, stopConfirmed: false } });
-        return { cancelled: false, generation: requested.generation, status: requested.status, stopConfirmed: false };
-      }
-      const current = await this.store.requireTask(taskId);
-      const currentRuns = (await this.store.listRuns(taskId)).filter(run => run.finished_at === null);
-      if (current.generation !== requested.generation || JSON.stringify(currentRuns.map(run => [run.id, run.session_id, run.generation]))
-        !== JSON.stringify(unsettled.map(run => [run.id, run.session_id, run.generation]))) {
-        return { cancelled: false, generation: current.generation, status: current.status, stopConfirmed: false };
-      }
-    }
-    const confirmed = await this.store.confirmCancel(taskId, { reason: opts.reason, expectedGeneration: requested.generation, nativeStops });
+    const allNativeStops = await this.nativeStopEvidence(taskId);
+    const confirmed = await this.store.confirmCancel(taskId, { reason: opts.reason, expectedGeneration: requested.generation,
+      nativeStops: allNativeStops.length ? allNativeStops : nativeStops });
     // Активная попытка завершается как отменённая пользователем.
     if (confirmed.cancelled) {
       for (const attempt of this.externalStop ? unsettled : active ? [active] : []) {
+        if (attempt.finished_at !== null) continue;
         await this.store.finishRun(attempt.id, 'cancelled', { errorText: opts.reason ?? null });
       }
     }
@@ -427,7 +454,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
       generation: confirmed.generation,
       status: confirmed.status,
       stopConfirmed: confirmed.cancelled,
-      nativeStops: confirmed.cancelled ? await this.nativeStopEvidence(taskId) : [],
+      nativeStops: await this.nativeStopEvidence(taskId),
+      ...(nativeStopState && !confirmed.cancelled ? { nativeStopState } : {}),
     };
   }
 
@@ -451,9 +479,13 @@ export class CfWorkflowPort implements WorkflowPortApi {
     const runs = await this.store.listRuns(taskId);
     const proofs = new Map<string, NativeStopEvidence>();
     for (const event of await this.store.history(taskId)) {
-      if (event.kind !== 'task_cancelled' || event.source !== 'gateway' || event.generation !== task.generation) continue;
-      let payload: { nativeStops?: unknown };
+      if (event.source !== 'gateway') continue;
+      let payload: { event?: string; nativeStops?: unknown };
       try { payload = JSON.parse(event.payload_json) as typeof payload; } catch { continue; }
+      const cancellationEvidence = event.kind === 'task_cancelled' && event.generation === task.generation;
+      const terminalEvidence = event.kind === 'progress' && event.generation === task.generation
+        && payload.event === 'native_stop.confirmed';
+      if (!cancellationEvidence && !terminalEvidence) continue;
       if (!Array.isArray(payload?.nativeStops)) continue;
       for (const value of payload.nativeStops) {
         const proof = value as NativeStopEvidence | null;
@@ -468,6 +500,55 @@ export class CfWorkflowPort implements WorkflowPortApi {
       }
     }
     return [...proofs.values()];
+  }
+
+  private async verifyTerminalNativeStops(taskId: string, reason?: string): Promise<{
+    stopConfirmed: boolean;
+    nativeStops: NativeStopEvidence[];
+    nativeStopState?: CancelResult['nativeStopState'];
+  }> {
+    const task = await this.store.requireTask(taskId);
+    const runs = await this.store.listRuns(taskId);
+    if (runs.length === 0) return { stopConfirmed: true, nativeStops: [] };
+
+    const proofs = new Map((await this.nativeStopEvidence(taskId)).map(proof => [proof.attemptId, proof]));
+    for (const run of runs) {
+      if (!run.session_id) {
+        if (await this.store.runnerSubmitMayHaveStarted(taskId, run.id) || run.finished_at === null) {
+          return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
+        }
+        continue;
+      }
+      if (proofs.has(run.id)) continue;
+      if (!this.externalStop) return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
+      const context = { taskId, profileId: task.profile_id, attemptId: run.id, runId: run.session_id,
+        ownerGeneration: run.generation, reason };
+      let outcome: ExternalStopOutcome;
+      try { outcome = await this.externalStop.stop(context); }
+      catch { return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' }; }
+      if (outcome.state === 'pending') return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'pending' };
+      if (outcome.state !== 'stopped' || !confirmedExternalStop(context, outcome)) {
+        return { stopConfirmed: false, nativeStops: [...proofs.values()],
+          nativeStopState: outcome.state === 'rejected' ? 'rejected' : 'unknown' };
+      }
+      const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: run.id,
+        runId: run.session_id, ownerGeneration: run.generation, state: outcome.result.outcome, exitObserved: true };
+      if (run.finished_at === null) {
+        const runOutcome = outcome.result.outcome === 'succeeded' ? 'success' : outcome.result.outcome;
+        await this.store.finishRun(run.id, runOutcome, { errorText: reason ?? 'terminal_runner_reconciled' });
+      }
+      await this.store.recordNativeStopEvidence(taskId, [proof]);
+      proofs.set(run.id, proof);
+    }
+    const freshRuns = await this.store.listRuns(taskId);
+    let complete = true;
+    for (const run of freshRuns) {
+      if (run.finished_at === null) { complete = false; break; }
+      if (!run.session_id && await this.store.runnerSubmitMayHaveStarted(taskId, run.id)) { complete = false; break; }
+      if (run.session_id && !proofs.has(run.id)) { complete = false; break; }
+    }
+    return { stopConfirmed: complete, nativeStops: [...proofs.values()],
+      ...(complete ? {} : { nativeStopState: 'unknown' as const }) };
   }
 
   /**

@@ -108,6 +108,30 @@ export interface NativeStopEvidence {
   exitObserved: true;
 }
 
+export interface CpStopTarget {
+  requestId: string;
+  userTaskId: string;
+  profileId: string;
+  receiptId: string;
+}
+
+export interface CpStopWindowRow {
+  profile_id: string;
+  conversation_id: string;
+  window_id: string;
+  snapshot_id: string;
+  admission_request_ids_json: string;
+  targets_json: string;
+  stop_confirmed: number;
+  reason: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export type CpStopTargetResolution =
+  | { ok: true; targets: CpStopTarget[] }
+  | { ok: false; reason: 'admission_unknown' | 'receipt_missing' | 'identity_mismatch' };
+
 /** Канал-источник сигнала (§5.3). */
 export const SIGNAL_SOURCES = ['telegram', 'web', 'api', 'cron', 'system'] as const;
 export type SignalSource = (typeof SIGNAL_SOURCES)[number];
