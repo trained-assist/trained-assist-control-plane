@@ -470,7 +470,9 @@ export async function conversationPlan(
   // статус задачи не меняется), а повтор с тем же ключом возвращает тот же
   // Run, а не второй.
   let runnerRunId: string | null = null;
+  let runnerResultTimeoutSec = p.runnerTimeoutSec ?? 120;
   if (adapter) {
+    const runSpecPolicy = deps.runSpecPolicy ?? defaultRunSpecPolicy();
     const attemptKey = await stableAttemptKey(taskId, generation);
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
@@ -489,8 +491,9 @@ export async function conversationPlan(
         attemptRunId: p.runId ?? null,
         timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
       },
-      deps.runSpecPolicy ?? defaultRunSpecPolicy(),
+      runSpecPolicy,
     );
+    runnerResultTimeoutSec = (runSpec.spec.limits.timeoutMs + (runSpecPolicy.startupTimeoutMs ?? 0)) / 1000;
     logRunSpecBuilt({
       profileId: taskProfileId,
       userTaskId: taskId,
@@ -630,8 +633,9 @@ export async function conversationPlan(
         taskId,
         generation,
         pollSec: p.runnerPollSec ?? 1,
-        timeoutSec: p.runnerTimeoutSec ?? 120,
+        timeoutSec: runnerResultTimeoutSec,
       }),
+      { limit: 2, delaySec: 1, timeoutSec: Math.ceil(runnerResultTimeoutSec) + 60 },
     );
     if (!outcome.ok) {
       if (outcome.reason === 'connection_lost') return { ok: false, reason: 'connection_lost' };
