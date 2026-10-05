@@ -77,7 +77,7 @@ one attempt each, without manual cron or manual provider calls.
 | Autonomous capabilities067 | PASS scoped quick-answer delivery | `ut-964212e1ccda1f203e12`, generation 1, zero engine attempts; stable receipt/terminal 1377/1378, one delivery attempt each; no manual cron/provider calls |
 | Autonomous native CSV068 | PASS scoped execution and delivery | `ut-f052d9bf02658ce68b8a`, generation 1, canonical `run_46ff7446-26e1-42ee-b9e8-ebb4698d78b6`; successful GHA `37295151043` attempt 1, source `47379f6`; one model session, six session steps, bash three/read one/write one tool calls; full journal proves one admission/dispatch, exact profile and generation 1; Runner UID12079; Native/CP artifacts match; stable autonomous receipt/terminal 1379/1380, one delivery attempt each, no manual cron/provider calls |
 | CSV068 active restart window | MISSED, no restart | Precheck found terminal execution; no Runner restart and no replacement job |
-| Controlled negative069 and active restart | PENDING | `ut-9f89570e06a1accae390` accepted; parent pipeline awaits a fresh active restart gate; no failure or restart/recovery proof claimed |
+| Controlled negative069 active API restart/resume | PASS scoped restart/resume; final acceptance PENDING | `ut-9f89570e06a1accae390`, run prefix `6995decf`, GHA `37296543375` attempt 1; parent pipeline exit 0 after fresh active gate at `10:27:00 UTC`; only the owned API unit restarted once, UID12079 preserved, legacy units/tunnel unchanged; new-PID/restart-time-filtered `poll_resumed` confirms the same run; final negative outcome, task/admission and delivery proofs remain pending independent review |
 | Real Google Sheet and monthly follow-up | DEFERRED, disabled | [Issue 142](https://github.com/trained-assist/trained-agent-architecture/issues/142); historical dedicated Sheet approval and SA authentication did not establish access: Drive metadata returned 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
 The two earlier successful CSV outputs have 35 bytes, SHA-256
@@ -94,6 +94,11 @@ totals food 150 / travel 275, committed as
 used the same task, without replacement. The transport failure's cause is unknown.
 Execution/artifact/delivery PASS does not establish an active-restart test: CSV068
 was already terminal at the restart precheck.
+
+Negative069 separately proves the scoped owned API restart/resume boundary, not
+end-to-end negative acceptance. The filtered same-run resume evidence is not a
+historical log match. Final task/admission/delivery readback and the controlled
+failure outcome remain pending Pauli and parent verification; no final PASS is claimed.
 
 The failure case stores terminal failure metadata, without a durable user answer
 or delivery. Gateway terminal reconciliation supplies its deterministic failure
@@ -180,8 +185,9 @@ counts survive; recovered timestamps cannot measure original engine execution.
 - The shared legacy native gateway remains outside the owned strong-claim changes.
   Production needs least-privilege operator credentials and stable hosting.
 - Scoped autonomous health, capabilities067 and native CSV068 acceptance passed;
-  health natural-cron correlation is confirmed. Negative069 and active-restart
-  acceptance remain pending; CSV068's terminal precheck caused no restart or replacement.
+  health natural-cron correlation is confirmed. Negative069's scoped active API
+  restart/resume passed, but final negative/task/admission/delivery acceptance
+  remains pending. CSV068's terminal precheck caused no restart or replacement.
 - Actual Runner rollback remains untested; guarded inactive/dead-unit recovery
   source `26680d9` is reviewed but not deployed. Do not treat unchanged tasks or Unix negative checks as rollback proof.
 - Full Telegram acceptance remains open in issue 140; Google access is deferred
