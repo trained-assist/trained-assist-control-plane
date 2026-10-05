@@ -2,15 +2,22 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const bindings = process.env.INTEGRATION_BINDINGS_FILE
-  ? JSON.parse(readFileSync(process.env.INTEGRATION_BINDINGS_FILE, 'utf8')) : process.env;
+let bindings;
+let controlPlaneUrl;
 const taskId = process.env.INTEGRATION_TASK_ID;
-for (const name of ['CONTROL_PLANE_URL', 'CONTROL_PLANE_PRINCIPAL', 'CONTROL_PLANE_PRINCIPAL_SIGNATURE']) {
-  assert.ok(bindings[name], `${name} is required`);
+try {
+  bindings = process.env.INTEGRATION_BINDINGS_FILE
+    ? JSON.parse(readFileSync(process.env.INTEGRATION_BINDINGS_FILE, 'utf8')) : process.env;
+  for (const name of ['CONTROL_PLANE_URL', 'CONTROL_PLANE_PRINCIPAL', 'CONTROL_PLANE_PRINCIPAL_SIGNATURE']) {
+    assert.ok(bindings[name]);
+  }
+  assert.match(taskId ?? '', /^ut-[A-Za-z0-9_-]+$/);
+  controlPlaneUrl = new URL(bindings.CONTROL_PLANE_URL);
+  assert.ok(controlPlaneUrl.protocol === 'https:' && !controlPlaneUrl.username && !controlPlaneUrl.password);
+} catch {
+  console.log(JSON.stringify({ outcome: 'fail', reason: 'invalid_configuration', telegramDelivered: false }));
+  process.exit(1);
 }
-assert.match(taskId ?? '', /^ut-[A-Za-z0-9_-]+$/);
-const controlPlaneUrl = new URL(bindings.CONTROL_PLANE_URL);
-assert.ok(controlPlaneUrl.protocol === 'https:' && !controlPlaneUrl.username && !controlPlaneUrl.password);
 const report = { taskId, startedAt: new Date().toISOString(), outcome: 'fail', artifacts: [], telegramDelivered: false };
 let phase = 'status_transport';
 
@@ -48,6 +55,7 @@ try {
   assert.equal(state.taskStore?.id, taskId, 'status returned another task');
   if (['active', 'awaiting_input', 'done', 'failed', 'cancelled'].includes(state.taskStore?.status)) report.status = state.taskStore.status;
   if (Number.isSafeInteger(state.taskStore?.generation) && state.taskStore.generation > 0) report.generation = state.taskStore.generation;
+  assert.ok(Number.isSafeInteger(report.generation) && report.generation > 0, 'valid generation is required');
   assert.equal(report.status, 'done', 'task is not terminal done');
   const result = state.taskStore.result;
   assert.equal(result.ok, true);
