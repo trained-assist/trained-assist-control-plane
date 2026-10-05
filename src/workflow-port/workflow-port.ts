@@ -11,10 +11,11 @@ import type {
   SignalSource,
   TaskStore,
 } from '../taskstore';
-import { isTerminalStatus } from '../taskstore';
+import { AnswerRejectedError, isTerminalStatus } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
+import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
   if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
@@ -35,6 +36,7 @@ function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'lega
 }
 
 export interface SubmitInput extends AdmitTaskInput {
+  awaitingInputId?: string | null;
   idempotentRun?: boolean;
   /** Уже начатая попытка (например после resume) — не создавать вторую. */
   runId?: string | null;
@@ -209,8 +211,13 @@ export class CfWorkflowPort implements WorkflowPortApi {
       };
     }
 
+    const awaiting = input.awaitingInputId ? await this.store.getAwaiting(input.awaitingInputId) : await this.store.getOpenAwaiting(task.id);
+    if (input.awaitingPurpose === 'credential' && awaiting?.purpose !== 'credential') {
+      throw new AnswerRejectedError(task.id, 'registered_credential_wait_required');
+    }
     const params: PlanParams = {
       taskId: task.id,
+      awaitingInputId: input.awaitingInputId ?? (awaiting?.purpose === 'credential' ? awaiting.awaiting_input_id : null),
       generation: task.generation,
       profileId: input.profileId,
       question: input.question,
@@ -302,6 +309,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
     payload: unknown,
     opts: { idempotencyKey?: string; source?: SignalSource } = {},
   ): Promise<SignalResult> {
+    const awaiting = await this.store.getOpenAwaiting(taskId);
+    if (awaiting?.purpose === 'credential') {
+      return { delivered: false, signalId: 0, duplicate: false, reason: 'verified_credential_event_required' };
+    }
     const source = opts.source ?? 'web';
     const idempotencyKey = opts.idempotencyKey ?? `${source}:${crypto.randomUUID()}`;
     const { inserted, signal } = await this.store.recordSignal({
@@ -498,7 +509,51 @@ export class CfWorkflowPort implements WorkflowPortApi {
    * no-op событие __wake для каждой незавершённой задачи. На Cloudflare
    * перезапуск прерванных экземпляров делает платформа.
    */
+  async completeCredential(input: CredentialReadyEvent): Promise<{ duplicate: boolean; delivered: boolean; awaitingInputId: string }> {
+    const result = await this.store.completeCredentialAwaiting(input);
+    const delivered = result.record.continuation_status === 'woken'
+      || await this.dispatchCredentialContinuation(result.record);
+    return { duplicate: result.duplicate, delivered, awaitingInputId: input.awaitingInputId };
+  }
+
+  private async dispatchCredentialContinuation(record: CredentialCompletionRow): Promise<boolean> {
+    const task = await this.store.requireTask(record.user_task_id);
+    const awaiting = await this.store.getAwaiting(record.awaiting_input_id);
+    if (task.generation !== record.generation || isTerminalStatus(task.status)
+      || task.profile_id !== record.profile_id || awaiting?.status !== 'answered'
+      || awaiting.generation !== record.generation || awaiting.version !== record.wait_version
+      || (task.awaiting_input_id !== null && task.awaiting_input_id !== record.awaiting_input_id)) {
+      await this.store.markCredentialContinuation(record, 'stale');
+      return false;
+    }
+    try {
+      const instance = await this.wf.get(task.id);
+      const status = (await instance.status()).status;
+      if (!['running', 'waiting', 'queued'].includes(status)) return false;
+      await instance.sendEvent({ type: 'credential_ready', payload: { awaitingInputId: record.awaiting_input_id } });
+      await this.store.markCredentialContinuation(record, 'woken');
+      return true;
+    } catch {
+      if ((await this.store.listRuns(task.id)).length > 0) return false;
+      try {
+        await this.submit({ id: task.id, profileId: task.profile_id, goal: task.goal,
+          awaitingInputId: record.awaiting_input_id, idempotentRun: true });
+        await this.store.markCredentialContinuation(record, 'woken');
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  async recoverCredentialContinuations(): Promise<void> {
+    for (const record of await this.store.pendingCredentialContinuations()) {
+      await this.dispatchCredentialContinuation(record);
+    }
+  }
+
   async recover(): Promise<unknown[]> {
+    await this.recoverCredentialContinuations();
     const out: unknown[] = [];
     for (const t of await this.store.unfinishedTasks()) {
       try {

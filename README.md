@@ -8,6 +8,8 @@ Trained Assist control plane: Task Store (D1) + Workflow Port (Cloudflare Workfl
 
 Опциональный [communication selector v1](docs/COMMUNICATION-V1.md): `ROUTER_SELECTOR=communication_v1`, shared MCP → health/capabilities или agent, durable quick-answer result и Output dispatch принятой задачи. Без флага остаётся существующая fixture-маршрутизация.
 
+Изолированная [credential readiness boundary v1](docs/CREDENTIAL-READY-V1.md) связывает проверенное событие доверенного host с существующим ожиданием и продолжением той же задачи. Provider OAuth/validation и native Runner checkpoint resume не реализованы; без `CREDENTIAL_HOST_PRINCIPALS` callback закрыт.
+
 | Путь | Что это |
 |---|---|
 | `migrations/0001_task_store_v1.sql` | D1-схема Task Store v1 по [TASK-STORE-SCHEMA-V1 §6](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-STORE-SCHEMA-V1.md): `durable_tasks`, `task_events`, `task_signals`, `awaiting_inputs`, `conversations` |

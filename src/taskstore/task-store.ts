@@ -24,6 +24,8 @@ import {
   TaskStoreError,
 } from './errors';
 import { kindForPurpose } from '../awaiting/purpose';
+import { validateCredentialReadyEvent, validateCredentialRequirement } from '../awaiting/credential-ready';
+import type { CredentialCompletionRow, CredentialReadyEvent, CredentialRequirement } from '../awaiting/credential-ready';
 import {
   DEFAULT_PENDING_INPUT_DEADLINE_MS,
   DEFAULT_START_DEADLINE_MS,
@@ -1847,6 +1849,14 @@ export class TaskStore {
     const generation = input.generation ?? task.generation;
     const purpose = input.purpose ?? null;
     const kind = input.kind ?? kindForPurpose(purpose);
+    if (purpose === 'credential') {
+      const requirement = (input.schema as { credential?: CredentialRequirement } | undefined)?.credential;
+      if (!requirement) throw new AnswerRejectedError(input.taskId, 'credential_binding_required');
+      validateCredentialRequirement(requirement);
+      if (input.respondentScope !== task.profile_id || input.checkpointRef) {
+        throw new AnswerRejectedError(input.taskId, 'unsupported_credential_scope');
+      }
+    }
 
     const open = await this.getOpenAwaiting(input.taskId);
     if (open) throw new AlreadyOpenAwaitingError(input.taskId, open.awaiting_input_id);
@@ -1918,6 +1928,7 @@ export class TaskStore {
     const generation = input.generation ?? (await this.requireTask(input.taskId)).generation;
     const open = await this.getOpenAwaiting(input.taskId);
     if (!open) throw new TaskStoreError(`no open awaiting input for task ${input.taskId}`, input.taskId);
+    if (open.purpose === 'credential') throw new AnswerRejectedError(open.awaiting_input_id, 'verified_credential_event_required');
 
     const close = this.db
       .prepare(
@@ -2025,6 +2036,7 @@ export class TaskStore {
   }> {
     const awaiting = await this.getAwaiting(input.awaitingInputId);
     if (!awaiting) throw new TaskStoreError(`awaiting input not found: ${input.awaitingInputId}`);
+    if (awaiting.purpose === 'credential') throw new AnswerRejectedError(input.awaitingInputId, 'verified_credential_event_required');
 
     // Повтор того же ключа: вернуть прежний результат, ничего не меняя.
     const previous = await this.db
@@ -2100,6 +2112,48 @@ export class TaskStore {
       answeredAt: stored?.answered_at ?? Date.now(),
       signalId: signal.id,
     };
+  }
+
+  async completeCredentialAwaiting(input: CredentialReadyEvent): Promise<{ record: CredentialCompletionRow; duplicate: boolean }> {
+    validateCredentialReadyEvent(input);
+    const previous = await this.db.prepare('SELECT * FROM credential_completions WHERE host_principal_id = ? AND event_id = ?')
+      .bind(input.hostPrincipalId, input.eventId).first<CredentialCompletionRow>();
+    if (previous) {
+      if (previous.awaiting_input_id !== input.awaitingInputId || previous.user_task_id !== input.userTaskId
+        || previous.profile_id !== input.profileId || previous.provider !== input.provider
+        || previous.binding_ref !== input.bindingRef || previous.provider_session_ref !== input.providerSessionRef
+        || previous.generation !== input.generation || previous.wait_version !== input.version) {
+        throw new AnswerConflictError(input.awaitingInputId, input.eventId);
+      }
+      return { record: previous, duplicate: true };
+    }
+    let inserted: boolean;
+    try {
+      const result = await this.db.prepare(`INSERT INTO credential_completions(
+        host_principal_id, event_id, awaiting_input_id, user_task_id, profile_id, provider, binding_ref,
+        provider_session_ref, generation, wait_version, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(host_principal_id, event_id) DO NOTHING`)
+        .bind(input.hostPrincipalId, input.eventId, input.awaitingInputId, input.userTaskId, input.profileId,
+          input.provider, input.bindingRef, input.providerSessionRef, input.generation, input.version, Date.now()).run();
+      inserted = result.meta.changes > 0;
+    } catch {
+      throw new AnswerRejectedError(input.awaitingInputId, 'credential_completion_rejected');
+    }
+    const stored = await this.db.prepare('SELECT * FROM credential_completions WHERE host_principal_id = ? AND event_id = ?')
+      .bind(input.hostPrincipalId, input.eventId).first<CredentialCompletionRow>();
+    if (!stored) throw new TaskStoreError('credential completion was not persisted', input.userTaskId);
+    if (!inserted) return this.completeCredentialAwaiting(input);
+    return { record: stored, duplicate: false };
+  }
+
+  async pendingCredentialContinuations(): Promise<CredentialCompletionRow[]> {
+    return (await this.db.prepare("SELECT * FROM credential_completions WHERE continuation_status = 'pending' ORDER BY created_at LIMIT 100")
+      .all<CredentialCompletionRow>()).results;
+  }
+
+  async markCredentialContinuation(record: CredentialCompletionRow, status: 'woken' | 'stale'): Promise<void> {
+    await this.db.prepare("UPDATE credential_completions SET continuation_status = ?, dispatched_at = ? WHERE host_principal_id = ? AND event_id = ? AND continuation_status = 'pending'")
+      .bind(status, Date.now(), record.host_principal_id, record.event_id).run();
   }
 
   async getAwaiting(awaitingInputId: string): Promise<AwaitingInputRow | null> {

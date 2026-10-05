@@ -24,6 +24,7 @@ const WATCHDOG_STALE_MS = 30 * 60_000;
 import { logStructured } from './logging/structured-log';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
+import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
@@ -94,6 +95,7 @@ export interface Env {
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
    */
   PRINCIPAL_SECRET?: string;
+  CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
    * виртуальных часах. В проде не задаётся: время берёт системный clock.
@@ -195,6 +197,12 @@ const json = (value: unknown, status = 200): Response =>
     status,
     headers: { 'content-type': 'application/json' },
   });
+
+async function credentialHost(req: Request, env: Env): Promise<string | null> {
+  const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
+  const trusted = (env.CREDENTIAL_HOST_PRINCIPALS ?? '').split(',').map(value => value.trim()).filter(Boolean);
+  return principal && trusted.includes(principal) ? principal : null;
+}
 
 const errorStatus = (e: unknown): number => {
   if (e instanceof InvalidEnvelopeError) return 400;
@@ -1139,6 +1147,14 @@ const store = new TaskStore(env.DB);
           if (!taskId) return json({ error: 'taskId is required' }, 400);
           const task = await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
           const purpose = (body.purpose as AwaitingPurpose | undefined) ?? 'missing_fact';
+          let credential: CredentialRequirement | undefined;
+          if (purpose === 'credential') {
+            const hostPrincipalId = await credentialHost(req, env);
+            if (!hostPrincipalId) return json({ error: 'trusted credential host required' }, 403);
+            const requirement = body.credential as Partial<CredentialRequirement> | undefined;
+            credential = { hostPrincipalId, provider: requirement?.provider ?? '',
+              bindingRef: requirement?.bindingRef ?? '', providerSessionRef: requirement?.providerSessionRef ?? '' };
+          }
           const opened = await store.openAwaiting({
             taskId,
             purpose,
@@ -1147,7 +1163,8 @@ const store = new TaskStore(env.DB);
             respondentScope: (body.respondentScope as string | undefined) ?? task.profile_id,
             step: (body.step as string | undefined) ?? null,
             runId: (body.runId as string | undefined) ?? null,
-            schema: body.options ? { options: body.options } : undefined,
+            schema: credential ? { credential } : body.options ? { options: body.options } : undefined,
+            checkpointRef: (body.checkpointRef as string | undefined) ?? null,
             deadlineAt: (body.deadlineAt as number | undefined) ?? undefined,
             engineRefs: {
               sessionRef: (body.engineSessionRef as string | undefined) ?? null,
@@ -1175,6 +1192,8 @@ const store = new TaskStore(env.DB);
               purpose: row?.purpose,
               status: row?.status,
               deadlineAt: row?.deadline_at,
+              generation: row?.generation,
+              version: row?.version,
             },
             201,
           );
@@ -1183,6 +1202,24 @@ const store = new TaskStore(env.DB);
         const parts = url.pathname.split('/').filter(Boolean); // ['awaiting', id?, 'answer'?]
         const awaitingInputId = parts[1] ?? null;
         if (!awaitingInputId) return json({ error: 'awaitingInputId is required' }, 400);
+
+        if (req.method === 'POST' && parts.length === 3 && parts[2] === 'credential-ready') {
+          const hostPrincipalId = await credentialHost(req, env);
+          if (!hostPrincipalId) return json({ error: 'trusted credential host required' }, 403);
+          const row = await store.getAwaiting(awaitingInputId);
+          if (!row) return json({ error: 'awaiting not found' }, 404);
+          await authorizeTaskRoute(store, req, row.user_task_id, 'tasks:signal', auth);
+          if (body.status !== 'ready' || body.preflight === true || body._zerocreds_preflight === true
+            || req.headers.get('x-zerocreds-preflight') === 'true') {
+            return json({ error: 'verified readiness required' }, 409);
+          }
+          const input: CredentialReadyEvent = { hostPrincipalId, awaitingInputId,
+            eventId: body.eventId as string, userTaskId: body.userTaskId as string,
+            profileId: body.profileId as string, provider: body.provider as string,
+            bindingRef: body.bindingRef as string, providerSessionRef: body.providerSessionRef as string,
+            generation: body.generation as number, version: body.version as number };
+          return json(await port.completeCredential(input));
+        }
 
         if (req.method === 'GET' && parts.length === 2) {
           const row = await store.getAwaiting(awaitingInputId);
@@ -1391,6 +1428,7 @@ const startResult = await port.submit(input);
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
     const adapter = await resolveDeliveryAdapter(env);
+    await new CfWorkflowPort(env.TASK_WORKFLOW, store).recoverCredentialContinuations();
 
     // Детектор наблюдает и уведомляет; переход состояния и запуск выполняет
     // существующий авторитетный владелец (Output/Router), не планировщик.
