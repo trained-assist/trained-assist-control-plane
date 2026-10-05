@@ -5,7 +5,6 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const spreadsheetId = '1KTYuKw-hzM5bJCHbhnm-TG63oApHX_KhuuGT2CeWaxg';
-export const sourceSheetId = 1056899445;
 export const summaryPath = 'outputs/google-category-summary.json';
 const identity = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(value);
 const tools = ['gdrive_read_sheet', 'gdrive_write_sheet'];
@@ -36,7 +35,8 @@ export function sheetEnvelope(requestId, source) {
   keys(source, ['schemaVersion', 'spreadsheetId', 'sourceSheetId', 'sourceSheetName', 'sourceRange']);
   assert.equal(source.schemaVersion, 'google-sheet-source-v1');
   assert.equal(source.spreadsheetId, spreadsheetId);
-  assert.equal(source.sourceSheetId, sourceSheetId);
+  assert.ok(Number.isSafeInteger(source.sourceSheetId) && source.sourceSheetId >= 0);
+  const sourceSheetId = source.sourceSheetId;
   assert.ok(typeof source.sourceSheetName === 'string' && source.sourceSheetName.trim().length > 0
     && source.sourceSheetName.length <= 100 && !/[\x00-\x1f\x7f]/.test(source.sourceSheetName));
   assert.equal(source.sourceRange, 'A1:D1000');
