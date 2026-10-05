@@ -21,6 +21,7 @@ export interface AwaitRunnerResultOptions {
   runId: string;
   taskId: string;
   generation: number;
+  engineName?: string;
   pollSec?: number;
   timeoutSec?: number;
 }
@@ -43,8 +44,15 @@ export interface TaskArtifactManifest {
   sha256: string | null;
 }
 
+export interface RunnerAnswer {
+  text: string | null;
+  source: 'runner_status_answer' | 'runner_log_stdout' | 'runner_result_text' | null;
+  version: 'runner-answer-v1' | EngineText['version'] | null;
+  answerSource: 'agent_file' | 'engine_stdout' | null;
+}
+
 export type AwaitRunnerResult =
-  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null }
+  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null; answer?: RunnerAnswer }
   | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
@@ -87,7 +95,7 @@ export async function awaitRunnerResult(
     }
 
     if (['succeeded', 'failed', 'cancelled'].includes(status.state)) {
-      return finalize(adapter, store, opts, status.state);
+      return finalize(adapter, store, opts, status);
     }
 
     if (Date.now() >= deadline) return { ok: false, reason: 'runner_timeout' };
@@ -99,7 +107,7 @@ async function finalize(
   adapter: RunnerApiAdapter,
   store: TaskStore,
   opts: AwaitRunnerResultOptions,
-  state: string,
+  status: RunnerStatusView,
 ): Promise<AwaitRunnerResult> {
   // События по курсору: читаем с нуля, записываем в журнал с курсором в payload.
   let cursor = 0;
@@ -143,7 +151,7 @@ async function finalize(
       kind: 'task_status_changed', step: 'finalize', result: failureResult, payload: failureResult });
   };
 
-  if (state !== 'succeeded' || result.outcome !== 'succeeded') {
+  if (status.state !== 'succeeded' || result.outcome !== 'succeeded') {
     await commitFailure(result.failure?.code ?? result.exitReason, result.outcome === 'cancelled' ? 'cancelled' : 'failed');
     return { ok: false, reason: 'runner_failed' };
   }
@@ -190,5 +198,16 @@ async function finalize(
   // контракте Runner'а текста нет. Отсутствие текста не прячется за ok=true —
   // вызывающий видит `engineText: null` и решает сам.
   const engineText = extractEngineText(seenEvents);
-  return { ok: true, result, eventsRecorded, artifacts, engineText };
+  const native = opts.engineName === 'dynamic-ip-azure-agent-run';
+  const text = native
+    ? typeof status.answer === 'string' && status.answer.trim().length > 0 ? status.answer : null
+    : engineText?.text ?? result.text ?? null;
+  const resolution = [...seenEvents].sort((first, second) => second.sequence - first.sequence)
+    .find((event) => event.type === 'agent_exit_resolved')?.payload as { answerSource?: unknown } | undefined;
+  const answerSource = native && text !== null && (resolution?.answerSource === 'agent_file' || resolution?.answerSource === 'engine_stdout')
+    ? resolution.answerSource : null;
+  const answer: RunnerAnswer = { text, answerSource,
+    source: text === null ? null : native ? 'runner_status_answer' : engineText ? engineText.source : 'runner_result_text',
+    version: text === null ? null : native ? 'runner-answer-v1' : engineText?.version ?? 'runner-answer-v1' };
+  return { ok: true, result, eventsRecorded, artifacts, engineText, answer };
 }
