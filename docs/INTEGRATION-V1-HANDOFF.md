@@ -77,7 +77,7 @@ one attempt each, without manual cron or manual provider calls.
 | Autonomous capabilities067 | PASS scoped quick-answer delivery | `ut-964212e1ccda1f203e12`, generation 1, zero engine attempts; stable receipt/terminal 1377/1378, one delivery attempt each; no manual cron/provider calls |
 | Autonomous native CSV068 | PASS scoped execution and delivery | `ut-f052d9bf02658ce68b8a`, generation 1, canonical `run_46ff7446-26e1-42ee-b9e8-ebb4698d78b6`; successful GHA `37295151043` attempt 1, source `47379f6`; one model session, six session steps, bash three/read one/write one tool calls; full journal proves one admission/dispatch, exact profile and generation 1; Runner UID12079; Native/CP artifacts match; stable autonomous receipt/terminal 1379/1380, one delivery attempt each, no manual cron/provider calls |
 | CSV068 active restart window | MISSED, no restart | Precheck found terminal execution; no Runner restart and no replacement job |
-| Controlled negative069 active API restart/resume | PASS scoped restart/resume; final acceptance PENDING | `ut-9f89570e06a1accae390`, run prefix `6995decf`, GHA `37296543375` attempt 1; parent pipeline exit 0 after fresh active gate at `10:27:00 UTC`; only the owned API unit restarted once, UID12079 preserved, legacy units/tunnel unchanged; new-PID/restart-time-filtered `poll_resumed` confirms the same run; final negative outcome, task/admission and delivery proofs remain pending independent review |
+| Controlled negative069 with active API restart/resume | PASS scoped engine, recovery and failure delivery | `ut-9f89570e06a1accae390`, generation 1, canonical run prefix `6995decf`; one attempt and one journal admission/dispatch; Native/CP failed with `ARTIFACTS_MISSING`, observed engine exit 0, zero artifacts; GHA `37296543375` attempt 1 completed failure with expected failed Run agent step; Pauli independently verified provenance; natural receipt1381/terminal1382, terminal stable across two readbacks; only the owned API unit restarted once after fresh `10:27:00 UTC` gate, new PID219855 UID12079, same-run `poll_resumed`, canonical identity/generation preserved; legacy units, tunnels and callback unchanged |
 | Real Google Sheet and monthly follow-up | DEFERRED, disabled | [Issue 142](https://github.com/trained-assist/trained-agent-architecture/issues/142); historical dedicated Sheet approval and SA authentication did not establish access: Drive metadata returned 404 and Sheets metadata 403 `PERMISSION_DENIED`; no Google writes or model launch |
 
 The two earlier successful CSV outputs have 35 bytes, SHA-256
@@ -95,10 +95,23 @@ used the same task, without replacement. The transport failure's cause is unknow
 Execution/artifact/delivery PASS does not establish an active-restart test: CSV068
 was already terminal at the restart precheck.
 
-Negative069 separately proves the scoped owned API restart/resume boundary, not
-end-to-end negative acceptance. The filtered same-run resume evidence is not a
-historical log match. Final task/admission/delivery readback and the controlled
-failure outcome remain pending Pauli and parent verification; no final PASS is claimed.
+Negative069 now proves the end-to-end scoped controlled-failure boundary, including
+active owned API restart and same-run recovery. Parent operator verification exited
+0; Pauli independently verified native/model/tool/GHA provenance, one admission
+and dispatch, preserved generation 1 and canonical identity, and the new process
+PID219855 under UID12079. The full journal has actual mode `0600`. The filtered
+same-run resume evidence is not a historical log match; legacy units, tunnels and
+callback remained unchanged.
+
+The native engine completed six model steps and six tools, with a successful
+download returning the CSV values. This is not a claim of a separate local file
+read. Engine exit 0 without mandatory output correctly produced
+`ARTIFACTS_MISSING`, zero artifacts and a failed attempt/task; GHA attempt 1
+completed failure with the expected failed Run agent step. Natural Telegram
+receipt1381 and terminal1382 establish scoped failure delivery, with terminal1382
+stable across two readbacks. These results do not establish Google, real-human or
+production acceptance. Duplicate068 terminal replay and real-human acceptance
+remain pending.
 
 The failure case stores terminal failure metadata, without a durable user answer
 or delivery. Gateway terminal reconciliation supplies its deterministic failure
@@ -185,9 +198,10 @@ counts survive; recovered timestamps cannot measure original engine execution.
 - The shared legacy native gateway remains outside the owned strong-claim changes.
   Production needs least-privilege operator credentials and stable hosting.
 - Scoped autonomous health, capabilities067 and native CSV068 acceptance passed;
-  health natural-cron correlation is confirmed. Negative069's scoped active API
-  restart/resume passed, but final negative/task/admission/delivery acceptance
-  remains pending. CSV068's terminal precheck caused no restart or replacement.
+  health natural-cron correlation is confirmed. Negative069's scoped engine,
+  active API restart/recovery and controlled-failure delivery acceptance passed.
+  CSV068's terminal precheck caused no restart or replacement; duplicate068 terminal
+  replay and real-human acceptance remain pending. No Google or production PASS is claimed.
 - Actual Runner rollback remains untested; guarded inactive/dead-unit recovery
   source `26680d9` is reviewed but not deployed. Do not treat unchanged tasks or Unix negative checks as rollback proof.
 - Full Telegram acceptance remains open in issue 140; Google access is deferred
