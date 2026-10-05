@@ -516,6 +516,16 @@ export async function conversationPlan(
       },
       runSpecPolicy,
     );
+    // Durable witness before the external side effect. If cancellation sees this
+    // marker without an attached Runner runId, submission outcome is ambiguous.
+    await store.logEvent({
+      taskId,
+      kind: 'progress',
+      generation,
+      executionId: p.runId ?? null,
+      source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: p.runId ?? null, idempotencyKey: attemptKey },
+    });
     runnerResultTimeoutSec = (runSpec.spec.limits.timeoutMs + (runSpecPolicy.startupTimeoutMs ?? 0)) / 1000;
     logRunSpecBuilt({
       profileId: taskProfileId,

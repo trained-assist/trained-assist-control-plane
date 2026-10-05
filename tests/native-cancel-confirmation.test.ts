@@ -103,8 +103,16 @@ describe('native cancellation requires actual terminal evidence', () => {
         WHERE user_task_id = ? AND kind = 'task_cancelled'`)
         .bind(JSON.stringify(payload), outcome.generation! + (mismatch === 'event_generation' ? 1 : 0),
           mismatch === 'source' ? 'executor' : 'gateway', fixture.taskId).run();
+      await env.DB.prepare(`UPDATE task_events SET payload_json = ?, generation = ?, source = ?
+        WHERE user_task_id = ? AND kind = 'progress' AND source = 'gateway'`)
+        .bind(JSON.stringify({ event: 'native_stop.confirmed', nativeStops: payload.nativeStops }),
+          outcome.generation! + (mismatch === 'event_generation' ? 1 : 0),
+          mismatch === 'source' ? 'executor' : 'gateway', fixture.taskId).run();
       expect((await port.status(fixture.taskId)).nativeStops).toEqual([]);
-      expect((await port.cancel(fixture.taskId)).stopConfirmed).toBe(false);
+      // The stored event is deliberately corrupted. Without an external verifier
+      // the corruption must not be treated as evidence on retry.
+      const offlinePort = new CfWorkflowPort(fixture.workflow, fixture.store);
+      expect((await offlinePort.cancel(fixture.taskId)).stopConfirmed).toBe(false);
       expect(fixture.adapter.cancel).toHaveBeenCalledOnce();
     });
   }
@@ -195,6 +203,9 @@ describe('native cancellation requires actual terminal evidence', () => {
 
   it('configured external hook with no known Runner identity remains unknown', async () => {
     const fixture = await setup(false);
+    await fixture.store.logEvent({ taskId: fixture.taskId, kind: 'progress', generation: fixture.attempt.generation,
+      executionId: fixture.attempt.id, source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: fixture.attempt.id, idempotencyKey: 'ambiguous-submit' } });
     const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
     expect((await port.cancel(fixture.taskId)).stopConfirmed).toBe(false);
     expect(fixture.adapter.cancel).not.toHaveBeenCalled();

@@ -30,6 +30,7 @@ import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/er
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
+import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -1053,6 +1054,7 @@ const store = new TaskStore(env.DB);
             '/signal',
             '/cancel',
             '/status',
+            '/cp-stop-targets',
             '/recover',
             '/schedules',
             '/schedules/enable',
@@ -1355,6 +1357,16 @@ const store = new TaskStore(env.DB);
       // ── Task Router (P16, этап I05): решение маршрута по принятой задаче ──
       if (url.pathname === '/route') {
         return await handleRouteRoute(req, body, env, store, port, auth);
+      }
+
+      if (url.pathname === '/cp-stop-targets') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        const parsed = cpStopTargetsInputOf(body);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
+        requirePermission(principal, parsed.input.profileId, 'tasks:control');
+        const service = new CpStopTargetsService(store, port);
+        return json(await service.stop(parsed.input));
       }
 
       if (url.pathname === '/receipt') {
