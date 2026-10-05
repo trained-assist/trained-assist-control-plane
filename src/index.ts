@@ -1004,6 +1004,64 @@ const store = new TaskStore(env.DB);
 
       // Приём задачи (P04/C01): квитанция выдаётся только после durable
       // сохранения; повтор с тем же requestId возвращает прежнюю квитанцию.
+       // Регистрация пакета, принятого шлюзом, ДО admitTask (arch#132 R9).
+       //
+       // Окно «сообщение принято накопителем, задачи ещё нет» — то самое, где
+       // 2026-10-04 потерялся ввод: у накопителя есть свой таймер, и если он не
+       // взведён или сломан, ввод не виден НИКОМУ. Наружу (детектору) нужен
+       // след: batchId, когда пришло ПЕРВОЕ сообщение, состояние подготовки,
+       // граница ожидания, адрес доставки и — после приёма — связь с задачей.
+       //
+       // Идемпотентно по batchId: повтор того же сообщения не передвигает
+       // first_message_at, поэтому возраст самого старого непродвинувшегося ввода
+       // не подменяется свежими сообщениями.
+       if (url.pathname === '/intake/pending' && (req.method === 'PUT' || req.method === 'POST')) {
+         const principalId = await principalOf(req, auth);
+         const batchId = typeof body.batchId === 'string' ? body.batchId.trim() : '';
+         if (!batchId || batchId.length > 200) return json({ error: 'invalid batchId' }, 400);
+         const profileId = typeof body.profileId === 'string' && body.profileId.trim() ? body.profileId.trim() : null;
+         if (!profileId) return json({ error: 'invalid profileId' }, 400);
+         try {
+           requirePermission(await resolvePrincipal(store, { principalId }), profileId, 'tasks:intake');
+         } catch (e) {
+           return json({ error: e instanceof Error ? e.message : 'forbidden' }, 403);
+         }
+         const prepState = ['collecting', 'preparing', 'ready'].includes(body.prepState as string)
+           ? (body.prepState as 'collecting' | 'preparing' | 'ready') : 'collecting';
+         const row = await store.recordPendingInput({
+           batchId,
+           version: Number.isSafeInteger(body.version) ? Number(body.version) : 1,
+           profileId,
+           channel: typeof body.channel === 'string' ? body.channel : 'telegram',
+           conversationId: typeof body.conversationId === 'string' ? body.conversationId : null,
+           audienceId: typeof body.audienceId === 'string' ? body.audienceId : null,
+           destinationId: typeof body.destinationId === 'string' ? body.destinationId : null,
+           // Шлюз присылает время ПЕРВОГО сообщения пакета; на повторах оно не
+           // меняется — за это и отвечает recordPendingInput (первое значение
+           // выигрывает, дальше двигается только счётчик).
+          firstMessageAt: Number.isSafeInteger(body.firstMessageAt) ? Number(body.firstMessageAt) : Date.now(),
+           deadlineMs: Number.isSafeInteger(body.deadlineMs) ? Number(body.deadlineMs) : undefined,
+         });
+         if (prepState !== 'collecting' && prepState !== row.prep_state) {
+           await store.setPendingInputPrep(batchId, prepState);
+         }
+         return json({ ok: true, batchId, firstMessageAt: row.first_message_at, prepState }, 200);
+       }
+
+       // Пакет снят накопителем осознанно (запуск, отмена, /clean_buffer): детектор
+       // не должен превращать решение пользователя в «зависший ввод».
+       if (url.pathname === '/intake/pending/gone' && req.method === 'POST') {
+         const principalId = await principalOf(req, auth);
+         const batchId = typeof body.batchId === 'string' ? body.batchId.trim() : '';
+         if (!batchId) return json({ error: 'invalid batchId' }, 400);
+         const existing = await store.getPendingInput(batchId);
+         if (existing) requirePermission(await resolvePrincipal(store, { principalId }), existing.profile_id, 'tasks:intake');
+         const reason = ['admitted', 'launched', 'cancelled', 'cleared'].includes(body.reason as string)
+           ? (body.reason as 'admitted' | 'launched' | 'cancelled' | 'cleared') : 'cancelled';
+         await store.dropPendingInput(batchId, reason);
+         return json({ ok: true, batchId, reason }, 200);
+       }
+
        if (url.pathname === '/intake') {
          if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
  const result = await intake.admit({ principalId: await principalOf(req, auth) }, {

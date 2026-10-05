@@ -39,6 +39,12 @@ export interface IntakeEnvelope {
   requestedExecutionPolicy?: string | null;
   /** Куда клиент ждёт ответа/событий (C01 replyToRef). */
   replyToRef?: string | null;
+  /**
+   * batchId пакета, который накопитель зарегистрировал в /intake/pending
+   * (arch#132 R9). Связывает «принято накопителем» с задачей: после приёма
+   * пакет выходит из окна «до запуска», а след остаётся.
+   */
+  pendingBatchId?: string | null;
   /** Политика ожидания ответа пользователя, если приём сразу запускает план. */
   question?: string | null;
   waitTimeoutSec?: number | null;
@@ -125,6 +131,7 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     projectId: str('projectId'),
     audienceId: str('audienceId'),
     destinationId: str('destinationId'),
+    pendingBatchId: str('pendingBatchId'),
     inputItems,
     requestedExecutionPolicy: str('requestedExecutionPolicy'),
     replyToRef: str('replyToRef'),
@@ -170,6 +177,7 @@ export function canonicalEnvelopeJson(envelope: IntakeEnvelope): string {
     projectId: envelope.projectId ?? null,
     audienceId: envelope.audienceId ?? null,
     destinationId: envelope.destinationId ?? null,
+    pendingBatchId: envelope.pendingBatchId ?? null,
     inputItems: envelope.inputItems.map((item) => ({ text: item.text ?? null, artifactRefs: item.artifactRefs ?? [] })),
     requestedExecutionPolicy: envelope.requestedExecutionPolicy ?? null,
     question: envelope.question ?? null,
