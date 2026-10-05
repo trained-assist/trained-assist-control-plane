@@ -524,7 +524,7 @@ export async function conversationPlan(
       outputs: runSpec.spec.outputs?.length ?? 0,
       mcpServers: runSpec.spec.mcp?.servers.length ?? 0,
       // Контракт submit не переносит часть полей RunSpec — факт виден, а не молчалив.
-      mcpNotTransmitted: runSpec.spec.mcp ? true : false,
+      mcpNotTransmitted: false,
       untransmitted: untransmittedRunSpecFields(runSpec.spec),
     });
     const receipt = await ctx.step(
@@ -578,7 +578,7 @@ export async function conversationPlan(
           outputs: runSpec.spec.outputs?.map((o) => o.path) ?? [],
           refs: runSpec.spec.input?.refs?.length ?? 0,
           promptNormalized: runSpec.promptNormalized,
-          mcpNotTransmitted: runSpec.spec.mcp ? true : false,
+          mcpNotTransmitted: false,
         },
       },
     });
