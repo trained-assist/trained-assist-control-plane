@@ -28,6 +28,7 @@ import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/cre
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
+import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -90,6 +91,8 @@ export interface Env {
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  RUNNER_API_KEY_TELEGRAM_UX?: string;
+  RUN_SPEC_PROFILE_OVERRIDES?: string;
   RUN_SPEC_POLICY_PROFILE?: string;
   RUN_SPEC_REPOSITORY?: string;
   RUN_SPEC_INPUT_REFS?: string;
@@ -161,6 +164,7 @@ export interface Env {
 }
 
 const isPermanent = (e: unknown): boolean =>
+  e instanceof ProfileRuntimeConfigurationError ||
   e instanceof FencedError ||
   e instanceof TerminalStateError ||
   /fenced|terminal state/i.test(String((e as Error)?.message ?? e));
@@ -191,10 +195,12 @@ export class TaskWorkflow extends WorkflowEntrypoint<Env, PlanParams> {
       // adapter, GTD Manager и хостовая политика RunSpec строятся из env
       // (bindings), не из params: ключ Runner'а и политика исполнения не должны
       // сериализоваться в durable params экземпляра.
-      return await conversationPlan(cfStepCtx(step), store, event.payload, {
-        adapter: runnerAdapterOf(this.env),
+      const task = await store.requireTask(event.payload.taskId);
+      const runtime = resolveProfileRuntime(this.env as unknown as Record<string, string | undefined>, task.profile_id);
+      return await conversationPlan(cfStepCtx(step), store, { ...event.payload, profileId: task.profile_id }, {
+        adapter: runtime.adapter,
         gtd: gtdServiceOf(this.env, store),
-        runSpecPolicy: runSpecPolicyOf(this.env as unknown as Record<string, string | undefined>),
+        runSpecPolicy: runtime.policy,
       });
     } catch (e) {
       // Повтор не исправит fencing и терминальный статус — валить экземпляр.
@@ -326,6 +332,7 @@ async function handleRouteRoute(
 
   const task = await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
+  const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
   const v1 = env.ROUTER_SELECTOR === 'communication_v1';
   const catalog = v1 ? communicationV1Catalog() : sandboxCapabilityCatalog();
 
@@ -410,7 +417,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runnerAdapterOf(env)) } : undefined,
+      communicationV1: ordinaryV1 ? { select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter) } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
@@ -457,7 +464,7 @@ async function handleRouteRoute(
   // — отдельное решение, а не побочный эффект маршрутизации).
   const continuation = ordinaryV1 && result.continuation && body.continue === true
     ? env.ROUTER_CONTINUATION_ENABLED === 'true'
-      ? runnerAdapterOf(env)
+      ? runtime.adapter
         ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode')
         : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
@@ -890,14 +897,11 @@ const localDeliveryAdapter: DeliveryAdapter = {
  * собственность Runner'а, control plane их только перечитывает.
  */
 async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): Promise<unknown> {
-  const adapter = runnerAdapterOf({
-    RUNNER_API_URL: env.RUNNER_API_URL,
-    RUNNER_API_KEY: env.RUNNER_API_KEY,
-  });
+  const task = await store.requireTask(taskId);
+  const { adapter } = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
   if (!adapter) return json({ error: 'runner not configured' }, 503);
 
   const runs = await store.listRuns(taskId);
-  const task = await store.requireTask(taskId);
   const before = (await store.listArtifacts(taskId)).length;
   const seen = new Set<string>();
   const failed: string[] = [];
@@ -951,10 +955,8 @@ async function reconcileArtifacts(env: Env, store: TaskStore, taskId: string): P
  * подмены результата: это чтение уже сохранённого выхода.
  */
 async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: string): Promise<Response> {
-  const adapter = runnerAdapterOf({
-    RUNNER_API_URL: env.RUNNER_API_URL,
-    RUNNER_API_KEY: env.RUNNER_API_KEY,
-  });
+  const task = await store.requireTask(taskId);
+  const { adapter } = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
   if (!adapter) return json({ error: 'runner not configured' }, 503);
 
   const artifacts = await store.listArtifacts(taskId);
