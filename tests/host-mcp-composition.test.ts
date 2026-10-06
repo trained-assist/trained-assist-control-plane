@@ -114,7 +114,7 @@ describe('inactive host MCP routing composition', () => {
         expect(body).toMatchObject({ userTaskId: current.taskId, engine: { name: 'dynamic-ip-azure-agent-run' },
         mcp: { servers: [{ ...current.state.mcp.servers[0], scope: 'registry:fixture-read', registryDigest: '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9',
           catalogueVersion: 'registry-fixture-catalogue-v1', policyVersion: routed.mcpInstruction!.policyVersion }] } });
-        expect(body.input.inlinePrompt).toContain(routed.agentInstructions);
+        expect(body.instructions).toContain(routed.agentInstructions);
         return Response.json({ userTaskId: current.taskId, runId: canonicalRun, requestId: 'fixture-native-receipt', deduplicated: false });
       }
       if (path.endsWith('/status')) return Response.json({ runId: canonicalRun, state: 'succeeded', answer: 'fixture native answer' });

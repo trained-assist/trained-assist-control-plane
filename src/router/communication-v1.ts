@@ -1,6 +1,8 @@
 import { isCapabilityAllowed, isIntegrationAllowed } from './authorization';
 import { sandboxCapabilityCatalog } from './catalog';
 import { agentWorkOrder } from './handlers';
+import { buildScopedBrief } from './brief/service';
+import { buildExecutionContext } from './brief/execution-context';
 import { initialSelectorDecision } from './policy';
 import { SelectorError, type IntentSelection } from './communication-client';
 import type { RouteResult } from './service';
@@ -201,7 +203,29 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       ? mcpReasonCode(mcpRefusalCode ?? failure ?? 'binding_invalid') : 'AGENT_NOT_ALLOWED_BY_POLICY';
     else {
       workOrder = agentWorkOrder({ envelope: input.envelope, prepared: input.prepared, reasonCode: decision.reasonCode, requiresExternalAction: false, authorizationRef: input.authorization.snapshotRef, catalogCapabilityIds: visible.map((entry) => entry.id) });
-      continuation = { ...workOrder, decisionId: decision.decisionId, reasonCode: decision.reasonCode, partialResultRef: null, workOrder };
+      const brief = await buildScopedBrief(input, { purpose: 'agent-work-order' });
+      if (brief.status !== 'ok' || !brief.brief) {
+        decision.needsExecutor = false;
+        decision.executor = null;
+        decision.outcome = 'technical_error';
+        decision.reasonCode = brief.status === 'over_budget' ? 'BRIEF_BUDGET_EXCEEDED' : 'BRIEF_METADATA_INVALID';
+        decision.replyAllowed = false;
+      } else {
+        const selectedCapabilityIds: string[] = [];
+        const executionContext = buildExecutionContext({
+          decisionId: decision.decisionId,
+          suggestedGoal: workOrder.goal,
+          originalRequestRef: workOrder.originalRequestRef,
+          reasonCode: decision.reasonCode,
+          hostConstraints: workOrder.preservedConstraints,
+          modelPreservedConstraints: [],
+          selectedCapabilityIds,
+          requiresConfirmation: workOrder.requiresConfirmation,
+          catalogBrief: brief.brief,
+        });
+        continuation = { ...workOrder, decisionId: decision.decisionId, reasonCode: decision.reasonCode,
+          partialResultRef: null, selectedCapabilityIds, executionContext, workOrder };
+      }
     }
   } else {
     decision.route = 'deterministic';

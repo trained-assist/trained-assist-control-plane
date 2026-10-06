@@ -114,7 +114,8 @@ describe('run-spec: сборка по умолчанию', () => {
     const instructions = 'Original context:\n```\n  keep whitespace\n```\n';
     const built = buildRunSpec({ ...baseInput, prompt, instructions }, policy);
     expect(built.promptNormalized).toBe(false);
-    expect(toSubmitRequest(built.spec).input?.inlinePrompt).toBe(`${prompt}\n\nAdditional instructions:\n${instructions}`);
+    expect(toSubmitRequest(built.spec).input?.inlinePrompt).toBe(prompt);
+    expect(toSubmitRequest(built.spec).instructions).toBe(instructions.trim());
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 

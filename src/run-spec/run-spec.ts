@@ -22,6 +22,7 @@
  * тела запроса: `profileId` приходит из `durable_tasks.profile_id`.
  */
 import { logStructured } from '../logging/structured-log';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
 export const RUN_SPEC_VERSION = 'run-spec-v4';
@@ -139,6 +140,8 @@ export interface RunSpec {
   envAllowlist: string[];
   limits: RunLimits;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  /** Bounded task-level launch brief; Runner appends it to the accepted prompt. */
+  instructions?: string;
   ingressManifest?: IngressManifestRef;
   outputs?: OutputSpec[];
   mcp?: McpSpec;
@@ -204,6 +207,7 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.userTaskId) body.userTaskId = spec.userTaskId;
   if (spec.conversationId) body.conversationId = spec.conversationId;
   if (spec.input) body.input = spec.input;
+  if (spec.instructions) body.instructions = spec.instructions;
   if (spec.ingressManifest) body.ingressManifest = {
     contractVersion: spec.ingressManifest.contractVersion,
     manifestRef: spec.ingressManifest.manifestRef,
@@ -430,11 +434,12 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if (!Number.isInteger(input.ownerGeneration) || input.ownerGeneration < 0) fail('ownerGeneration', 'ownerGeneration: expected a non-negative integer');
   if (input.engineName.length === 0 || input.engineName.length > 100) fail('engineName', 'engineName: expected 1..100 chars');
   if (input.prompt.trim().length === 0) fail('prompt', 'prompt: must not be empty');
-  const inlinePrompt = input.instructions === null || input.instructions === ''
-    ? input.prompt
-    : `${input.prompt}\n\nAdditional instructions:\n${input.instructions}`;
-  if (inlinePrompt.length > 100_000) fail('prompt', 'prompt and instructions: longer than 100000');
-  if (PROMPT_CONTROL_CHARS.test(inlinePrompt)) fail('prompt', 'prompt and instructions: unsupported control characters');
+  const inlinePrompt = input.prompt;
+  if (inlinePrompt.length > 100_000) fail('prompt', 'prompt: longer than 100000');
+  if (PROMPT_CONTROL_CHARS.test(inlinePrompt)) fail('prompt', 'prompt: unsupported control characters');
+  const instructions = input.instructions?.trim() || undefined;
+  if (instructions && instructions.length > 10_000) fail('instructions', 'instructions: longer than Runner limit 10000');
+  if (instructions && PROMPT_CONTROL_CHARS.test(instructions)) fail('instructions', 'instructions: unsupported control characters');
   if (!Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) fail('timeoutMs', 'timeoutMs: expected a positive integer');
 
   // Разрешённые вложения: только строковые ref'ы, без версионирования со стороны
@@ -492,6 +497,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
       ...(inlinePrompt ? { inlinePrompt } : {}),
       ...(refs.length ? { refs } : {}),
     },
+    ...(instructions ? { instructions } : {}),
     ...(input.inputManifest ? { ingressManifest: {
       contractVersion: 1,
       manifestRef: input.inputManifest.manifestRef,
@@ -629,6 +635,12 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
     if (manifest.runId !== spec.runId) errors.push('spec.ingressManifest.runId: must match spec.runId');
     if (manifest.ownerGeneration !== spec.ownerGeneration) errors.push('spec.ingressManifest.ownerGeneration: must match spec.ownerGeneration');
     if ((spec.input?.refs?.length ?? 0) > 0) errors.push('spec.input.refs: cannot be combined with spec.ingressManifest');
+  }
+
+  if (spec.instructions !== undefined) {
+    if (typeof spec.instructions !== 'string' || spec.instructions.length === 0) errors.push('spec.instructions: expected a non-empty string');
+    else if (spec.instructions.length > 10_000) errors.push('spec.instructions: longer than 10000');
+    else if (PROMPT_CONTROL_CHARS.test(spec.instructions)) errors.push('spec.instructions: unsupported control characters');
   }
 
   if (spec.outputs !== undefined) {
@@ -794,6 +806,8 @@ export function logRunSpecBuilt(fields: {
   mcpNotTransmitted?: boolean;
   /** Поля RunSpec, которые Runner выводит сам и в submit не передаются. */
   untransmitted?: string[];
+  /** Safe launch manifest only; no user prompt or brief text. */
+  executionContext?: ExecutionContextManifest | null;
   reason?: string;
 }): void {
   logStructured({
@@ -809,5 +823,6 @@ export function logRunSpecBuilt(fields: {
     mcpServers: fields.mcpServers,
     ...(fields.mcpNotTransmitted === undefined ? {} : { mcpNotTransmitted: fields.mcpNotTransmitted }),
     ...(fields.untransmitted ? { untransmitted: fields.untransmitted } : {}),
+    ...(fields.executionContext ? { executionContext: fields.executionContext } : {}),
   });
 }

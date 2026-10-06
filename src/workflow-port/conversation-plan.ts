@@ -19,6 +19,7 @@ import {
 import { waitForAnswer } from '../awaiting/wait-for-answer';
 import { inputManifestForTask } from '../intake/input-artifact-manifest';
 import { awaitRunnerResult, type AwaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
 import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
@@ -81,6 +82,8 @@ export interface PlanParams {
   instructions?: string | null;
   /** Host-built, policy-pinned MCP descriptor; never accepted from user/model input. */
   mcpDescriptor?: McpSpec | null;
+  /** Manifest of the first Router call; only safe metadata is persisted. */
+  executionContext?: ExecutionContextManifest | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
@@ -564,6 +567,7 @@ export async function conversationPlan(
       // Контракт submit не переносит часть полей RunSpec — факт виден, а не молчалив.
       mcpNotTransmitted: false,
       untransmitted: untransmittedRunSpecFields(runSpec.spec),
+      executionContext: p.executionContext ?? null,
     });
     const receipt = await ctx.step(
       'submit-runner',

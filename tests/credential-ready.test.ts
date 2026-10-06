@@ -111,11 +111,12 @@ describe('verified credential completion', () => {
     expect(submit).toHaveBeenCalledTimes(1);
     const request = submit.mock.calls[0]![0];
     expect(request.userTaskId).toBe(taskId);
+    expect(request.runSpec?.instructions).toBe(instructions);
     expect(request.idempotencyKey).toBe(await stableAttemptKey(taskId, task.generation));
     expect(request.runSpec).toMatchObject({ userTaskId: taskId, profileId: task.profile_id, conversationId,
       ownerGeneration: task.generation, runId: `run_${taskId}_${task.generation}`, jobId: `job_${taskId}`,
       operationId: `op_${params.runId}`, engine: { name: execution.runnerEngine } });
-    const prompt = request.runSpec!.input!.inlinePrompt!;
+    const prompt = `${request.runSpec!.input!.inlinePrompt!}\n\nAdditional instructions:\n${request.runSpec!.instructions ?? ''}`;
     expect(prompt).toContain(goal);
     expect(prompt).toContain(source);
     expect(prompt).toContain('Полный исходный принятый ввод');

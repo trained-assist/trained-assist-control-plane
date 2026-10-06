@@ -957,7 +957,10 @@ export class TaskStore {
         runId: run.id,
         resumed: true,
         reason: opts.reason ?? null,
-        instructions: opts.instructions ?? null,
+        // Содержимое может включать приватный запрос/контекст. Task events хранят
+        // только наличие и размер; текст идёт непосредственно в Runner.
+        instructionsPresent: Boolean(opts.instructions),
+        instructionsChars: opts.instructions?.length ?? 0,
         previousRunId: opts.previousRunId ?? null,
         availableData: {
           awaitingInputId: available.awaitingInputId,
