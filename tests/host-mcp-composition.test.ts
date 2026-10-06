@@ -183,7 +183,7 @@ describe('inactive host MCP routing composition', () => {
     const current = await fixture();
     const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
       health: current.health, hostMcp: current.hostMcp } });
-    routed.mcpInstruction!.scope.profileId = 'foreign-profile';
+    routed.mcpInstruction = { ...routed.mcpInstruction!, scope: { ...routed.mcpInstruction!.scope, profileId: 'foreign-profile' } };
     const submit = vi.fn();
     const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
       await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
