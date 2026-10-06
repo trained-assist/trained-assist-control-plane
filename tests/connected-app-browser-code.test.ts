@@ -5,11 +5,13 @@ import { connectedAppRequest, type AgentProfileAuthority, type AgentProfileConte
 
 const issuer = 'https://control.example.invalid';
 const redirect = 'https://recruiting.example.invalid/oauth/callback';
+const crmRedirect = 'https://crm.example.invalid/oauth/callback';
 const hostKey = 'host-test-key-with-at-least-thirty-two-chars';
 const appKey = 'recruiting-test-key-with-at-least-thirty-two-chars';
+const crmKey = 'crm-test-key-with-at-least-thirty-two-chars';
 const config = { enabled: 'true', hostKey, issuer,
-  serviceKeys: JSON.stringify({ 'recruiting-web': appKey }),
-  redirectUris: JSON.stringify({ 'recruiting-web': redirect }),
+  serviceKeys: JSON.stringify({ 'recruiting-web': appKey, 'crm-web': crmKey }),
+  redirectUris: JSON.stringify({ 'recruiting-web': redirect, 'crm-web': crmRedirect }),
 };
 const id = (suffix: string) => `handoff_${suffix}`;
 const verifier = 'test-verifier-with-at-least-forty-three-characters-0123456789';
@@ -31,12 +33,12 @@ const authority = (sessionId: string, profileId = 'profile_demo_001', profileGen
   return { resolveBrowserSession: async () => context,
     resolveCurrentSession: async currentSessionId => currentSessionId === sessionId ? context : null };
 };
-async function membership(profileId: string, scopes = ['recruiting.responses.read']) {
+async function membership(profileId: string, scopes = ['recruiting.responses.read'], audience = 'recruiting-web') {
   await env.DB.prepare(`INSERT INTO connected_app_memberships
     (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)
     ON CONFLICT(principal_id,profile_id,audience) DO UPDATE SET
     scopes_json=excluded.scopes_json,enabled=1,updated_at=excluded.updated_at`)
-    .bind('user_demo_001', profileId, 'recruiting-web', JSON.stringify(scopes)).run();
+    .bind('user_demo_001', profileId, audience, JSON.stringify(scopes)).run();
 }
 async function authorize(sessionId: string, options: { audience?: string; redirectUri?: string; scopes?: string;
   challenge?: string; state?: string; agentAuthority?: AgentProfileAuthority | null; injectedProfile?: string;
@@ -44,13 +46,14 @@ async function authorize(sessionId: string, options: { audience?: string; redire
   const url = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', options.audience ?? 'recruiting-web');
-  url.searchParams.set('redirect_uri', options.redirectUri ?? redirect);
+  url.searchParams.set('redirect_uri', options.redirectUri ?? (options.audience === 'crm-web' ? crmRedirect : redirect));
   url.searchParams.set('scope', options.scopes ?? 'recruiting.responses.read');
   url.searchParams.set('state', options.state ?? state);
   url.searchParams.set('code_challenge', options.challenge ?? await challenge());
   url.searchParams.set('code_challenge_method', 'S256');
   if (options.injectedProfile) url.searchParams.set('profileId', options.injectedProfile);
-  await membership('profile_demo_001', options.grantedScopes);
+  await membership('profile_demo_001', options.grantedScopes,
+    options.audience === 'crm-web' ? 'crm-web' : 'recruiting-web');
   const context = { principalId: 'user_demo_001', profileId: options.agentProfile ?? 'profile_demo_001',
     sessionId, profileGeneration: options.agentGeneration ?? 1 };
   contexts.set(sessionId, context);
@@ -63,19 +66,20 @@ async function authorize(sessionId: string, options: { audience?: string; redire
 }
 async function exchange(code: string, options: { audience?: string; redirectUri?: string; verifier?: string;
   state?: string; key?: string; agentAuthority?: AgentProfileAuthority | null } = {}) {
-  const form = new URLSearchParams({ grant_type: 'authorization_code', client_id: options.audience ?? 'recruiting-web',
-    redirect_uri: options.redirectUri ?? redirect, code, code_verifier: options.verifier ?? verifier,
+  const audience = options.audience ?? 'recruiting-web';
+  const form = new URLSearchParams({ grant_type: 'authorization_code', client_id: audience,
+    redirect_uri: options.redirectUri ?? (audience === 'crm-web' ? crmRedirect : redirect), code, code_verifier: options.verifier ?? verifier,
     state: options.state ?? state });
   return connectedAppRequest(new Request(`${issuer}/v1/connected-app-sessions/exchange`, {
-    method: 'POST', headers: { authorization: `Bearer ${options.key ?? appKey}`,
+    method: 'POST', headers: { authorization: `Bearer ${options.key ?? (audience === 'crm-web' ? crmKey : appKey)}`,
       'content-type': 'application/x-www-form-urlencoded' }, body: form,
   }), env.DB, config, Object.fromEntries(form.entries()), options.agentAuthority === undefined
     ? currentAuthority : options.agentAuthority);
 }
-function codeFrom(response: Response): string {
+function codeFrom(response: Response, expectedRedirect = redirect): string {
   expect(response.status).toBe(303);
   const location = new URL(response.headers.get('location') ?? '');
-  expect(`${location.origin}${location.pathname}`).toBe(redirect);
+  expect(`${location.origin}${location.pathname}`).toBe(expectedRedirect);
   expect(location.searchParams.get('iss')).toBe(issuer);
   expect(location.searchParams.get('state')).toBe(state);
   expect(location.searchParams.has('token')).toBe(false);
@@ -121,6 +125,20 @@ describe('Connected App browser authorization code with PKCE S256', () => {
     expect(await (await introspect(token)).json()).toMatchObject({ active: true, scopes });
   });
 
+  it('issues CRM deal creation only as its own CRM audience grant', async () => {
+    const scopes = ['crm.deals.create'];
+    const code = codeFrom(await authorize(id('crm-deal-create'), { audience: 'crm-web',
+      scopes: scopes.join(' '), grantedScopes: scopes }), crmRedirect);
+    const issued = await exchange(code, { audience: 'crm-web' });
+    expect(issued.status).toBe(201);
+    const { token } = await issued.json() as { token: string };
+    const active = await connectedAppRequest(new Request(`${issuer}/v1/connected-app-sessions/introspect`, {
+      method: 'POST', headers: { authorization: `Bearer ${crmKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ token, audience: 'crm-web' }),
+    }), env.DB, config, { token, audience: 'crm-web' }, currentAuthority);
+    expect(await active.json()).toMatchObject({ active: true, aud: 'crm-web', scopes });
+  });
+
   it('exchanges once with exact client, redirect, state and PKCE verifier', async () => {
     const sessionId = id('happy');
     const code = codeFrom(await authorize(sessionId, { injectedProfile: 'attacker_profile' }));
@@ -138,11 +156,11 @@ describe('Connected App browser authorization code with PKCE S256', () => {
 
   it('rejects wrong redirect, audience and scope before code creation or redemption', async () => {
     expect((await authorize(id('wrong_redirect'), { redirectUri: 'https://evil.example.invalid/callback' })).status).toBe(400);
-    expect((await authorize(id('wrong_aud'), { audience: 'crm-web' })).status).toBe(400);
+    expect((await authorize(id('wrong_aud'), { audience: 'unknown-web' })).status).toBe(400);
     expect((await authorize(id('scope'), { scopes: 'recruiting.candidateSearch' })).status).toBe(403);
     const code = codeFrom(await authorize(id('bound')));
     expect((await exchange(code, { redirectUri: 'https://evil.example.invalid/callback' })).status).toBe(400);
-    expect((await exchange(code, { audience: 'crm-web' })).status).toBe(401);
+    expect((await exchange(code, { audience: 'crm-web' })).status).toBe(403);
     expect((await exchange(code)).status).toBe(201);
   });
 
