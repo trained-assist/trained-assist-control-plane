@@ -19,6 +19,14 @@ be nonempty and distinct from the global Runner key. The URL remains the existin
 trusted `RUNNER_API_URL`. Never place a credential in the override JSON, task
 input, Workflow payload or model prompt.
 
+The isolated test principal may use the optional Worker secret
+`PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for
+`integration-telegram-ux-v1`; all other principals keep the shared verifier
+secret. Store the matching test-client copy in the local macOS Keychain under
+service `trained-assist-cp-test-principal-hmac-v1` and account
+`integration-telegram-ux-v1`. Do not copy it into this repository or use the
+unrelated GCP `CP23_PRINCIPAL_SECRET` value.
+
 The generic preset inherits the global repository, cwd, result policy and bounded
 runtime limits, but sets declared outputs, host input references and environment
 allowlist to empty arrays and disables policy-wide MCP. A separately validated,
