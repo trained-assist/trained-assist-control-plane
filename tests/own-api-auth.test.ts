@@ -67,6 +67,14 @@ describe('principal-auth: подпись вместо доверия загол�
     expect(await verifyPrincipal(req('sandbox-user', otherSig), scoped)).toBe('sandbox-user');
   });
 
+  it('выбирает отдельный ключ только для Codex sandbox smoke principal', async () => {
+    const scoped = principalAuthOf({ PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_CODEX_SMOKE: 'dedicated-codex-smoke-secret' });
+    const testSig = await signPrincipal('sde-codex-smoke-v1', 'dedicated-codex-smoke-secret');
+    const sharedSig = await signPrincipal('sde-codex-smoke-v1', SECRET);
+    expect(await verifyPrincipal(req('sde-codex-smoke-v1', testSig), scoped)).toBe('sde-codex-smoke-v1');
+    expect(await verifyPrincipal(req('sde-codex-smoke-v1', sharedSig), scoped)).toBeNull();
+  });
+
   it('отсутствующая и неhex-подпись отклоняются', async () => {
     expect(await verifyPrincipal(req('sandbox-user', null), auth)).toBeNull();
     expect(await verifyPrincipal(req('sandbox-user', 'not-hex'), auth)).toBeNull();

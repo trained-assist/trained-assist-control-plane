@@ -1,4 +1,4 @@
-name: Integration v1 sandbox
+name: Telegram UX sandbox smoke
 
 on:
   workflow_dispatch:
@@ -23,6 +23,6 @@ jobs:
           node-version: '22'
       - name: Verify authenticated durable intake and state on the currently deployed sandbox
         env:
-          CP_INTEGRATION_V1_PRINCIPAL_SECRET: ${{ secrets.CP_INTEGRATION_V1_PRINCIPAL_SECRET }}
+          CP_INTEGRATION_V1_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_SMOKE_SECRET }}
           GITHUB_SHA: ${{ github.sha }}
         run: npm run integration:smoke
