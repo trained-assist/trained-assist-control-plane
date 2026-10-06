@@ -14,13 +14,14 @@ session has been demonstrated. The only profile in scope is
 `integration-telegram-ux-v1`; the only capability exposed to the agent is
 `registry.fixture_read`.
 
-The updated CP test Worker deployment is `ec0f7d71-dcc6-44af-9655-f412866d5870`.
-Unauthenticated route probes reach the Worker, but an external Host request with
-the provisioned Bearer is stopped at Cloudflare edge with `1010
-browser_signature_banned`; the Host Worker's Wrangler tail showed no matching
-invocation. Treat this as an edge/network access blocker until Cloudflare permits
-the intended server-to-server path. Do not weaken Host proof checks or disguise
-the caller fingerprint to get around the edge rule.
+The test Host Worker has the dedicated Custom Domain
+`registry-test.trainedassist.store`. Cloudflare has provisioned its managed DNS
+record and unauthenticated `POST /mcp` reaches the Worker, which returns the
+expected `Unauthorized` JSON-RPC error. This verifies DNS and the custom-domain
+route, but not Bearer-authenticated discovery. The earlier `1010
+browser_signature_banned` applied to probes at the `workers.dev` address; do not
+weaken Host proof checks or disguise the caller fingerprint to work around an
+edge rejection.
 
 ## Discovery before Runner submit
 
@@ -29,7 +30,7 @@ Discovery authorization is separate from invocation authorization and is scoped
 to the authenticated test principal, `integration-telegram-ux-v1`, and the
 single method `tools/list`. The discovery request has no `runId`; CP does not
 reserve one, fabricate one, or use a probe ID. CP's test transport is pinned to
-`https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp`; its
+`https://registry-test.trainedassist.store/mcp`; its
 `MCP_TEST_AUTH_TOKEN` secret is sent only on bounded, redirect-refusing
 `tools/list` requests. Discovery credentials carry only the `mcp:discover` scope. If transport temporarily uses a shared Bearer, Host
 must still reject invocation unless it validates the actual Runner-created
@@ -129,8 +130,8 @@ CP-side `tools/call`; they do not prove CP-to-Host discovery through the
 deployed Worker, active Runner service, or a real agent tool call. The Host test
 lease and matching secret/key material are provisioned in test-only trusted
 stores. This PR created no secrets; the CP test Worker was deployed separately.
-Remaining acceptance is an authorized test task through the deployed CP,
-admission and proof-bound Host invocation through the active Runner service, then
-a real Telegram agent session if required by the user-facing acceptance. First
-resolve the Cloudflare edge 1010 for legitimate server-to-server traffic, then
-retry exactly one discovery call and continue only if it reaches the Host Worker.
+Remaining acceptance is Bearer-authenticated discovery through the deployed CP,
+then an authorized test task through CP, admission and proof-bound Host
+invocation through the active Runner service, followed by a real Telegram agent
+session if required by the user-facing acceptance. The Runner's trusted endpoint
+must also be updated to the dedicated Custom Domain before a live run.
