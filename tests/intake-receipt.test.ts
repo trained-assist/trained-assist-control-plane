@@ -121,6 +121,18 @@ describe('Intake: квитанция и идемпотентность (C01)', (
       .rejects.toThrow('workStyle must be explore, answer or auto');
     expect(await store.getTask(await deriveUserTaskId('profile-1', requestId))).toBeNull();
   });
+
+  it('preserves an adapter-supplied default source for auto while validating its consistency', async () => {
+    const { store, intake } = await setup();
+    const accepted = await intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId: nextId('req-style-default'), workStyle: 'auto', workStyleSource: 'default',
+    }));
+    expect(JSON.parse((await store.requireTask(accepted.userTaskId)).execution_policy_json!))
+      .toEqual({ workStyle: 'auto', source: 'default' });
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId: nextId('req-style-inconsistent'), workStyle: 'explore', workStyleSource: 'default',
+    }))).rejects.toThrow('default workStyle must be auto');
+  });
 });
 
 describe('Intake: профиль и права (AC-65)', () => {

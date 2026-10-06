@@ -116,6 +116,14 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
   if (workStyle !== 'explore' && workStyle !== 'answer' && workStyle !== 'auto') {
     throw new InvalidEnvelopeError('workStyle must be explore, answer or auto', 'workStyle');
   }
+  const workStyleSource = e.workStyleSource === undefined
+    ? (e.workStyle === undefined ? 'default' : 'explicit') : e.workStyleSource;
+  if (workStyleSource !== 'explicit' && workStyleSource !== 'default') {
+    throw new InvalidEnvelopeError('workStyleSource must be explicit or default', 'workStyleSource');
+  }
+  if (workStyleSource === 'default' && workStyle !== 'auto') {
+    throw new InvalidEnvelopeError('default workStyle must be auto', 'workStyleSource');
+  }
 
   let waitTimeoutSec: number | null = null;
   if (e.waitTimeoutSec !== undefined && e.waitTimeoutSec !== null) {
@@ -137,7 +145,7 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     inputItems,
     requestedExecutionPolicy: str('requestedExecutionPolicy'),
     workStyle,
-    workStyleSource: e.workStyle === undefined ? 'default' : 'explicit',
+    workStyleSource,
     replyToRef: str('replyToRef'),
     question: str('question'),
     waitTimeoutSec,
