@@ -2425,6 +2425,14 @@ export class TaskStore {
       targetByTask.set(task.id, resolved);
     }
 
+    const admissionIds = new Set(input.admissionRequestIds);
+    const targetIds = new Set([...targetByTask.values()].map(target => target.requestId));
+    if (admissionIds.size !== input.admissionRequestIds.length || targetIds.size !== targetByTask.size
+      || admissionIds.size !== targetIds.size
+      || [...admissionIds].some(requestId => !targetIds.has(requestId))) {
+      return { ok: false, reason: 'identity_mismatch' };
+    }
+
     return {
       ok: true,
       targets: [...targetByTask.values()].sort((a, b) => a.requestId.localeCompare(b.requestId)),

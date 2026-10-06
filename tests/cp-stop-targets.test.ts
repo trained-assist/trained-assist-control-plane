@@ -97,6 +97,25 @@ describe('POST /cp-stop-targets', () => {
     expect(first.body.tasks).toMatchObject([{ userTaskId: task.id, requestId }]);
   });
 
+  it('rejects an incomplete admission set before opening a stop window', async () => {
+    const profileId = nextId('profile');
+    const conversationId = nextId('conversation');
+    const admittedRequestId = `tgcp-${'e'.repeat(64)}`;
+    const store = new TaskStore(bindings.DB);
+    await admittedDoneTask(store, { id: nextId('task'), profileId, conversationId,
+      requestId: admittedRequestId });
+    const unlistedRequestId = `tgcp-${'f'.repeat(64)}`;
+    await store.admitTask({ id: nextId('task'), profileId, conversationId,
+      requestId: unlistedRequestId, receiptId: `receipt:${unlistedRequestId}`, goal: 'unlisted open task' });
+
+    const result = await postStop({ profileId, conversationId, windowId: nextId('window'),
+      admissionBarrierComplete: true, admissionRequestIds: [admittedRequestId] }, profileId);
+
+    expect(result.body).toMatchObject({ snapshotId: null, unresolved: true,
+      reason: 'identity_mismatch', stopConfirmed: false, tasks: [] });
+    expect(await store.cpStopWindow(profileId, conversationId)).toBeNull();
+  });
+
   it('freezes exact receipt identities until explicit restart and never adds later tasks to the old window', async () => {
     const profileId = nextId('profile');
     const conversationId = nextId('conversation');
