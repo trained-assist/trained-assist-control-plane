@@ -1,8 +1,9 @@
 # Test MCP discovery contract for Telegram UX v1
 
-Status: test-only CP wiring is implemented, but the Host Worker returns `503`
-until its token, public Runner JWK, and expiry are configured. No live discovery,
-Runner invocation, or fixture read is claimed yet. The only profile in scope is
+Status: test-only CP wiring and the isolated Host Worker are configured. Live
+Host discovery and a Runner-resolver-signed fixture invocation have both
+returned the expected tool/marker. The active Runner service and a real Telegram
+agent session are still unverified. The only profile in scope is
 `integration-telegram-ux-v1`; the only capability exposed to the agent is
 `registry.fixture_read`.
 
