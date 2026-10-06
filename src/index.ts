@@ -68,6 +68,7 @@ import { communicationSelector, communicationWriter } from './router/communicati
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
+import { observeHealthCatalogue, parseHealthCatalogue } from './diagnostics/health-catalogue';
 import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
@@ -77,6 +78,10 @@ import {
 } from './output';
 
 export interface Env {
+  HEALTH_DIAGNOSTICS_TOKEN?: string;
+  HEALTH_CATALOGUE_JSON?: string;
+  HEALTH_PROBE_TIMEOUT_MS?: string;
+  HEALTH_CACHE_TTL_MS?: string;
   NATIVE_CANCEL_CONFIRMATION?: string;
   ROUTER_SELECTOR_NAMES_ONLY?: string;
   ROUTER_SELECTOR?: string;
@@ -239,6 +244,22 @@ const json = (value: unknown, status = 200): Response =>
     status,
     headers: { 'content-type': 'application/json' },
   });
+
+const diagnosticsJson = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, null, 1), {
+  status,
+  headers: { 'content-type': 'application/json', 'cache-control': 'private, no-store' },
+});
+
+const diagnosticsTokenMatches = (request: Request, configured: string | undefined): boolean => {
+  const expected = configured?.trim() ?? '';
+  const provided = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+  if (!expected || provided.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < expected.length; index++) difference |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
+  return difference === 0;
+};
+
+const healthCatalogueCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
 
 async function credentialHost(req: Request, env: Env): Promise<string | null> {
   const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
@@ -1124,6 +1145,47 @@ const store = new TaskStore(env.DB);
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
+      if (url.pathname === '/health') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString() });
+      }
+      if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        if (!diagnosticsTokenMatches(req, env.HEALTH_DIAGNOSTICS_TOKEN)) return diagnosticsJson({ error: 'unauthorized' }, 401);
+        let descriptors;
+        try { descriptors = parseHealthCatalogue(env.HEALTH_CATALOGUE_JSON); }
+        catch { return diagnosticsJson({ error: 'health catalogue unavailable' }, 503); }
+        const environment = url.searchParams.get('environment');
+        const region = url.searchParams.get('region');
+        const serviceId = url.searchParams.get('serviceId');
+        const filtered = descriptors.filter((item) => (!environment || item.environment === environment)
+          && (!region || item.region === region) && (!serviceId || item.serviceId === serviceId));
+        if (url.pathname.endsWith('/catalogue')) return diagnosticsJson({ contractVersion: 1, services: filtered });
+        const timeoutMs = Number(env.HEALTH_PROBE_TIMEOUT_MS ?? '1500');
+        const ttlMs = Number(env.HEALTH_CACHE_TTL_MS ?? '10000');
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10_000
+          || !Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > 60_000) return diagnosticsJson({ error: 'health diagnostics config invalid' }, 503);
+        const cacheKey = JSON.stringify([environment, region, serviceId,
+          filtered.map((descriptor) => [descriptor.serviceId, descriptor.healthUrl, descriptor.readinessUrl, descriptor.deployedRevision])]);
+        const now = Date.now();
+        const cached = healthCatalogueCache.get(cacheKey);
+        if (cached && cached.expiresAt > now) return diagnosticsJson({ contractVersion: 1, cached: true, ...cached.summary });
+        const entries = await observeHealthCatalogue(filtered, { timeoutMs, concurrency: 4 });
+        const statuses = entries.map((entry) => entry.observation.status);
+        const status = statuses.length === 0 ? 'unknown' : statuses.includes('unhealthy') ? 'unhealthy' : statuses.includes('unknown') ? 'unknown'
+          : statuses.includes('degraded') ? 'degraded' : 'healthy';
+        if (cached && entries.length > 0 && statuses.every((value) => value === 'unknown')) {
+          return diagnosticsJson({ contractVersion: 1, cached: true, stale: true, status: 'unknown',
+            observedAt: new Date().toISOString(), sourceObservedAt: cached.summary['observedAt'],
+            reasonCodes: ['stale_cache_served', ...entries.flatMap((entry) => entry.observation.reasonCodes)],
+            services: cached.summary['services'] });
+        }
+        const summary = { status, observedAt: new Date().toISOString(), reasonCodes: entries.length ? [] : ['no_services_configured'], services: entries };
+        const jitteredTtl = Math.round(ttlMs * (0.9 + Math.random() * 0.2));
+        healthCatalogueCache.set(cacheKey, { expiresAt: now + jitteredTtl, summary });
+        if (healthCatalogueCache.size > 64) healthCatalogueCache.clear();
+        return diagnosticsJson({ contractVersion: 1, cached: false, ...summary });
+      }
       if (url.pathname === '/') {
         return json({
           service: 'trained-assist-control-plane',
