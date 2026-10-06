@@ -35,6 +35,8 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
     expect(contract.audiences['crm-web']).toContain('crm.catalog.read');
+    expect(contract.audiences['crm-web']).toContain('crm.deals.read');
+    expect(contract.audiences['crm-web']).toContain('crm.deals.create');
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });
 

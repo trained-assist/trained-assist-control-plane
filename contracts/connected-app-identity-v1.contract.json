@@ -24,7 +24,7 @@
   "audiences": {
     "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.reports.create",
       "recruiting.reports.review", "recruiting.assignment.review", "recruiting.candidateSearch"],
-    "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read"]
+    "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read", "crm.deals.create"]
   },
   "rules": {
     "profileSelection": "host_only",
