@@ -20,7 +20,7 @@ import { waitForAnswer } from '../awaiting/wait-for-answer';
 import { inputManifestForTask } from '../intake/input-artifact-manifest';
 import { awaitRunnerResult, type AwaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
-import { RunnerUnavailableError } from '../runner-adapter/errors';
+import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
 import type { ManagedGtdContext } from '../gtd/types';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
@@ -576,12 +576,31 @@ export async function conversationPlan(
           });
           return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [] };
         } catch (e) {
-          // Любой отказ Runner на этапе submit — неизвестный исход попытки, а не
-          // «failed»: задача не теряется, авто-rerun нет, повтор с тем же ключом
-          // безопасен. Раньше сюда попадал только RunnerUnavailableError, и
-          // отказ контракта (403/400) оставлял попытку в running навсегда.
-          const errorClass = e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
+          // A definitive 4xx rejection means Runner did not admit this request;
+          // transport/5xx failures remain unknown because dispatch may have won.
+          const definitivelyRejected = e instanceof RunnerConflictError || e instanceof RunnerNotFoundError
+            || e instanceof RunnerStaleGenerationError;
+          const errorClass = definitivelyRejected ? 'runner_rejected'
+            : e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
           if (p.runId) {
+            if (definitivelyRejected) {
+              await store.finishRun(p.runId, 'failed', { errorClass, errorText: String((e as Error)?.message ?? e) }).catch(() => null);
+              await store.logEvent({
+                taskId,
+                kind: 'progress',
+                generation,
+                executionId: p.runId,
+                source: 'executor',
+                payload: { event: 'runner_submit_rejected', attemptId: p.runId, idempotencyKey: attemptKey },
+              });
+              const task = await store.requireTask(taskId);
+              if (!isTerminalStatus(task.status)) {
+                await store.commit(taskId, generation, { status: 'failed', stage: 'finished',
+                  executionId: p.runId, step: 'runner_submit', result: { ok: false, reason: 'runner_rejected' },
+                  payload: { errorClass } });
+              }
+              return { submitRejected: true as const };
+            }
             await store.markConnectionLost(p.runId, String((e as Error)?.message ?? e), errorClass).catch(() => null);
           }
           await store.logEvent({
@@ -596,6 +615,9 @@ export async function conversationPlan(
       },
       { limit: 8, delaySec: 3 },
     );
+    if ('submitRejected' in receipt && receipt.submitRejected) {
+      return { ok: false, reason: 'runner_rejected' };
+    }
     runnerRunId = receipt.runId;
     runnerDeclaredOutputs = receipt.declaredOutputPaths;
     // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
