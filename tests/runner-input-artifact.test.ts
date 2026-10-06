@@ -29,7 +29,7 @@ async function makeTask() {
     id: taskId,
     profileId,
     goal: 'summarize this recording',
-    userValue: { inputItems: [{ text: 'summarize this recording', artifacts: [manifest] }] },
+    userValue: { inputItems: [{ text: 'summarize this recording', artifacts: [manifest] }], inputArtifacts: [manifest] },
   });
   return { taskId, profileId, manifest, bytes };
 }
