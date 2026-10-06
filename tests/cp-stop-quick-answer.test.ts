@@ -54,6 +54,48 @@ async function fixture(capability = 'system_health', executed = false) {
 }
 
 describe('no-Workflow quick-answer stop evidence', () => {
+  it.each(['empty-targets', 'duplicate-target', 'different-admission', 'duplicate-admission', 'malformed-admission', 'unlisted-target'] as const)
+  ('refuses %s snapshot integrity drift before observation', async mutation => {
+    const current = await fixture();
+    if (mutation === 'empty-targets') await env.DB.prepare("UPDATE cp_stop_windows SET targets_json = '[]' WHERE snapshot_id = ?").bind(current.pin.snapshotId).run();
+    if (mutation === 'duplicate-target') await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify([current.target, current.target]), current.pin.snapshotId).run();
+    if (mutation === 'different-admission') await env.DB.prepare('UPDATE cp_stop_windows SET admission_request_ids_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(['other-admission']), current.pin.snapshotId).run();
+    if (mutation === 'duplicate-admission') await env.DB.prepare('UPDATE cp_stop_windows SET admission_request_ids_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify([current.target.requestId, current.target.requestId]), current.pin.snapshotId).run();
+    if (mutation === 'malformed-admission') await env.DB.prepare("UPDATE cp_stop_windows SET admission_request_ids_json = 'null' WHERE snapshot_id = ?").bind(current.pin.snapshotId).run();
+    if (mutation === 'unlisted-target') await env.DB.prepare("UPDATE cp_stop_windows SET admission_request_ids_json = '[]' WHERE snapshot_id = ?").bind(current.pin.snapshotId).run();
+    const window = await current.store.cpStopWindow(current.profileId, current.input.conversationId);
+    expect(await current.store.updateCpStopWindow({ profileId: current.profileId, conversationId: current.input.conversationId,
+      snapshotId: current.pin.snapshotId, stopConfirmed: true, reason: null, expectedTargetsJson: window!.targets_json })).toBeNull();
+    expect(await current.service.stop(current.input)).toMatchObject({ stopConfirmed: false, unresolved: true });
+    expect(await current.store.cpStopWindow(current.profileId, current.input.conversationId)).toMatchObject({ stop_confirmed: 0 });
+  });
+
+  it('pins only the routing event identity, without copying user content or routing metadata', async () => {
+    const current = await fixture();
+    expect(Object.keys(current.target).sort()).toEqual(['attempts', 'profileId', 'quickAnswerRoutingEventId',
+      'receiptId', 'requestId', 'taskGeneration', 'userTaskId'].sort());
+    expect(current.target.quickAnswerRoutingEventId).toBe(`routing:${current.taskId}:1`);
+    const window = await current.store.cpStopWindow(current.profileId, current.input.conversationId);
+    expect(JSON.parse(window!.targets_json)).toEqual([current.target]);
+    expect(window!.targets_json).not.toContain('workOrder');
+    expect(window!.targets_json).not.toContain('payload_json');
+  });
+
+  it('refuses zero attempts without quick provenance or a durable terminal Workflow witness', async () => {
+    const current = await fixture();
+    await env.DB.prepare("DELETE FROM task_events WHERE user_task_id = ? AND kind = 'routing.selected'").bind(current.taskId).run();
+    await env.DB.prepare("UPDATE durable_tasks SET result_json = '{}' WHERE id = ?").bind(current.taskId).run();
+    const target = { ...current.target };
+    delete target.quickAnswerRoutingEventId;
+    const expectedTargetsJson = JSON.stringify([target]);
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?').bind(expectedTargetsJson, current.pin.snapshotId).run();
+    expect(await current.store.updateCpStopWindow({ profileId: current.profileId, conversationId: current.input.conversationId,
+      snapshotId: current.pin.snapshotId, stopConfirmed: true, reason: null, expectedTargetsJson })).toBeNull();
+  });
+
   it.each(['system_health', 'catalog.brief'])('confirms only durable no-run %s through the real missing Workflow binding', async capability => {
     const current = await fixture(capability);
     const before = await current.store.requireTask(current.taskId);
@@ -131,6 +173,54 @@ describe('no-Workflow quick-answer stop evidence', () => {
       return update(input);
     });
     expect(await current.service.stop(current.input)).toMatchObject({ stopConfirmed: false, unresolved: true });
+    expect(await current.store.cpStopWindow(current.profileId, current.input.conversationId)).toMatchObject({ stop_confirmed: 0 });
+  });
+
+  it.each([
+    'deleted-task', 'null-result', 'malformed-result', 'missing-mode', 'changed-mode', 'changed-answer',
+    'missing-routing', 'changed-routing-id', 'malformed-routing', 'changed-routing-decision',
+    'missing-output', 'malformed-output', 'changed-output-capability', 'changed-output-version',
+    'changed-output-source', 'changed-output-generation', 'missing-receipt', 'changed-target', 'malformed-target',
+  ])('atomically refuses %s between stop observation and confirmation persistence', async mutation => {
+    const current = await fixture();
+    const update = current.store.updateCpStopWindow.bind(current.store);
+    vi.spyOn(current.store, 'updateCpStopWindow').mockImplementationOnce(async input => {
+      expect(input.stopConfirmed).toBe(true);
+      if (mutation === 'deleted-task') await env.DB.prepare('DELETE FROM durable_tasks WHERE id = ?').bind(current.taskId).run();
+      if (mutation === 'null-result') await env.DB.prepare('UPDATE durable_tasks SET result_json = NULL WHERE id = ?').bind(current.taskId).run();
+      if (mutation === 'malformed-result') await env.DB.prepare('UPDATE durable_tasks SET result_json = ? WHERE id = ?').bind('not-json', current.taskId).run();
+      if (mutation === 'missing-mode') await env.DB.prepare("UPDATE durable_tasks SET result_json = json_remove(result_json, '$.mode') WHERE id = ?").bind(current.taskId).run();
+      if (mutation === 'changed-mode') await env.DB.prepare("UPDATE durable_tasks SET result_json = json_set(result_json, '$.mode', 'engine') WHERE id = ?").bind(current.taskId).run();
+      if (mutation === 'changed-answer') await env.DB.prepare("UPDATE durable_tasks SET result_json = json_set(result_json, '$.answer', 'changed answer') WHERE id = ?").bind(current.taskId).run();
+      if (mutation === 'missing-routing') await env.DB.prepare("DELETE FROM task_events WHERE user_task_id = ? AND kind = 'routing.selected'").bind(current.taskId).run();
+      if (mutation === 'changed-routing-id') await env.DB.prepare("UPDATE task_events SET event_id = event_id || '-replacement' WHERE user_task_id = ? AND kind = 'routing.selected'").bind(current.taskId).run();
+      if (mutation === 'malformed-routing') await env.DB.prepare("UPDATE task_events SET payload_json = 'null' WHERE user_task_id = ? AND kind = 'routing.selected'").bind(current.taskId).run();
+      if (mutation === 'changed-routing-decision') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.decisionId', 'changed decision') WHERE user_task_id = ? AND kind = 'routing.selected'").bind(current.taskId).run();
+      if (mutation === 'missing-output') await env.DB.prepare("DELETE FROM task_events WHERE user_task_id = ? AND source = 'output'").bind(current.taskId).run();
+      if (mutation === 'malformed-output') await env.DB.prepare("UPDATE task_events SET payload_json = 'null' WHERE user_task_id = ? AND source = 'output'").bind(current.taskId).run();
+      if (mutation === 'changed-output-capability') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.capabilityId', 'catalog.brief') WHERE user_task_id = ? AND source = 'output'").bind(current.taskId).run();
+      if (mutation === 'changed-output-version') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.capabilityVersion', 2) WHERE user_task_id = ? AND source = 'output'").bind(current.taskId).run();
+      if (mutation === 'changed-output-source') await env.DB.prepare("UPDATE task_events SET source = 'executor' WHERE user_task_id = ? AND source = 'output'").bind(current.taskId).run();
+      if (mutation === 'changed-output-generation') await env.DB.prepare("UPDATE task_events SET generation = 2 WHERE user_task_id = ? AND source = 'output'").bind(current.taskId).run();
+      if (mutation === 'missing-receipt') await env.DB.prepare("DELETE FROM task_events WHERE user_task_id = ? AND kind = 'task_accepted'").bind(current.taskId).run();
+      if (mutation === 'changed-target') await env.DB.prepare("UPDATE cp_stop_windows SET targets_json = json_remove(targets_json, '$[0].quickAnswerRoutingEventId') WHERE snapshot_id = ?").bind(current.pin.snapshotId).run();
+      if (mutation === 'malformed-target') await env.DB.prepare("UPDATE cp_stop_windows SET targets_json = '[null]' WHERE snapshot_id = ?").bind(current.pin.snapshotId).run();
+      return update(input);
+    });
+    expect(await current.service.stop(current.input)).toMatchObject({ stopConfirmed: false, unresolved: true });
+    expect(await current.store.cpStopWindow(current.profileId, current.input.conversationId)).toMatchObject({ stop_confirmed: 0 });
+    expect(current.stop).not.toHaveBeenCalled();
+  });
+
+  it('cannot authorize a quick answer by deleting its frozen routing expectation', async () => {
+    const current = await fixture();
+    const window = await current.store.cpStopWindow(current.profileId, current.input.conversationId);
+    const targets = JSON.parse(window!.targets_json);
+    delete targets[0].quickAnswerRoutingEventId;
+    const expectedTargetsJson = JSON.stringify(targets);
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?').bind(expectedTargetsJson, current.pin.snapshotId).run();
+    expect(await current.store.updateCpStopWindow({ profileId: current.profileId, conversationId: current.input.conversationId,
+      snapshotId: current.pin.snapshotId, stopConfirmed: true, reason: null, expectedTargetsJson })).toBeNull();
     expect(await current.store.cpStopWindow(current.profileId, current.input.conversationId)).toMatchObject({ stop_confirmed: 0 });
   });
 });

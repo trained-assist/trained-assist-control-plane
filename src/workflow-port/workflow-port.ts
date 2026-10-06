@@ -485,7 +485,11 @@ export class CfWorkflowPort implements WorkflowPortApi {
       }
       const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === attempt.runId
         && value.ownerGeneration === attempt.ownerGeneration && value.profileId === target.profileId);
-      if (proof) { nativeStops.push(proof); continue; }
+      if (proof) {
+        if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, proof)) return unresolved;
+        nativeStops.push(proof);
+        continue;
+      }
       if (!this.externalStop || !await matches()) return unresolved;
       const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
         runId: attempt.runId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
@@ -509,7 +513,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
     if (quickAnswer === 'delivery_pending') return unresolved;
     try {
       const instance = await this.wf.get(taskId);
-      if (!['terminated', 'complete', 'errored'].includes((await instance.status()).status)) return unresolved;
+      const workflowStatus = (await instance.status()).status;
+      if (!['terminated', 'complete', 'errored'].includes(workflowStatus)) return unresolved;
+      if (target.attempts.length === 0 && !await this.store.recordCpStopNoRunWorkflow(target, snapshotId, generation, workflowStatus)) return unresolved;
     } catch (error) {
       if (quickAnswer !== 'quiescent' || !(error instanceof Error) || error.message !== 'instance.not_found') return unresolved;
     }
@@ -531,6 +537,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
 
   private async quickAnswerStopEvidence(target: CpStopTarget, snapshotId: string, generation: number): Promise<'not_quick' | 'delivery_pending' | 'quiescent'> {
     if (target.attempts.length !== 0 || generation !== target.taskGeneration
+      || target.quickAnswerRoutingEventId !== `routing:${target.userTaskId}:${generation}`
       || !await this.store.cpStopTargetMatches(target, snapshotId, generation)) return 'not_quick';
     const task = await this.store.requireTask(target.userTaskId);
     if (task.status !== 'done' || !task.result_json) return 'not_quick';

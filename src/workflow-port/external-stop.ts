@@ -180,6 +180,7 @@ export class CpStopTargetsService {
     }
     if (tasks.length === 0) {
       const saved = await this.store.updateCpStopWindow({ ...input, snapshotId: window.snapshot_id,
+        expectedTargetsJson: window.targets_json,
         stopConfirmed: true, reason: null });
       return { snapshotId: window.snapshot_id, profileId: input.profileId, conversationId: input.conversationId,
         tasks, unresolved: !saved, reason: saved ? null : 'snapshot_conflict', stopConfirmed: !!saved };
@@ -200,6 +201,7 @@ export class CpStopTargetsService {
     const stopConfirmed = !pending && !unknown;
     const reason: CpStopReason | null = stopConfirmed ? null : pending ? 'native_stop_pending' : 'native_stop_unknown';
     const saved = await this.store.updateCpStopWindow({ ...input, snapshotId: window.snapshot_id,
+      expectedTargetsJson: window.targets_json,
       stopConfirmed, reason });
     return { snapshotId: window.snapshot_id, profileId: input.profileId, conversationId: input.conversationId,
       tasks, unresolved: !saved || !stopConfirmed, reason: saved ? reason : 'snapshot_conflict',

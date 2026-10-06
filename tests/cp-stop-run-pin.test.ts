@@ -30,7 +30,7 @@ async function fixture() {
   const terminate = vi.fn(async () => {});
   const status = vi.fn(async () => ({ status: 'running' }));
   const workflow = { get: vi.fn(async () => ({ status, terminate })) } as unknown as Workflow;
-  const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'pending' as const }));
+  const stop = vi.fn<(context: ExternalStopContext) => Promise<ExternalStopOutcome>>(async () => ({ state: 'pending' }));
   const port = new CfWorkflowPort(workflow, store, undefined, { stop });
   const pin = { target, snapshotId };
   return { store, taskId, profileId, conversationId, requestId, runId, attempt, input, target,
@@ -45,6 +45,93 @@ function result(context: ExternalStopContext): RunnerResult {
 }
 
 describe('immutable stop execution pins', () => {
+  it('repins known terminal evidence into the snapshot before final confirmation', async () => {
+    const current = await fixture();
+    current.status.mockResolvedValue({ status: 'complete' });
+    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    expect(await current.port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true });
+    const proofId = `cp-stop-proof:${current.snapshotId}:${current.attempt.id}`;
+    await env.DB.prepare('DELETE FROM task_events WHERE event_id = ?').bind(proofId).run();
+    const service = new CpStopTargetsService(current.store, current.port);
+    expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: true });
+    expect(await env.DB.prepare('SELECT event_id FROM task_events WHERE event_id = ?').bind(proofId).first()).not.toBeNull();
+    expect(current.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['finished', 'unfinished', 'submitted', 'late-submitted'] as const)
+  ('handles a null native run identity only when safely %s', async state => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    if (state !== 'unfinished') await current.store.finishRun(current.attempt.id, 'failed');
+    await current.store.commit(current.taskId, 1, { status: 'failed' });
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('null run fixture failed');
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+    const submission = () => current.store.logEvent({ taskId: current.taskId, kind: 'progress', source: 'executor', generation: 1,
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey: resolved.targets[0]!.attempts[0]!.idempotencyKey } });
+    if (state === 'submitted') await submission();
+    if (state === 'late-submitted') {
+      const update = current.store.updateCpStopWindow.bind(current.store);
+      vi.spyOn(current.store, 'updateCpStopWindow').mockImplementationOnce(async input => {
+        expect(input.stopConfirmed).toBe(true);
+        await submission();
+        return update(input);
+      });
+    }
+    current.status.mockResolvedValue({ status: 'complete' });
+    const service = new CpStopTargetsService(current.store, current.port);
+    expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: state === 'finished' });
+    expect(current.stop).not.toHaveBeenCalled();
+  });
+
+  it.each(['insert-attempt', 'delete-attempt', 'attempt-generation', 'attempt-run', 'task-generation',
+    'delete-task', 'delete-claim', 'mutate-claim', 'delete-proof', 'proof-profile', 'proof-run',
+    'proof-generation', 'proof-exit', 'proof-source', 'proof-kind', 'proof-event', 'proof-payload',
+    'execution-reopened', 'submission-key'] as const)
+  ('rejects %s after per-task stop proof but before the window CAS', async mutation => {
+    const current = await fixture();
+    current.status.mockResolvedValue({ status: 'complete' });
+    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    const service = new CpStopTargetsService(current.store, current.port);
+    const update = current.store.updateCpStopWindow.bind(current.store);
+    vi.spyOn(current.store, 'updateCpStopWindow').mockImplementationOnce(async input => {
+      expect(input.stopConfirmed).toBe(true);
+      expect((await current.store.requireTask(current.taskId)).status).toBe('cancelled');
+      if (mutation === 'insert-attempt') await env.DB.prepare(`INSERT INTO executions
+        (id, task_id, status, generation, started_at, last_heartbeat_at)
+        SELECT id || '-late', task_id, 'running', generation, started_at, last_heartbeat_at FROM executions WHERE id = ?`)
+        .bind(current.attempt.id).run();
+      if (mutation === 'delete-attempt') await env.DB.prepare('DELETE FROM executions WHERE id = ?').bind(current.attempt.id).run();
+      if (mutation === 'attempt-generation') await env.DB.prepare('UPDATE executions SET generation = generation + 1 WHERE id = ?').bind(current.attempt.id).run();
+      if (mutation === 'attempt-run') await env.DB.prepare("UPDATE executions SET session_id = 'foreign-run' WHERE id = ?").bind(current.attempt.id).run();
+      if (mutation === 'task-generation') await env.DB.prepare('UPDATE durable_tasks SET generation = generation + 1 WHERE id = ?').bind(current.taskId).run();
+      if (mutation === 'delete-task') await env.DB.prepare('DELETE FROM durable_tasks WHERE id = ?').bind(current.taskId).run();
+      const claimId = `cp-stop-claim:${current.snapshotId}:${current.taskId}`;
+      const proofId = `cp-stop-proof:${current.snapshotId}:${current.attempt.id}`;
+      if (mutation === 'delete-claim') await env.DB.prepare('DELETE FROM task_events WHERE event_id = ?').bind(claimId).run();
+      if (mutation === 'mutate-claim') await env.DB.prepare("UPDATE task_events SET payload_json = '{}' WHERE event_id = ?").bind(claimId).run();
+      if (mutation === 'delete-proof') await env.DB.prepare('DELETE FROM task_events WHERE event_id = ?').bind(proofId).run();
+      if (mutation === 'proof-profile') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].profileId', 'foreign') WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-run') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].runId', 'foreign') WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-generation') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].ownerGeneration', 99) WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-exit') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].exitObserved', json('false')) WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-source') await env.DB.prepare("UPDATE task_events SET source = 'executor' WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-kind') await env.DB.prepare("UPDATE task_events SET kind = 'run_started' WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-event') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.event', 'unrelated') WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-payload') await env.DB.prepare("UPDATE task_events SET payload_json = 'null' WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'execution-reopened') await env.DB.prepare("UPDATE executions SET status = 'running', finished_at = NULL WHERE id = ?").bind(current.attempt.id).run();
+      if (mutation === 'submission-key') await current.store.logEvent({ taskId: current.taskId, generation: 1,
+        kind: 'progress', source: 'executor', payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey: 'foreign' } });
+      return update(input);
+    });
+    expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: false, unresolved: true });
+    expect(await current.store.cpStopWindow(current.profileId, current.conversationId)).toMatchObject({ stop_confirmed: 0 });
+    expect(current.stop).toHaveBeenCalledTimes(1);
+    expect(current.terminate).not.toHaveBeenCalled();
+  });
+
   it('retries the same snapshot and native tuple without repeated generation bumps or Workflow termination', async () => {
     const current = await fixture();
     const service = new CpStopTargetsService(current.store, current.port);
