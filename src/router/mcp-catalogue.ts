@@ -57,7 +57,7 @@ export function mcpReasonCode(code: string): ReasonCode {
   if (code === 'MCP_REVALIDATION_REQUIRED') return code;
   if (requiresMcpRevalidation(code)) return 'MCP_REVALIDATION_REQUIRED';
   if (code === 'host_mcp_disabled') return 'MCP_HOST_DISABLED';
-  if (code.startsWith('discovery_')) return code === 'discovery_malformed' || code === 'discovery_authorization_invalid'
+  if (code.startsWith('discovery_')) return code === 'discovery_malformed' || code === 'discovery_authorization_invalid' || code === 'discovery_authorization_failed'
     ? 'MCP_DISCOVERY_INVALID' : 'MCP_DISCOVERY_UNAVAILABLE';
   if (code === 'binding_unavailable') return 'MCP_BINDING_UNAVAILABLE';
   if (code.includes('binding')) return code === 'execution_binding_missing'
@@ -142,7 +142,12 @@ export class McpCatalogueAdapter {
           if (error instanceof McpCatalogueError) throw error;
           refuse('discovery_unavailable');
         } finally { clearTimeout(timer); }
-        if (!object(rpc) || rpc.jsonrpc !== '2.0' || rpc.id !== id || rpc.error || !object(rpc.result) || !Array.isArray(rpc.result.tools)) refuse('discovery_malformed');
+        if (!object(rpc) || rpc.jsonrpc !== '2.0' || rpc.id !== id) refuse('discovery_malformed');
+        if (rpc.error) {
+          if (object(rpc.error) && rpc.error.code === -32001) refuse('discovery_authorization_failed');
+          refuse('discovery_rejected');
+        }
+        if (!object(rpc.result) || !Array.isArray(rpc.result.tools)) refuse('discovery_malformed');
         for (const tool of rpc.result.tools) {
           if (!object(tool) || typeof tool.name !== 'string' || !namePattern.test(tool.name) || !object(tool.inputSchema) || tool.inputSchema.type !== 'object' || (tool.description !== undefined && typeof tool.description !== 'string')) refuse('tool_metadata_invalid');
           if (!allowed.has(tool.name)) continue;
