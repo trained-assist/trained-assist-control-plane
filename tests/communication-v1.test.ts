@@ -11,6 +11,8 @@ import type { RoutingInput } from '../src/router/router-types';
 import { commitQuickAnswer, dispatchAcceptedAgent } from '../src/output/communication-v1';
 import { RunnerNotFoundError } from '../src/runner-adapter/errors';
 import { signPrincipal } from '../src/auth/principal-auth';
+import { IntakeService } from '../src/intake';
+import { PilotRouter } from '../src/pilot/pilot-router';
 import worker from '../src/index';
 
 const catalog = communicationV1Catalog();
@@ -64,6 +66,7 @@ describe('communication MCP client', () => {
     { user_goal: 'Полная цель пользователя.', decision: 'invented' },
     { user_goal: 'Полная цель пользователя.', decision: 'agent', confidence: 1 },
     { user_goal: 'коротко', decision: 'agent' },
+    { user_goal: 'x'.repeat(4001), decision: 'agent' },
   ])('rejects invalid or unknown output %j', async (output) => {
     const resolve = communicationSelector({ url: 'https://communication.example.test', token: 'test-credential', fetcher: (async () => Response.json({ id: request.request_id, result: { structuredContent: output } })) as typeof fetch });
     await expect(resolve(request)).rejects.toBeInstanceOf(SelectorError);
@@ -122,6 +125,10 @@ describe('v1 routing', () => {
     expect(result.decision.route).toBe('agent');
     expect(result.continuation?.goal).toBe(text);
     expect(result.agentInstructions).toContain(text);
+    if (decision === 'agent') {
+      expect(result.agentInstructions).toContain('Проверить запрошенное пользователем состояние.');
+      expect(result.agentInstructions).toContain('исходный запрос пользователя имеет приоритет');
+    } else expect(result.agentInstructions).toContain(text);
     expect(result.reply).toBeNull();
   });
 
@@ -204,7 +211,7 @@ describe('Task Store and Output ownership', () => {
   it('starts the accepted task once at existing generation with no resume or synthetic autoRun', async () => {
     const store = new TaskStore(env.DB);
     const id = nextId();
-    await store.admitTask({ id, profileId: 'selector-profile', goal: 'perform original task', userValue: { inputItems: [{ text: 'perform original task' }] } });
+    await store.admitTask({ id, profileId: 'selector-profile', goal: 'perform original task', executionPolicy: { workStyle: 'explore', source: 'explicit' }, userValue: { inputItems: [{ text: 'perform original task' }] } });
     const instances = new Map<string, unknown>();
     const create = vi.fn(async (request: { id: string; params: unknown }) => {
       if (instances.has(request.id)) throw new Error('already exists');
@@ -220,7 +227,9 @@ describe('Task Store and Output ownership', () => {
     expect((await store.listRuns(id))).toHaveLength(1);
     expect((await store.history(id)).filter((event) => event.kind === 'run_started')).toHaveLength(1);
     expect((await store.requireTask(id)).generation).toBe(1);
-    expect(instances.get(id)).toMatchObject({ taskId: id, generation: 1, instructions: result.agentInstructions });
+    expect(instances.get(id)).toMatchObject({ taskId: id, generation: 1, instructions: expect.stringContaining('Режим запуска: explore') });
+    expect((instances.get(id) as { goal: string; instructions: string }).instructions).toContain('Проверить запрошенное пользователем состояние.');
+    expect((instances.get(id) as { goal: string; instructions: string }).instructions).toContain('perform original task');
     expect((instances.get(id) as { autoRun?: boolean }).autoRun).not.toBe(true);
     await dispatchAcceptedAgent(store, port, task, result);
     expect((await store.listRuns(id))).toHaveLength(1);
@@ -280,9 +289,14 @@ describe('Task Store and Output ownership', () => {
 
   it('HTTP fallback dispatches through Output without requiring gateway start', async () => {
     const store = new TaskStore(env.DB);
-    const id = nextId();
-    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:read', 'tasks:control'] });
-    await store.admitTask({ id, profileId: 'selector-profile', goal: 'process the test CSV', userValue: { inputItems: [{ text: 'process the test CSV' }] } });
+    const goal = 'Разбери паттерны сильных заголовков Instagram и предложи 10 свежих вариантов для карусели про неожиданные поступки кандидатов на собеседовании. Не повторяй формулировки из исходных историй.';
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:intake', 'tasks:read', 'tasks:control'] });
+    const pilot = new PilotRouter({ config: { enabled: true, activatedAt: null, cohortProfileIds: ['selector-profile'], legacyProfileIds: null } });
+    const admitted = await new IntakeService(store, pilot).admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1, requestId: nextId(), inputItems: [{ text: goal }],
+    });
+    const id = admitted.userTaskId;
+    createdIds.push(id);
     const fetcher = vi.fn(async () => new Response('{}', { status: 503 }));
     vi.stubGlobal('fetch', fetcher);
     const instances = new Map<string, unknown>();
@@ -301,6 +315,10 @@ describe('Task Store and Output ownership', () => {
     expect((await worker.fetch(request(), bindings)).status).toBe(200);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(await store.listRuns(id)).toHaveLength(1);
-    expect(instances.get(id)).toMatchObject({ generation: 1, runnerEngine: 'dynamic-ip-azure-agent-run' });
+    const launched = instances.get(id) as { goal: string; instructions: string; generation: number; runnerEngine: string };
+    expect(launched).toMatchObject({ goal, generation: 1, runnerEngine: 'dynamic-ip-azure-agent-run' });
+    expect(launched.instructions).toContain(goal);
+    expect(launched.instructions.match(/\[work-style:v1\]/g)).toHaveLength(1);
+    expect(launched.instructions).toContain('Режим запуска: auto');
   });
 });

@@ -77,6 +77,7 @@ export interface AdmitTaskInput {
   /** Поля квитанции/envelope, которые пишутся в payload события task_accepted. */
   envelope?: Record<string, unknown> | null;
   userValue?: unknown;
+  executionPolicy?: unknown;
   /** Заголовок диалога для conversations при создании разговора. */
   conversationTitle?: string | null;
   /**
@@ -211,8 +212,8 @@ export class TaskStore {
           `INSERT INTO durable_tasks(
              id, profile_id, project_id, goal, status, stage,
              conversation_id, audience_id, destination_id, request_id, origin_session_id, user_value,
-             generation, created_at, updated_at, revision, start_deadline_at)
-           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0,?)
+             generation, created_at, updated_at, revision, start_deadline_at, execution_policy_json)
+           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0,?,?)
            ON CONFLICT(id) DO NOTHING`,
         )
         .bind(
@@ -231,6 +232,7 @@ export class TaskStore {
           // Принято = «ещё не начато»: дедлайн старта обязателен уже на приёме
           // (arch#132 R1/R2). Сбрасывается в NULL в startRun().
           now + (input.startDeadlineMs ?? DEFAULT_START_DEADLINE_MS),
+          input.executionPolicy === undefined ? null : JSON.stringify(input.executionPolicy),
         ),
     );
 

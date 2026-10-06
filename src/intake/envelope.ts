@@ -9,6 +9,7 @@
  */
 
 export const ADMISSION_CONTRACT_VERSION = 1;
+export type WorkStyle = 'explore' | 'answer' | 'auto';
 
 /** Один элемент входа: текст и/или ссылки на артефакты (C01 inputItems/artifactRefs). */
 export interface IntakeItem {
@@ -37,6 +38,9 @@ export interface IntakeEnvelope {
   inputItems: IntakeItem[];
   /** Исполнение запрошено сейчас или только принято (C01: receipt != запуск). */
   requestedExecutionPolicy?: string | null;
+  /** Launch intent selected by the user; defaults to auto at durable admission. */
+  workStyle?: WorkStyle;
+  workStyleSource?: 'explicit' | 'default';
   /** Куда клиент ждёт ответа/событий (C01 replyToRef). */
   replyToRef?: string | null;
   /** Политика ожидания ответа пользователя, если приём сразу запускает план. */
@@ -108,6 +112,11 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     return v;
   };
 
+  const workStyle = e.workStyle === undefined ? 'auto' : e.workStyle;
+  if (workStyle !== 'explore' && workStyle !== 'answer' && workStyle !== 'auto') {
+    throw new InvalidEnvelopeError('workStyle must be explore, answer or auto', 'workStyle');
+  }
+
   let waitTimeoutSec: number | null = null;
   if (e.waitTimeoutSec !== undefined && e.waitTimeoutSec !== null) {
     const n = Number(e.waitTimeoutSec);
@@ -127,6 +136,8 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     destinationId: str('destinationId'),
     inputItems,
     requestedExecutionPolicy: str('requestedExecutionPolicy'),
+    workStyle,
+    workStyleSource: e.workStyle === undefined ? 'default' : 'explicit',
     replyToRef: str('replyToRef'),
     question: str('question'),
     waitTimeoutSec,
@@ -172,6 +183,8 @@ export function canonicalEnvelopeJson(envelope: IntakeEnvelope): string {
     destinationId: envelope.destinationId ?? null,
     inputItems: envelope.inputItems.map((item) => ({ text: item.text ?? null, artifactRefs: item.artifactRefs ?? [] })),
     requestedExecutionPolicy: envelope.requestedExecutionPolicy ?? null,
+    workStyle: envelope.workStyle ?? 'auto',
+    workStyleSource: envelope.workStyleSource ?? 'default',
     question: envelope.question ?? null,
     waitTimeoutSec: envelope.waitTimeoutSec ?? null,
   };

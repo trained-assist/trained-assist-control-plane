@@ -53,7 +53,7 @@ export function communicationSelector(config: CommunicationConfig): (input: Reco
     const output = await callTool(config, 'resolve_user_intent', input);
     if (!output || typeof output !== 'object' || Array.isArray(output)) throw new SelectorError('malformed');
     const value = output as Record<string, unknown>;
-    if (Object.keys(value).sort().join(',') !== 'decision,user_goal' || typeof value.user_goal !== 'string' || value.user_goal.trim().length < 10 || typeof value.decision !== 'string') {
+    if (Object.keys(value).sort().join(',') !== 'decision,user_goal' || typeof value.user_goal !== 'string' || value.user_goal.trim().length < 10 || value.user_goal.length > 4000 || typeof value.decision !== 'string') {
       throw new SelectorError('malformed');
     }
     const options = input.decision_options as Array<{ id: string }>;

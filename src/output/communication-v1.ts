@@ -18,6 +18,29 @@ export async function commitQuickAnswer(store: TaskStore, task: TaskRow, result:
   }
 }
 
+export function workStyleInstructions(task: TaskRow): string {
+  let style: unknown = 'auto';
+  let source: unknown = 'default';
+  try {
+    if (task.execution_policy_json) {
+      const policy = JSON.parse(task.execution_policy_json) as { workStyle?: unknown; source?: unknown };
+      style = policy.workStyle;
+      source = policy.source;
+    }
+  } catch { /* old task rows use the default */ }
+  const guidance = style === 'explore'
+    ? 'Режим запуска: explore. Сначала изучи запрос и доступные материалы. Помоги пользователю сформулировать задачу: выясни цель, существенные ограничения и неизвестные. Задай до трёх важных вопросов за один ход и дождись ответов. Не повторяй уже известное. Если существенных неизвестных нет, сообщи об этом и дай краткий вывод; не выдумывай вопросы. Не запускай полное выполнение до готовности задачи или явной просьбы пользователя.'
+    : style === 'answer'
+      ? 'Режим запуска: answer. Дай полный ответ на текущий запрос с достаточным обоснованием. Используй нужные материалы и инструменты; обозначь существенные допущения и ограничения. Если без ответа пользователя результат невозможен, задай необходимые вопросы. Заверши после ответа или явно заказанного результата; не начинай новые этапы только потому, что они возможны. Полный ответ не означает обязательное выполнение действий, которые ты только предложил.'
+      : 'Режим запуска: auto. Выбери полезный способ работы по текущему запросу: изучение и уточнение, ответ или выполнение явно заказанного действия. Используй достаточную глубину и доступный бюджет. Спрашивай при существенной неопределённости; не выдумывай цели и не расширяй задачу без основания. Заверши, когда текущая цель достигнута либо нужен ответ пользователя. Не трактуй этот режим как разрешение на бесконечное автономное выполнение.';
+  return `[work-style:v1] Инструкции режима запуска (${source === 'explicit' ? 'выбран пользователем' : 'режим по умолчанию'}): ${guidance}`;
+}
+
+export function withWorkStyleInstructions(instructions: string | null | undefined, task: TaskRow): string {
+  const base = (instructions ?? '').replace(/^\[work-style:v1\][^\n]*(?:\n\n)?/gm, '').trim();
+  return [base, workStyleInstructions(task)].filter(Boolean).join('\n\n');
+}
+
 export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPort, task: TaskRow, result: RouteResult, runnerEngine = 'opencode') {
   const current = await store.requireTask(task.id);
   if (current.generation !== task.generation) throw new FencedError(task.id, task.generation, current.generation);
@@ -32,7 +55,7 @@ export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPo
   const start = await port.submit({
     id: current.id, profileId: current.profile_id, goal: current.goal,
     runnerEngine, idempotentRun: true,
-    instructions: result.agentInstructions ?? selection.goal,
+    instructions: withWorkStyleInstructions(result.agentInstructions ?? selection.goal, current),
   });
   return { owner: 'output', issued: start.runId !== null, requested: true, runId: start.runId, generation: start.generation, jobRef: `job_${current.id}_g${start.generation}`, executor: runnerEngine };
 }
