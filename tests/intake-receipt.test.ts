@@ -1,4 +1,4 @@
-import { IntakeService, deriveUserTaskId } from '../src/intake';
+import { IngressArtifactRejectedError, IngressArtifactUnavailableError, IntakeService, deriveUserTaskId } from '../src/intake';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from '../src/intake/errors';
 import { TaskStore } from '../src/taskstore';
 import { describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,18 @@ const envelope = (overrides: Record<string, unknown> = {}) => ({
   requestId: nextId('req'),
   profileId: 'profile-1',
   inputItems: [{ text: 'принять задачу' }],
+  ...overrides,
+});
+
+const inputManifest = (overrides: Record<string, unknown> = {}) => ({
+  contractVersion: 1,
+  ref: 'ingress-media-1',
+  version: 'v1',
+  ownerProfileId: 'profile-1',
+  mediaType: 'audio/ogg',
+  name: 'voice.ogg',
+  sizeBytes: 42,
+  sha256: 'a'.repeat(64),
   ...overrides,
 });
 
@@ -75,6 +87,20 @@ describe('Intake: квитанция и идемпотентность (C01)', (
     const after = await store.requireTask(first.userTaskId);
     expect(after.revision).toBe(before.revision);
     expect(after.goal).toBe(before.goal);
+    expect(await store.history(first.userTaskId)).toHaveLength(1);
+  });
+
+  it('snapshotId входит в idempotency hash и не может незаметно подмениться', async () => {
+    const { store, intake } = await setup();
+    const requestId = nextId('req-snapshot-hash');
+    const first = await intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId,
+      inputItems: [{ text: 'same prompt', snapshotId: 'snap-first' }],
+    }));
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId,
+      inputItems: [{ text: 'same prompt', snapshotId: 'snap-second' }],
+    }))).rejects.toBeInstanceOf(EnvelopeConflictError);
     expect(await store.history(first.userTaskId)).toHaveLength(1);
   });
 
@@ -132,6 +158,44 @@ describe('Intake: квитанция и идемпотентность (C01)', (
     await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({
       requestId: nextId('req-style-inconsistent'), workStyle: 'explore', workStyleSource: 'default',
     }))).rejects.toThrow('default workStyle must be auto');
+  });
+
+  it('media manifest без доступной buffer-проверки не создаёт частичную задачу', async () => {
+    const { store } = await setup();
+    const intake = new IntakeService(store);
+    const requestId = nextId('req-media-unverified');
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId,
+      inputItems: [{ text: 'summarize this audio', artifacts: [inputManifest()] }],
+    }))).rejects.toBeInstanceOf(IngressArtifactUnavailableError);
+    expect(await store.getTask(await deriveUserTaskId('profile-1', requestId))).toBeNull();
+  });
+
+  it('media manifest is persisted only after exact buffer verification', async () => {
+    const { store } = await setup();
+    const manifest = inputManifest();
+    const verifier = { verify: vi.fn(async (_profileId: string, _manifest: typeof manifest) => undefined) };
+    const intake = new IntakeService(store, undefined, verifier);
+    const accepted = await intake.admit({ principalId: 'sandbox-local' }, envelope({
+      inputItems: [{ text: 'summarize this audio', artifacts: [manifest] }],
+    }));
+    const stored = JSON.parse((await store.requireTask(accepted.userTaskId))?.user_value ?? '{}') as Record<string, unknown>;
+    expect(verifier.verify).toHaveBeenCalledWith('profile-1', manifest);
+    expect(stored.inputArtifacts).toEqual([manifest]);
+    expect(stored.artifactRefs).toContain(manifest.ref);
+  });
+
+  it('foreign profile manifest is refused before buffer access or task creation', async () => {
+    const { store } = await setup();
+    const verifier = { verify: vi.fn(async () => undefined) };
+    const intake = new IntakeService(store, undefined, verifier);
+    const requestId = nextId('req-media-foreign');
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId,
+      inputItems: [{ artifacts: [inputManifest({ ownerProfileId: 'profile-2' })] }],
+    }))).rejects.toBeInstanceOf(IngressArtifactRejectedError);
+    expect(verifier.verify).not.toHaveBeenCalled();
+    expect(await store.getTask(await deriveUserTaskId('profile-1', requestId))).toBeNull();
   });
 });
 

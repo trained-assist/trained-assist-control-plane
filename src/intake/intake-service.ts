@@ -14,7 +14,8 @@ import type { AcceptReceipt, AdmitTaskInput, TaskStore } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import { authorizeIntake, resolvePrincipal, requirePermission } from './authorization';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './errors';
-import { artifactRefsOf, envelopeHash, goalOf, normalizeEnvelope, type IntakeEnvelope } from './envelope';
+import { artifactRefsOf, envelopeHash, goalOf, inputArtifactsOf, normalizeEnvelope, type IntakeEnvelope } from './envelope';
+import { IngressArtifactRejectedError, IngressArtifactUnavailableError, type IngressArtifactVerifier } from './ingress-artifact-verifier';
 import { defaultPilotRouter, type PilotRouter } from '../pilot';
 
 export interface AdmitIdentity {
@@ -47,6 +48,7 @@ export class IntakeService {
   constructor(
     private readonly store: TaskStore,
     private readonly pilotRouter: PilotRouter = defaultPilotRouter,
+    private readonly ingressArtifactVerifier?: IngressArtifactVerifier,
   ) {}
 
   async admit(identity: AdmitIdentity, rawEnvelope: unknown): Promise<AdmitResult> {
@@ -80,6 +82,13 @@ export class IntakeService {
       throw e;
     }
 
+    const inputArtifacts = inputArtifactsOf(envelope);
+    for (const manifest of inputArtifacts) {
+      if (manifest.ownerProfileId !== profileId) throw new IngressArtifactRejectedError();
+      if (!this.ingressArtifactVerifier) throw new IngressArtifactUnavailableError();
+      await this.ingressArtifactVerifier.verify(profileId, manifest);
+    }
+
     const userTaskId = await deriveUserTaskId(profileId, envelope.requestId);
     const receiptId = crypto.randomUUID();
     const hash = await envelopeHash(envelope);
@@ -108,11 +117,13 @@ export class IntakeService {
         contractVersion: envelope.contractVersion,
         replyToRef: envelope.replyToRef ?? null,
         artifactRefs: artifactRefsOf(envelope),
+        inputArtifacts,
         requestedExecutionPolicy: envelope.requestedExecutionPolicy ?? null,
       },
       userValue: {
         inputItems: envelope.inputItems,
         artifactRefs: artifactRefsOf(envelope),
+        inputArtifacts,
         snapshotIds: envelope.inputItems.map((i) => i.snapshotId).filter((s): s is string => typeof s === 'string'),
         pilotRoute: route.route,
         pilotReason: route.reason,
