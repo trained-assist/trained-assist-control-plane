@@ -1,9 +1,12 @@
 # Test MCP discovery contract for Telegram UX v1
 
-Status: test-only CP wiring and the isolated Host Worker are configured. Live
-Host discovery and a Runner-resolver-signed fixture invocation have both
-returned the expected tool/marker. The active Runner service and a real Telegram
-agent session are still unverified. The only profile in scope is
+Status: the isolated Host Worker is deployed and configured. A live Host
+discovery request and a separately generated Runner-resolver-signed fixture
+invocation returned the expected tool/marker. The latter verifies Host proof
+validation and the resolver's signing output; it does not prove that an active
+Runner service launched an agent or that the agent called the tool. Current CP
+PR wiring has not yet been deployed to the test Worker. The active Runner
+service and a real Telegram agent session are still unverified. The only profile in scope is
 `integration-telegram-ux-v1`; the only capability exposed to the agent is
 `registry.fixture_read`.
 
@@ -54,8 +57,12 @@ and requires it to match the binding's pinned catalogue digest. For this fixture
 the version is `registry-fixture-catalogue-v1` and the digest is
 `sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d`;
 the Host's internal `registryDigest` in the Runner proof is a separate digest.
-Output re-reads and revalidates the selected catalogue before passing the
-descriptor through the existing Workflow submit parameters and RunSpec builder.
+After the model selects a capability, CP re-reads `tools/list` and compares the
+selected instruction with the current trusted discovery binding and execution
+policy. Output repeats this check immediately before constructing the descriptor
+and passing it through the existing Workflow submit parameters and RunSpec
+builder. If either check detects drift, CP refuses the submit; it never silently
+rebuilds the selected descriptor from the changed catalogue.
 The selected capability is presented to the agent as available; instructions
 say to use it only when needed for the accepted task.
 Normal agent work is not required to call it. The end-to-end fixture task must
@@ -70,10 +77,13 @@ does not grant invocation.
 
 ## Drift and ownership
 
-If the catalogue, profile binding, tool grant, or policy version changes between
-discovery and handoff, CP returns an explicit revalidation-required blocked
-route. It does not silently omit or replace the selected tool, refresh rights,
-or broaden the allowlist.
+If the catalogue digest/version, profile binding, tool grant, or policy version
+changes between discovery and selection or before handoff, CP returns
+`MCP_REVALIDATION_REQUIRED` in the route result and user-facing status and does
+not submit to Runner. It does not silently omit or replace the selected tool,
+refresh rights, or broaden the allowlist. Other failures retain their own
+provider code and existing fallback behavior; CP does not label an outage,
+timeout, malformed response, or unrelated selection error as catalogue drift.
 
 - **Host:** discovery transport and separate discovery/invocation
   authorization.
@@ -100,8 +110,11 @@ credentials and runtime readiness.
 ## Offline boundary
 
 Tests inject catalogue and Runner fixtures and mock the pinned Host fetch. They
-prove request shape, bounded discovery policy, descriptor handoff, and no CP-side
-`tools/call`; they do not prove Host stores, deployed credentials, Runner dynamic
-resolution, or live tool execution. This change creates no secrets and deploys
-nothing. Trusted-store setup and a live fixture read remain required acceptance
-steps.
+prove request shape, bounded discovery policy, revalidation after selection and
+at Output handoff, drift result/status mapping, descriptor handoff, and no
+CP-side `tools/call`; they do not prove deployed CP wiring, active Runner
+service, or a real agent tool call. The Host test lease and matching secret/key
+material are provisioned in test-only trusted stores. This PR itself creates no
+secrets and deploys nothing. Remaining acceptance is deployment of this CP
+revision, invocation through the active Runner service, and a real Telegram
+agent session.

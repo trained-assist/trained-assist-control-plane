@@ -129,7 +129,7 @@ describe('inactive host MCP routing composition', () => {
     expect(current.health).not.toHaveBeenCalled();
   });
 
-  it.each(['unknown', 'registry', 'profile', 'generation', 'binding', 'principal'] as const)
+  it.each(['registry', 'profile', 'generation', 'binding', 'principal'] as const)
   ('requires explicit revalidation and no dispatch after %s drift', async drift => {
     const current = await fixture();
     const select = async () => {
@@ -138,7 +138,7 @@ describe('inactive host MCP routing composition', () => {
       if (drift === 'principal') current.state.scope.principalId = 'foreign-principal';
       if (drift === 'generation') current.state.scope.generation = 2;
       if (drift === 'binding') current.state.mcp.servers[0]!.bindingRef = 'foreign-ref';
-      return { user_goal: 'untrusted reformulation', decision: drift === 'unknown' ? 'unknown_method' : current.selectedName };
+      return { user_goal: 'untrusted reformulation', decision: current.selectedName };
     };
     const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });
     expect(routed).toMatchObject({ decision: { route: 'agent', outcome: 'blocked', needsExecutor: false,
@@ -162,7 +162,7 @@ describe('inactive host MCP routing composition', () => {
     const port = { submit } as unknown as CfWorkflowPort;
     expect(await dispatchAcceptedAgent(current.store, port, await current.store.requireTask(current.taskId), cached,
       'dynamic-ip-azure-agent-run', drift === 'missing-host' ? undefined : current.hostMcp))
-      .toMatchObject({ issued: false, refusal: 'mcp_execution_not_authorized' });
+      .toMatchObject({ issued: false, refusal: drift === 'missing-host' ? 'host_mcp_disabled' : 'MCP_REVALIDATION_REQUIRED' });
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -175,8 +175,36 @@ describe('inactive host MCP routing composition', () => {
     const submit = vi.fn();
     const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
       await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
-    expect(outcome).toMatchObject({ issued: false, refusal: 'mcp_execution_not_authorized' });
+    expect(outcome).toMatchObject({ issued: false, refusal: 'MCP_REVALIDATION_REQUIRED', providerCode: 'catalogue_drift' });
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('reports a selected-instruction scope change as revalidation-required', async () => {
+    const current = await fixture();
+    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
+      health: current.health, hostMcp: current.hostMcp } });
+    routed.mcpInstruction!.scope.profileId = 'foreign-profile';
+    const submit = vi.fn();
+    const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
+      await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
+    expect(outcome).toMatchObject({ issued: false, refusal: 'MCP_REVALIDATION_REQUIRED', providerCode: 'execution_scope_changed' });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the catalogue after model selection and preserves non-drift discovery errors', async () => {
+    const current = await fixture();
+    const drifted = await routeRequest(current.input, { communicationV1: { select: async () => {
+      current.changeCatalogue();
+      return { user_goal: '', decision: current.selectedName };
+    }, health: current.health, hostMcp: current.hostMcp } });
+    expect(drifted.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_REVALIDATION_REQUIRED', providerCode: 'catalogue_drift' });
+    expect(current.rpc).toHaveBeenCalledTimes(2);
+
+    const unavailable = await fixture();
+    unavailable.hostMcp.catalogue = new McpCatalogueAdapter(async () => { throw new McpCatalogueError('discovery_unavailable'); });
+    const fallback = await routeRequest(unavailable.input, { communicationV1: { select: async () => ({ user_goal: '', decision: 'agent' }),
+      health: unavailable.health, hostMcp: unavailable.hostMcp } });
+    expect(fallback.decision).toMatchObject({ outcome: 'dispatched', reasonCode: 'COMMUNICATION_FALLBACK', providerCode: 'binding_unavailable' });
   });
 
   it('disabled injection does not discover or expose host catalogue metadata', async () => {
@@ -218,13 +246,13 @@ describe('inactive host MCP routing composition', () => {
     expect(routed.mcpInstruction?.name).toBe(current.selectedName);
   });
 
-  it('a real registered method named agent is validated as a tool, not a fallback escape', async () => {
+  it('an ungranted method named agent is not treated as a tool or catalogue drift', async () => {
     const current = await fixture();
     current.names.push('agent');
     current.state.mcp.servers[0]!.allowedTools.push('agent');
     const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: 'original task', decision: 'agent' }),
       health: current.health, hostMcp: current.hostMcp } });
-    expect(routed.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_REVALIDATION_REQUIRED' });
+    expect(routed.decision).toMatchObject({ outcome: 'dispatched', reasonCode: 'COMMUNICATION_FALLBACK', providerCode: 'unknown_id' });
     expect(routed.mcpInstruction).toBeUndefined();
   });
 

@@ -27,10 +27,16 @@ export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPo
   if (result.mcpInstruction) {
     const scope = result.mcpInstruction.scope;
     if (scope.taskId !== current.id || scope.profileId !== current.profile_id || scope.generation !== current.generation) {
-      return { owner: 'output', issued: false, refusal: 'mcp_scope_changed' };
+      return { owner: 'output', issued: false, refusal: 'MCP_REVALIDATION_REQUIRED', providerCode: 'execution_scope_changed' };
     }
     try { mcpDescriptor = await runMcpDescriptor(hostMcp, result.mcpInstruction); }
-    catch { return { owner: 'output', issued: false, refusal: 'mcp_execution_not_authorized' }; }
+    catch (error) {
+      const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null;
+      return { owner: 'output', issued: false,
+        refusal: code && ['catalogue_drift', 'snapshot_stale', 'binding_invalid', 'binding_scope_mismatch', 'execution_scope_changed',
+          'execution_policy_changed', 'execution_binding_missing', 'execution_catalogue_changed'].includes(code)
+          ? 'MCP_REVALIDATION_REQUIRED' : code ?? 'mcp_execution_not_authorized', providerCode: code };
+    }
   }
   const userValue = current.user_value ? JSON.parse(current.user_value) as Record<string, unknown> : {};
   if (userValue.gtdId) return { owner: 'output', issued: false, refusal: 'gtd_owns_continuation' };

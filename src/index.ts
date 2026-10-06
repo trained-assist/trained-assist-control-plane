@@ -486,6 +486,23 @@ async function handleRouteRoute(
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
     : await issueContinuation(result, env, store, port, body);
 
+  // A selected catalogue can drift after routing but before Output hands the
+  // descriptor to Workflow. Surface that exact block in the route response,
+  // including the user-facing status, instead of returning the earlier
+  // optimistic "agent dispatched" decision.
+  if (ordinaryV1 && continuation && typeof continuation === 'object'
+      && 'refusal' in continuation && continuation.refusal === 'MCP_REVALIDATION_REQUIRED') {
+    result.decision.outcome = 'blocked';
+    result.decision.reasonCode = 'MCP_REVALIDATION_REQUIRED';
+    result.decision.needsExecutor = false;
+    result.decision.executor = null;
+    result.decision.escalation = 'none';
+    result.decision.degraded = true;
+    result.decision.degradedNotice = { text: 'Каталог MCP или политика доступа изменились; требуется повторная проверка. Агент не запущен.', actions: [] };
+    result.continuation = null;
+    result.workOrder = null;
+  }
+
   return json({
     decisionId: result.decisionId,
     policyVersion: result.decision.policyVersion,
