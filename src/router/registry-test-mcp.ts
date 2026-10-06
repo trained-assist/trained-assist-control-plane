@@ -15,8 +15,9 @@ export const REGISTRY_FIXTURE_URL = 'https://trained-assist-mcp-host-test-160.sk
 
 export function registryFixtureMcpSpec(): McpSpec {
   return { servers: [{ serverId: REGISTRY_FIXTURE_SERVER, transport: 'remote', url: REGISTRY_FIXTURE_URL,
-    bindingRef: REGISTRY_FIXTURE_BINDING, allowedTools: [REGISTRY_FIXTURE_TOOL],
-    policyVersion: REGISTRY_FIXTURE_POLICY, catalogueVersion: REGISTRY_FIXTURE_CATALOGUE }] };
+    bindingRef: REGISTRY_FIXTURE_BINDING, scope: 'registry:fixture-read', allowedTools: [REGISTRY_FIXTURE_TOOL],
+    policyVersion: REGISTRY_FIXTURE_POLICY, catalogueVersion: REGISTRY_FIXTURE_CATALOGUE,
+    registryDigest: '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9' }] };
 }
 
 async function boundedText(response: Response, maxBytes: number): Promise<string> {
@@ -75,11 +76,14 @@ export function registryFixtureHostMcp(
     return [{
       scope: actualScope,
       discoveryAuthorization: { principalId: REGISTRY_FIXTURE_PRINCIPAL, profileId: REGISTRY_FIXTURE_PROFILE, scope: 'mcp:discover', methods: ['tools/list'] },
+      url: REGISTRY_FIXTURE_URL,
       serverId: REGISTRY_FIXTURE_SERVER,
       bindingRef: REGISTRY_FIXTURE_BINDING,
+      executionScope: 'registry:fixture-read',
       policyVersion: REGISTRY_FIXTURE_POLICY,
       catalogueVersion: REGISTRY_FIXTURE_CATALOGUE,
       catalogueDigest: REGISTRY_FIXTURE_DIGEST,
+      registryDigest: '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9',
       allowedTools: [REGISTRY_FIXTURE_TOOL],
       request: async (message, signal) => {
         if (message.method !== 'tools/list' || Object.keys(message).some(key => !['jsonrpc', 'id', 'method', 'params'].includes(key))) {

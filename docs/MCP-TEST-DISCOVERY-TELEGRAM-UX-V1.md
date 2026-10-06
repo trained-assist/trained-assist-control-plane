@@ -42,29 +42,30 @@ the authenticated Host response. CP never sends `tools/call`.
 
 ## Selection and RunSpec handoff
 
-The model may return the registered capability ID. It cannot supply a URL,
-server ID, profile, binding reference, tool allowlist, credential, or policy
-version. CP Output resolves the selected ID against the current discovery
-snapshot and trusted host execution policy, then builds one descriptor with:
+The model may return the registered capability ID. It cannot supply or change
+the URL, server ID, profile/principal, binding reference, execution scope, tool
+allowlist, catalogue or policy version, Registry digest, or credential. CP
+resolves the selected ID against the current snapshot and trusted host execution
+policy, then builds one descriptor with:
 
 - `serverId` and `bindingRef` from the host binding;
 - the trusted remote address from the host MCP policy;
 - `allowedTools: ["registry.fixture_read"]`;
-- stable `catalogueVersion` and `policyVersion` from the trusted discovery binding;
-  the random per-request snapshot ID is internal correlation only.
+- execution `scope: "registry:fixture-read"` from the trusted binding;
+- stable `catalogueVersion`, `policyVersion`, and `registryDigest` from the
+  trusted Registry binding. The random `catalogueId` identifies only a CP
+  snapshot and never leaves CP.
 
 The trusted discovery binding pins `catalogueVersion` independently of the
-per-request `catalogueId`. CP hashes canonical authorized `tools/list` metadata
-and requires it to match the binding's pinned catalogue digest. For this fixture
-the version is `registry-fixture-catalogue-v1` and the digest is
-`sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d`;
-the Host's internal `registryDigest` in the Runner proof is a separate digest.
-After the model selects a capability, CP re-reads `tools/list` and compares the
-selected instruction with the current trusted discovery binding and execution
-policy. Output repeats this check immediately before constructing the descriptor
-and passing it through the existing Workflow submit parameters and RunSpec
-builder. If either check detects drift, CP refuses the submit; it never silently
-rebuilds the selected descriptor from the changed catalogue.
+per-request `catalogueId`. CP separately hashes canonical authorized
+`tools/list` metadata as an internal `catalogueDigest`; it is not the Registry
+configuration digest. The descriptor carries `catalogueVersion`
+`registry-fixture-catalogue-v1`, `policyVersion` `registry-fixture-policy-v1`,
+scope `registry:fixture-read`, and pinned `registryDigest`
+`129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9`.
+Output rechecks the original selected instruction against the current trusted
+policy and discovery metadata immediately before submit, then passes that
+unchanged descriptor through Workflow params and RunSpec.
 The selected capability is presented to the agent as available; instructions
 say to use it only when needed for the accepted task.
 Normal agent work is not required to call it. The end-to-end fixture task must
@@ -79,13 +80,13 @@ does not grant invocation.
 
 ## Drift and ownership
 
-If the catalogue digest/version, profile binding, tool grant, or policy version
-changes between discovery and selection or before handoff, CP returns
-`MCP_REVALIDATION_REQUIRED` in the route result and user-facing status and does
-not submit to Runner. It does not silently omit or replace the selected tool,
-refresh rights, or broaden the allowlist. Other failures retain their own
-provider code and existing fallback behavior; CP does not label an outage,
-timeout, malformed response, or unrelated selection error as catalogue drift.
+If any pinned field changes between selection and handoff (scope, URL,
+server/binding reference, allowlist, policy/catalogue version, Registry digest,
+or authorized tool metadata), CP refuses submit with `MCP_REVALIDATION_REQUIRED`
+and writes a user-visible `blocked` task status with the same reason. It does not
+silently rebuild the instruction from a new snapshot; discovery and selection
+must be repeated. Disabled Host, discovery/network, and missing-binding refusals
+keep their own reason codes and are not relabeled as drift.
 
 - **Host:** discovery transport and separate discovery/invocation
   authorization.

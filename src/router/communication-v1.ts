@@ -8,7 +8,7 @@ import type { CapabilityCatalog, PreparedInput, RoutingInput } from './router-ty
 import type { TaskRow, TaskStore } from '../taskstore';
 import { isTerminalStatus } from '../taskstore';
 import { RunnerNotFoundError } from '../runner-adapter/errors';
-import { McpCatalogueError } from './mcp-catalogue';
+import { McpCatalogueError, mcpReasonCode, requiresMcpRevalidation } from './mcp-catalogue';
 import type { McpCatalogueScope, McpCatalogueSnapshot, SelectedMcpInstruction } from './mcp-catalogue-types';
 import { sameMcpScope, validateHostMcpExecution, type HostMcpRoutingDeps } from './host-mcp-routing';
 
@@ -79,6 +79,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   let calls = 0;
   let mcpInstruction: SelectedMcpInstruction | undefined;
   let blockDispatch = false;
+  let mcpRefusalCode: string | undefined;
   let snapshot: McpCatalogueSnapshot | undefined;
   let scope: McpCatalogueScope | undefined;
   const hostMcp = deps.hostMcp?.enabled ? deps.hostMcp : undefined;
@@ -131,7 +132,10 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     }
     if (input.prepared.attachments.length && selected !== 'agent') throw new SelectorError('attachment_not_covered');
   } catch (error) {
-    if (error instanceof McpCatalogueError && isMcpRevalidationDrift(error.code)) blockDispatch = true;
+    if (error instanceof McpCatalogueError) {
+      blockDispatch = true;
+      mcpRefusalCode = requiresMcpRevalidation(error.code) ? 'MCP_REVALIDATION_REQUIRED' : error.code;
+    }
     selected = 'agent';
     mcpInstruction = undefined;
     failure = error instanceof SelectorError || error instanceof McpCatalogueError ? error.code : 'selector_failed';
@@ -145,7 +149,9 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   decision.reasonCode = failure ? 'COMMUNICATION_FALLBACK' : 'COMMUNICATION_SELECTED';
   decision.degraded = failure !== null;
   decision.degradedNotice = failure ? { text: blockDispatch
-    ? 'Каталог MCP или политика доступа изменились; требуется повторная проверка. Агент не запущен.'
+    ? mcpRefusalCode === 'MCP_REVALIDATION_REQUIRED'
+      ? 'Каталог MCP или доверенная политика изменились; требуется повторная проверка. Агент не запущен.'
+      : 'Проверка MCP отказала; агент не запущен.'
     : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
   let reply: RouteResult['reply'] = null;
   let continuation: RouteResult['continuation'] = null;
@@ -158,7 +164,8 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     decision.escalation = decision.needsExecutor ? 'agent' : 'none';
     decision.replyAllowed = false;
     decision.outcome = decision.needsExecutor ? 'dispatched' : 'blocked';
-    if (!decision.needsExecutor) decision.reasonCode = blockDispatch ? 'MCP_REVALIDATION_REQUIRED' : 'AGENT_NOT_ALLOWED_BY_POLICY';
+    if (!decision.needsExecutor) decision.reasonCode = blockDispatch
+      ? mcpReasonCode(mcpRefusalCode ?? failure ?? 'binding_invalid') : 'AGENT_NOT_ALLOWED_BY_POLICY';
     else {
       workOrder = agentWorkOrder({ envelope: input.envelope, prepared: input.prepared, reasonCode: decision.reasonCode, requiresExternalAction: false, authorizationRef: input.authorization.snapshotRef, catalogCapabilityIds: visible.map((entry) => entry.id) });
       continuation = { ...workOrder, decisionId: decision.decisionId, reasonCode: decision.reasonCode, partialResultRef: null, workOrder };
@@ -206,6 +213,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   decision.modelCalls = calls;
   return { decision, decisionId: decision.decisionId, reply, askUser: null, workOrder, continuation, rendering,
     ...(mcpInstruction && continuation ? { mcpInstruction } : {}),
+    ...(mcpRefusalCode ? { mcpRefusalCode } : {}),
     agentInstructions: continuation ? `${agentConversationInstructions(input.prepared)}${mcpInstruction
       ? `\n\nДоступная capability (версия каталога ${mcpInstruction.catalogueVersion}, политика ${mcpInstruction.policyVersion}): ${mcpInstruction.name}. Используй capability только если она нужна для исходной задачи; не вызывай её автоматически.` : ''}` : undefined,
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
