@@ -14,7 +14,14 @@ import {
   type PlanParams,
   type SubmitInput,
 } from './workflow-port';
-import { IntakeService, resolveDeliveryAdapter, runStuckInputSweep } from './intake';
+import {
+  IngressArtifactRejectedError,
+  IngressArtifactUnavailableError,
+  IntakeService,
+  ingressArtifactVerifierOf,
+  resolveDeliveryAdapter,
+  runStuckInputSweep,
+} from './intake';
 
 /**
  * Насколько устаревшей должна быть отметка планировщика, чтобы это стало инцидентом.
@@ -82,6 +89,8 @@ export interface Env {
   ROUTER_AGENT_ENGINE?: string;
   DB: D1Database;
   TASK_WORKFLOW: Workflow;
+  /** Private service binding to the passive ingress artifact buffer. */
+  INGRESS_BUFFER?: Fetcher;
   /**
    * 'true' — изолированный preview: scheduled-обработчики не выполняются.
    * Держать тем же флагом, что и в tg-bot, чтобы previews не слали алерты.
@@ -239,6 +248,8 @@ const errorStatus = (e: unknown): number => {
   if (e instanceof PrincipalUnauthorizedError) return 401;
   if (e instanceof PrincipalForbiddenError) return 403;
   if (e instanceof EnvelopeConflictError) return 409;
+  if (e instanceof IngressArtifactRejectedError) return 403;
+  if (e instanceof IngressArtifactUnavailableError) return 503;
   if (e instanceof FencedError || e instanceof TerminalStateError) return 409;
   if (e instanceof TaskNotFoundError) return 404;
   if (e instanceof AnswerConflictError || e instanceof AnswerRejectedError) return 409;
@@ -1056,7 +1067,11 @@ const store = new TaskStore(env.DB);
     // Проверяющая аутентификация: секрет только в binding, в запросе его нет.
     const auth = principalAuthOf(env as unknown as Record<string, string | undefined>);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
-     const intake = new IntakeService(store, new PilotRouter({ env: env as unknown as Record<string, string | undefined> }));
+     const intake = new IntakeService(
+       store,
+       new PilotRouter({ env: env as unknown as Record<string, string | undefined> }),
+       ingressArtifactVerifierOf(env.INGRESS_BUFFER),
+     );
     const body: Record<string, unknown> =
       req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');

@@ -125,12 +125,23 @@ const answerText = (raw: unknown): string | null => {
 function attachmentRefsOf(userValue: string | null): { ref: string; version?: string; snapshotId?: string }[] {
   if (!userValue) return [];
   try {
-    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; snapshotIds?: unknown };
+    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; inputArtifacts?: unknown; snapshotIds?: unknown };
     const refs = Array.isArray(parsed?.artifactRefs) ? parsed.artifactRefs : [];
     const snapshotIds = Array.isArray(parsed?.snapshotIds) ? parsed.snapshotIds : [];
+    const inputArtifacts = Array.isArray(parsed?.inputArtifacts) ? parsed.inputArtifacts : [];
+    const typedRefs = new Set(inputArtifacts.flatMap((value) => value && typeof value === 'object'
+      && typeof (value as { ref?: unknown }).ref === 'string' ? [(value as { ref: string }).ref] : []));
     const out: { ref: string; version?: string; snapshotId?: string }[] = refs
       .filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
+      .filter((ref) => !typedRefs.has(ref))
       .map((ref) => ({ ref }));
+    for (const value of inputArtifacts) {
+      if (!value || typeof value !== 'object') continue;
+      const artifact = value as { ref?: unknown; version?: unknown };
+      if (typeof artifact.ref === 'string' && typeof artifact.version === 'string') {
+        out.push({ ref: artifact.ref, version: artifact.version });
+      }
+    }
     for (const id of snapshotIds) {
       if (typeof id === 'string' && id.length > 0) out.push({ ref: id, snapshotId: id });
     }

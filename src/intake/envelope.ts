@@ -15,12 +15,24 @@ export type WorkStyle = 'explore' | 'answer' | 'auto';
 export interface IntakeItem {
   text?: string;
   artifactRefs?: string[];
+  artifacts?: InputArtifactManifest[];
   /**
    * Снимок workspace предыдущего рана (Runner, issue #52 шаг 1): байты лежат в долговечном
    * хранилище, а ран получает их в свой workspace с проверкой владельца и дайджеста.
    * Версию/путь назначает хост, клиент только называет снимок.
    */
   snapshotId?: string;
+}
+
+export interface InputArtifactManifest {
+  contractVersion: 1;
+  ref: string;
+  version: string;
+  ownerProfileId: string;
+  mediaType: string;
+  name: string;
+  sizeBytes: number;
+  sha256: string;
 }
 
 export interface IntakeEnvelope {
@@ -66,6 +78,9 @@ export class InvalidEnvelopeError extends Error {
 
 const MAX_ITEMS = 32;
 const MAX_ITEM_CHARS = 8000;
+const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;
+const MAX_ARTIFACT_COUNT = 16;
+const MAX_TOTAL_ARTIFACT_BYTES = 40 * 1024 * 1024;
 
 export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
   if (typeof raw !== 'object' || raw === null) throw new InvalidEnvelopeError('envelope must be an object', 'envelope');
@@ -96,20 +111,53 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     if (refs !== undefined && (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string'))) {
       throw new InvalidEnvelopeError(`inputItems[${i}].artifactRefs must be string[]`, 'inputItems');
     }
+    const rawArtifacts = it.artifacts === undefined ? undefined : it.artifacts;
+    if (rawArtifacts !== undefined && (!Array.isArray(rawArtifacts) || rawArtifacts.length > MAX_ARTIFACT_COUNT)) {
+      throw new InvalidEnvelopeError(`inputItems[${i}].artifacts must be an array of at most ${MAX_ARTIFACT_COUNT} manifests`, 'inputItems');
+    }
+    const artifacts = rawArtifacts?.map((raw, artifactIndex): InputArtifactManifest => {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}] must be an object`, 'inputItems');
+      }
+      const artifact = raw as Record<string, unknown>;
+      const ref = typeof artifact.ref === 'string' ? artifact.ref.trim() : '';
+      const version = typeof artifact.version === 'string' ? artifact.version.trim() : '';
+      const ownerProfileId = typeof artifact.ownerProfileId === 'string' ? artifact.ownerProfileId.trim() : '';
+      const mediaType = typeof artifact.mediaType === 'string' ? artifact.mediaType.trim().toLowerCase() : '';
+      const name = typeof artifact.name === 'string' ? artifact.name.trim() : '';
+      const sizeBytes = artifact.sizeBytes;
+      const sha256 = typeof artifact.sha256 === 'string' ? artifact.sha256.toLowerCase() : '';
+      if (artifact.contractVersion !== 1) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].contractVersion must be 1`, 'inputItems');
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,499}$/.test(ref)) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].ref is invalid`, 'inputItems');
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(version)) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].version is invalid`, 'inputItems');
+      if (!ownerProfileId || ownerProfileId.length > 200) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].ownerProfileId is invalid`, 'inputItems');
+      if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mediaType) || mediaType.length > 127) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].mediaType is invalid`, 'inputItems');
+      if (!name || name.length > 200 || /[\/\\\u0000-\u001f\u007f]/.test(name)) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].name is invalid`, 'inputItems');
+      if (!Number.isSafeInteger(sizeBytes) || (sizeBytes as number) < 1 || (sizeBytes as number) > MAX_ARTIFACT_BYTES) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].sizeBytes is invalid`, 'inputItems');
+      if (!/^[a-f0-9]{64}$/.test(sha256)) throw new InvalidEnvelopeError(`inputItems[${i}].artifacts[${artifactIndex}].sha256 is invalid`, 'inputItems');
+      return { contractVersion: 1, ref, version, ownerProfileId, mediaType, name, sizeBytes: sizeBytes as number, sha256 };
+    });
     const snapshotId = typeof it.snapshotId === 'string' ? it.snapshotId.trim() : undefined;
     if (snapshotId !== undefined) {
       if (snapshotId.length === 0 || snapshotId.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(snapshotId)) {
         throw new InvalidEnvelopeError(`inputItems[${i}].snapshotId: expected an id matching [A-Za-z0-9][A-Za-z0-9._:-]*`, 'inputItems');
       }
     }
-    if (text === undefined && (refs === undefined || refs.length === 0) && snapshotId === undefined) {
+    if (text === undefined && (refs === undefined || refs.length === 0) && snapshotId === undefined && !artifacts?.length) {
       throw new InvalidEnvelopeError(`inputItems[${i}] must have text, artifactRefs or snapshotId`, 'inputItems');
     }
     if (text !== undefined && text.length > MAX_ITEM_CHARS) {
       throw new InvalidEnvelopeError(`inputItems[${i}].text is too long`, 'inputItems');
     }
-    return { text, artifactRefs: refs as string[] | undefined, snapshotId };
+    return { text, artifactRefs: refs as string[] | undefined, artifacts, snapshotId };
   });
+  const artifactManifests = inputItems.flatMap((item) => item.artifacts ?? []);
+  if (artifactManifests.length > MAX_ARTIFACT_COUNT) {
+    throw new InvalidEnvelopeError(`inputItems exceeds the ${MAX_ARTIFACT_COUNT} artifact limit`, 'inputItems');
+  }
+  if (artifactManifests.reduce((sum, artifact) => sum + artifact.sizeBytes, 0) > MAX_TOTAL_ARTIFACT_BYTES) {
+    throw new InvalidEnvelopeError('inputItems exceeds the 40 MB total artifact limit', 'inputItems');
+  }
 
   const str = (key: string): string | null => {
     const v = e[key];
@@ -166,11 +214,15 @@ export function goalOf(envelope: IntakeEnvelope): string {
     .filter((t) => t.length > 0)
     .join('\n')
     .trim();
-  return text || `[артефакты: ${envelope.inputItems.flatMap((i) => i.artifactRefs ?? []).join(', ')}]`;
+  return text || `[артефакты: ${envelope.inputItems.flatMap((i) => [...(i.artifactRefs ?? []), ...(i.artifacts ?? []).map((artifact) => artifact.ref)]).join(', ')}]`;
 }
 
 export function artifactRefsOf(envelope: IntakeEnvelope): string[] {
-  return envelope.inputItems.flatMap((item) => item.artifactRefs ?? []);
+  return envelope.inputItems.flatMap((item) => [...(item.artifactRefs ?? []), ...(item.artifacts ?? []).map((artifact) => artifact.ref)]);
+}
+
+export function inputArtifactsOf(envelope: IntakeEnvelope): InputArtifactManifest[] {
+  return envelope.inputItems.flatMap((item) => item.artifacts ?? []);
 }
 
 /**
@@ -197,7 +249,12 @@ export function canonicalEnvelopeJson(envelope: IntakeEnvelope): string {
     audienceId: envelope.audienceId ?? null,
     destinationId: envelope.destinationId ?? null,
     pendingBatchId: envelope.pendingBatchId ?? null,
-    inputItems: envelope.inputItems.map((item) => ({ text: item.text ?? null, artifactRefs: item.artifactRefs ?? [] })),
+    inputItems: envelope.inputItems.map((item) => ({
+      text: item.text ?? null,
+      artifactRefs: item.artifactRefs ?? [],
+      artifacts: item.artifacts ?? [],
+      snapshotId: item.snapshotId ?? null,
+    })),
     requestedExecutionPolicy: envelope.requestedExecutionPolicy ?? null,
     workStyle: envelope.workStyle ?? 'auto',
     workStyleSource: envelope.workStyleSource ?? 'default',
