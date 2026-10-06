@@ -18,15 +18,16 @@ export interface IngressArtifactVerifier {
   verify(profileId: string, manifest: InputArtifactManifest): Promise<void>;
 }
 
-export function ingressArtifactVerifierOf(binding?: Fetcher): IngressArtifactVerifier | undefined {
-  if (!binding) return undefined;
+export function ingressArtifactVerifierOf(binding?: Fetcher, token?: string): IngressArtifactVerifier | undefined {
+  const credential = String(token ?? '').trim();
+  if (!binding || !credential) return undefined;
   return {
     async verify(profileId, manifest) {
       let response: Response;
       try {
         response = await binding.fetch('https://ingress-buffer/v1/manifests/verify', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${credential}` },
           body: JSON.stringify({ profileId, manifest }),
         });
       } catch {

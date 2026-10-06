@@ -28,6 +28,7 @@ Before writing a durable receipt, CP sends the profile scope and submitted manif
 ```http
 POST https://ingress-buffer/v1/manifests/verify
 Content-Type: application/json
+Authorization: Bearer <INGRESS_BUFFER_TOKEN>
 ```
 
 ```json
@@ -40,7 +41,7 @@ The buffer returns HTTP 200 only after confirming object existence, immutable ve
 {"verified":true,"manifest":{"contractVersion":1,"ref":"opaque-buffer-ref","version":"immutable-object-version","ownerProfileId":"profile-1","mediaType":"audio/ogg","name":"voice.ogg","sizeBytes":12345,"sha256":"<digest>"}}
 ```
 
-CP requires an exact metadata match. Missing binding, unavailable buffer, missing object, or mismatched metadata prevents task admission; there is no text-only partial fallback. The verifier is an admission check, not the Runner byte transport. Runner materialization remains a separate required integration before media execution can be enabled.
+The buffer accepts only the shared `INGRESS_BUFFER_TOKEN`, configured as a secret independently on the buffer Worker, CP sandbox, and Telegram sandbox. CP sends this credential over the private service binding for verification and content reads; it is never included in an intake envelope, RunSpec, or logs. Missing binding, missing token, unavailable buffer, missing object, or mismatched metadata prevents task admission; there is no text-only partial fallback. The verifier is an admission check, not the Runner byte transport. Runner materialization remains a separate required integration before media execution can be enabled.
 
 ## Runner read API
 
@@ -57,5 +58,7 @@ For bytes, Runner requests a ref only from that pinned manifest:
 ```http
 GET /runner/input-artifact?taskId=<userTaskId>&manifestRef=<manifestRef>&manifestVersion=<sha256>&ref=<opaque-ref>&version=<object-version>
 ```
+
+The CP forwards `Authorization: Bearer <INGRESS_BUFFER_TOKEN>` on its private buffer content request.
 
 CP checks signed `tasks:read` authorization, manifest identity/version, and artifact membership before reading through the private buffer binding. The buffer's `GET /v1/artifacts/content?profileId=…&ref=…&version=…` response must carry `x-artifact-ref`, `x-artifact-version`, `x-artifact-owner-profile-id`, `x-artifact-size-bytes`, `x-artifact-sha256`, `Content-Type`, and `Content-Length`; CP compares all headers against the admitted manifest and streams the body without buffering it. Runner independently verifies exact bytes and SHA-256 before exposing any input to the engine.

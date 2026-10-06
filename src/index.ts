@@ -91,6 +91,8 @@ export interface Env {
   TASK_WORKFLOW: Workflow;
   /** Private service binding to the passive ingress artifact buffer. */
   INGRESS_BUFFER?: Fetcher;
+  /** Shared secret authorizing CP access to the private ingress buffer. */
+  INGRESS_BUFFER_TOKEN?: string;
   /**
    * 'true' — изолированный preview: scheduled-обработчики не выполняются.
    * Держать тем же флагом, что и в tg-bot, чтобы previews не слали алерты.
@@ -329,7 +331,8 @@ const inputManifestForTask = async (task: TaskRow) => {
 };
 
 const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: Awaited<ReturnType<typeof inputManifestForTask>>, ref: string, version: string): Promise<Response> => {
-  if (!env.INGRESS_BUFFER) return json({ error: 'input artifact transport unavailable' }, 503);
+  const bufferToken = String(env.INGRESS_BUFFER_TOKEN ?? '').trim();
+  if (!env.INGRESS_BUFFER || !bufferToken) return json({ error: 'input artifact transport unavailable' }, 503);
   const artifact = manifest.inputItems.flatMap((item) => item.artifacts).find((entry) => entry.ref === ref && entry.version === version);
   if (!artifact) return json({ error: 'input artifact not found' }, 404);
   const url = new URL('https://ingress-buffer/v1/artifacts/content');
@@ -338,7 +341,7 @@ const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: Awai
   url.searchParams.set('version', artifact.version);
   let response: Response;
   try {
-    response = await env.INGRESS_BUFFER.fetch(url, { method: 'GET' });
+    response = await env.INGRESS_BUFFER.fetch(url, { method: 'GET', headers: { authorization: `Bearer ${bufferToken}` } });
   } catch {
     return json({ error: 'input artifact transport unavailable' }, 503);
   }
@@ -1163,7 +1166,7 @@ const store = new TaskStore(env.DB);
      const intake = new IntakeService(
        store,
        new PilotRouter({ env: env as unknown as Record<string, string | undefined> }),
-       ingressArtifactVerifierOf(env.INGRESS_BUFFER),
+       ingressArtifactVerifierOf(env.INGRESS_BUFFER, env.INGRESS_BUFFER_TOKEN),
      );
     const body: Record<string, unknown> =
       req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
