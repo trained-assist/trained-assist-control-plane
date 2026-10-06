@@ -77,8 +77,9 @@ describe('Runner input artifact read API', () => {
     const pinned = await manifestResponse.json() as { manifestRef: string; manifestVersion: string };
     const calls: string[] = [];
     const buffer = {
-      fetch: async (request: RequestInfo | URL) => {
+      fetch: async (request: RequestInfo | URL, init?: RequestInit) => {
         calls.push(String(request));
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer buffer-test-token');
         return new Response(task.bytes, { headers: {
           'content-type': task.manifest.mediaType,
           'content-length': String(task.manifest.sizeBytes),
@@ -97,8 +98,13 @@ describe('Runner input artifact read API', () => {
       ref: task.manifest.ref,
       version: task.manifest.version,
     });
-    const response = await mod.default.fetch(new Request(`https://cp.test/runner/input-artifact?${query}`, { headers }), {
+    const unconfigured = await mod.default.fetch(new Request(`https://cp.test/runner/input-artifact?${query}`, { headers }), {
       DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: secret, INGRESS_BUFFER: buffer,
+    });
+    expect(unconfigured.status).toBe(503);
+    expect(calls).toHaveLength(0);
+    const response = await mod.default.fetch(new Request(`https://cp.test/runner/input-artifact?${query}`, { headers }), {
+      DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: secret, INGRESS_BUFFER: buffer, INGRESS_BUFFER_TOKEN: 'buffer-test-token',
     });
     expect(response.status).toBe(200);
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(task.bytes);
@@ -108,7 +114,7 @@ describe('Runner input artifact read API', () => {
     const staleQuery = new URLSearchParams(query);
     staleQuery.set('manifestVersion', '0'.repeat(64));
     const stale = await mod.default.fetch(new Request(`https://cp.test/runner/input-artifact?${staleQuery}`, { headers }), {
-      DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: secret, INGRESS_BUFFER: buffer,
+      DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: secret, INGRESS_BUFFER: buffer, INGRESS_BUFFER_TOKEN: 'buffer-test-token',
     });
     expect(stale.status).toBe(409);
     expect(calls).toHaveLength(1);
@@ -141,7 +147,7 @@ describe('Runner input artifact read API', () => {
       version: task.manifest.version,
     });
     const response = await mod.default.fetch(new Request(`https://cp.test/runner/input-artifact?${query}`, { headers }), {
-      DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: secret, INGRESS_BUFFER: buffer,
+      DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: secret, INGRESS_BUFFER: buffer, INGRESS_BUFFER_TOKEN: 'buffer-test-token',
     });
     expect(response.status).toBe(409);
     expect(await response.text()).toContain('input artifact metadata mismatch');
