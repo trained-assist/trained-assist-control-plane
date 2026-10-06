@@ -14,6 +14,15 @@
     "maxOperationBytes": 16384
   },
   "clients": {
+    "recruiting-web": {
+      "clientId": "recruiting-web",
+      "commands": {
+        "recruiting.responses.message.send": {
+          "audience": "recruiting-web",
+          "requiredScope": "recruiting.responses.message.send"
+        }
+      }
+    },
     "crm-web": {
       "clientId": "crm-web",
       "commands": {

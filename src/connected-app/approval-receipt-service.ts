@@ -22,6 +22,7 @@ const REGISTERED_CLIENT_ID: Record<Audience, string> = {
 };
 const OPERATION_SCOPE: Record<string, { audience: Audience; scope: string }> = {
   'crm.deals.create': { audience: 'crm-web', scope: 'crm.deals.create' },
+  'recruiting.responses.message.send': { audience: 'recruiting-web', scope: 'recruiting.responses.message.send' },
 };
 const noStore = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff' };

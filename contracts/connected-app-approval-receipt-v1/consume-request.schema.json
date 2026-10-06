@@ -7,11 +7,17 @@
   "required": ["appToken", "audience", "command", "sourceRevision", "operation", "intentId", "consumerRequestId"],
   "properties": {
     "appToken": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "audience": { "const": "crm-web" },
-    "command": { "const": "crm.deals.create" },
+    "audience": { "enum": ["crm-web", "recruiting-web"] },
+    "command": { "enum": ["crm.deals.create", "recruiting.responses.message.send"] },
     "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "operation": { "type": "object" },
     "intentId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "consumerRequestId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" }
-  }
+  },
+  "allOf": [
+    { "if": { "properties": { "audience": { "const": "crm-web" } }, "required": ["audience"] },
+      "then": { "properties": { "command": { "const": "crm.deals.create" } } } },
+    { "if": { "properties": { "audience": { "const": "recruiting-web" } }, "required": ["audience"] },
+      "then": { "properties": { "command": { "const": "recruiting.responses.message.send" } } } }
+  ]
 }

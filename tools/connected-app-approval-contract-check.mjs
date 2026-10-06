@@ -11,6 +11,9 @@ assert.equal(contract.basePath, '/v1/connected-app-approvals');
 assert.deepEqual(contract.clients['crm-web'].commands['crm.deals.create'], {
   audience: 'crm-web', requiredScope: 'crm.deals.create',
 });
+assert.deepEqual(contract.clients['recruiting-web'].commands['recruiting.responses.message.send'], {
+  audience: 'recruiting-web', requiredScope: 'recruiting.responses.message.send',
+});
 assert.deepEqual(contract.limits, {
   intentTtlSeconds: 600, receiptRetentionSeconds: 7776000, maxOperationBytes: 16384,
 });
@@ -24,11 +27,15 @@ const prepareResponse = await json('prepare-response.schema.json');
 const consumeRequest = await json('consume-request.schema.json');
 const consumeResponse = await json('consume-response.schema.json');
 assert.equal(prepareRequest.additionalProperties, false);
+assert.deepEqual(prepareRequest.properties.audience.enum, ['crm-web', 'recruiting-web']);
+assert.deepEqual(prepareRequest.properties.command.enum, ['crm.deals.create', 'recruiting.responses.message.send']);
 assert.deepEqual(prepareRequest.required, ['appToken', 'audience', 'command', 'sourceRevision', 'operation']);
 assert.deepEqual(Object.keys(prepareRequest.properties), prepareRequest.required);
 assert.equal(prepareResponse.additionalProperties, false);
 assert.deepEqual(Object.keys(prepareResponse.properties), prepareResponse.required);
 assert.equal(consumeRequest.additionalProperties, false);
+assert.deepEqual(consumeRequest.properties.audience.enum, ['crm-web', 'recruiting-web']);
+assert.deepEqual(consumeRequest.properties.command.enum, ['crm.deals.create', 'recruiting.responses.message.send']);
 assert.deepEqual(consumeRequest.required, ['appToken', 'audience', 'command', 'sourceRevision', 'operation', 'intentId', 'consumerRequestId']);
 assert.deepEqual(Object.keys(consumeRequest.properties), consumeRequest.required);
 assert.equal(consumeResponse.additionalProperties, false);
