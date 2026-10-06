@@ -205,4 +205,29 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       headers: { cookie: nextCookie },
     }))).toBeNull();
   });
+
+  it('revokes an old Connected App grant when the same browser signs in again', async () => {
+    await provision();
+    const firstLink = await linkFor();
+    const firstPage = await preview(firstLink);
+    const firstCookie = (await redeem(firstLink, csrfFrom(await firstPage.text()),
+      firstPage.headers.get('set-cookie')?.split(';')[0] ?? '')).headers.get('set-cookie')?.split(';')[0] ?? '';
+    const rawToken = firstCookie.split('=')[1] ?? '';
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken)))]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const row = await env.DB.prepare('SELECT session_id FROM connected_app_browser_sessions WHERE session_hash=?')
+      .bind(digest).first<{ session_id: string }>();
+    expect(row?.session_id).toBeTruthy();
+    await env.DB.prepare(`INSERT INTO connected_app_sessions
+      (session_id,principal_id,profile_id,enabled,generation,updated_at) VALUES(?,?,?,1,1,1)`)
+      .bind(row!.session_id, principal, profile).run();
+    const nextLink = await linkFor();
+    const nextPage = await preview(nextLink);
+    const response = await redeem(nextLink, csrfFrom(await nextPage.text()),
+      nextPage.headers.get('set-cookie')?.split(';')[0] ?? '', firstCookie);
+    expect(response.status).toBe(303);
+    const prior = await env.DB.prepare('SELECT enabled,generation FROM connected_app_sessions WHERE session_id=?')
+      .bind(row!.session_id).first<{ enabled: number; generation: number }>();
+    expect(prior).toMatchObject({ enabled: 0, generation: 2 });
+  });
 });

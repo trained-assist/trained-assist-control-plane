@@ -182,9 +182,14 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
     const sessionToken = token();
     const old = cookie(req, COOKIE);
     const sessionId = token();
+    const oldDigest = old && HEX.test(old) ? await hash(old) : null;
+    const previous = oldDigest ? await db.prepare(`SELECT session_id FROM connected_app_browser_sessions
+      WHERE session_hash = ?`).bind(oldDigest).first<{ session_id: string }>() : null;
     const saved = await db.batch([
-      ...(old && HEX.test(old) ? [db.prepare(`UPDATE connected_app_browser_sessions SET revoked_at = COALESCE(revoked_at, ?)
-        WHERE session_hash = ?`).bind(now, await hash(old))] : []),
+      ...(oldDigest ? [db.prepare(`UPDATE connected_app_browser_sessions SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE session_hash = ?`).bind(now, oldDigest)] : []),
+      ...(previous ? [db.prepare(`UPDATE connected_app_sessions SET enabled = 0, generation = generation + 1,
+        updated_at = ? WHERE session_id = ?`).bind(now, previous.session_id)] : []),
       db.prepare(`INSERT INTO connected_app_browser_sessions
         (session_hash,session_id,bot_id,telegram_user_id,principal_id,profile_id,issued_at,expires_at,revoked_at)
         SELECT ?,?,c.bot_id,c.telegram_user_id,c.principal_id,c.profile_id,?,?,NULL
