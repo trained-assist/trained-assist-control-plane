@@ -17,6 +17,7 @@ import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
+import { withWorkStyleInstructions } from '../output/communication-v1';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
   if (!userValue) return { route: 'new-plane', reason: 'no_user_value' };
@@ -549,7 +550,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
             originalInput: task.user_value ? JSON.parse(task.user_value) : undefined,
             durableContext: await durableConversationContext(this.store, task) });
         await this.submit({ id: task.id, profileId: task.profile_id, goal: task.goal,
-          instructions, awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
+          instructions: withWorkStyleInstructions(instructions, task), awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
         await this.store.markCredentialContinuation(record, 'woken');
         return true;
       } catch {
