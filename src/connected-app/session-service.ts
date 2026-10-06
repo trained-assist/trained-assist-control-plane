@@ -1,7 +1,10 @@
 import contract from '../../contracts/connected-app-identity-v1.contract.json';
 
 type Audience = keyof typeof contract.audiences;
-type Config = { enabled?: string; hostKey?: string; serviceKeys?: string; issuer?: string };
+type Config = { enabled?: string; hostKey?: string; serviceKeys?: string; issuer?: string; redirectUris?: string };
+export type VerifiedPlatformSession = { principalId: string; profileId: string; sessionId: string;
+  grants: Partial<Record<Audience, string[]>> };
+export type PlatformSessionResolver = (request: Request) => Promise<VerifiedPlatformSession | null>;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_AGE = contract.token.maxLifetimeSeconds;
@@ -46,23 +49,139 @@ function keysOf(raw: string | undefined): Partial<Record<Audience, string>> {
     return Object.fromEntries(Object.entries(values).filter(([aud, key]) => audienceOf(aud) && typeof key === 'string' && key.length >= 32));
   } catch { return {}; }
 }
+function redirectOf(raw: string | undefined, audience: Audience): string | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const value = (parsed as Record<string, unknown>)[audience];
+    if (typeof value !== 'string' || !value.startsWith('https://')) return null;
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.hash && url.href === value ? value : null;
+  } catch { return null; }
+}
 type Session = { principal_id: string; profile_id: string; enabled: number; generation: number };
 type Token = { session_id: string; generation: number; audience: string; scopes_json: string; issued_at: number;
   expires_at: number; revoked_at: number | null };
+type Code = { session_id: string; generation: number; audience: string; scopes_json: string; redirect_uri: string;
+  state_hash: string; code_challenge: string; expires_at: number; consumed_at: number | null };
+async function s256(verifier: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  let raw = '';
+  for (const byte of bytes) raw += String.fromCharCode(byte);
+  return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
 
 /** Host-side and app-service API only. No browser credential is minted here. */
-export async function connectedAppRequest(req: Request, db: D1Database, config: Config, body: Record<string, unknown>): Promise<Response> {
+export async function connectedAppRequest(req: Request, db: D1Database, config: Config, body: Record<string, unknown>,
+  resolvePlatformSession: PlatformSessionResolver | null = null): Promise<Response> {
   if (config.enabled !== 'true') return respond({ error: 'not found' }, 404);
   const url = new URL(req.url);
   const path = url.pathname;
   const audience = audienceOf(body.audience);
   const now = Math.floor(Date.now() / 1000);
   const isIntrospect = path === '/v1/connected-app-sessions/introspect';
+  const isAuthorize = path === '/v1/connected-app-sessions/authorize';
+  const isExchange = path === '/v1/connected-app-sessions/exchange';
+  const params = isAuthorize ? url.searchParams : null;
+  const requestedAudience = isAuthorize ? params?.get('client_id') : body.client_id;
+  const handoffAudience = audienceOf(requestedAudience);
   const hostKey = (config.hostKey?.length ?? 0) >= 32 ? config.hostKey ?? '' : '';
-  const serviceKey = audience ? keysOf(config.serviceKeys)[audience] ?? '' : '';
+  const serviceKey = (isExchange ? handoffAudience : audience) ?
+    keysOf(config.serviceKeys)[(isExchange ? handoffAudience : audience)!] ?? '' : '';
   const supplied = req.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
-  if (isIntrospect ? !secureEqual(supplied, serviceKey) : !secureEqual(supplied, hostKey)) return unauthorized();
-  if (req.method !== 'POST') return respond({ error: 'method not allowed' }, 405);
+  if (!isAuthorize && (isIntrospect || isExchange ? !secureEqual(supplied, serviceKey) : !secureEqual(supplied, hostKey))) return unauthorized();
+  if (req.method !== (isAuthorize ? 'GET' : 'POST')) return respond({ error: 'method not allowed' }, 405);
+
+  if (isAuthorize) {
+    // The normal Worker deliberately supplies no resolver: a browser cannot assert its own profile.
+    if (!resolvePlatformSession) return respond({ error: 'platform session authority unavailable' }, 503);
+    const scopeText = params?.get('scope') ?? '';
+    const requested = handoffAudience ? scopesOf(scopeText.split(' '), handoffAudience) : null;
+    const registeredRedirect = handoffAudience ? redirectOf(config.redirectUris, handoffAudience) : null;
+    const state = params?.get('state');
+    const challenge = params?.get('code_challenge');
+    if (params?.get('response_type') !== 'code' || params?.get('code_challenge_method') !== 'S256' ||
+        !handoffAudience || !requested || !registeredRedirect || params?.get('redirect_uri') !== registeredRedirect ||
+        typeof state !== 'string' || state.length < 16 || state.length > 256 ||
+        typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return invalid();
+    if (!config.issuer || !/^https:\/\//.test(config.issuer)) return respond({ error: 'issuer not configured' }, 503);
+    const verified = await resolvePlatformSession(req);
+    if (!verified || !ID.test(verified.principalId) || !ID.test(verified.profileId) || !ID.test(verified.sessionId)) return unauthorized();
+    const allowed = scopesOf(verified.grants[handoffAudience], handoffAudience);
+    if (!allowed || !requested.every(scope => allowed.includes(scope))) return respond({ error: 'forbidden' }, 403);
+    const previous = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
+      .bind(verified.sessionId).first<Session>();
+    if (previous && previous.principal_id !== verified.principalId) return respond({ error: 'session owner conflict' }, 409);
+    const oldGrant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
+      .bind(verified.sessionId, handoffAudience).first<{ scopes_json: string }>();
+    const changed = !previous || previous.profile_id !== verified.profileId || previous.enabled !== 1 ||
+      oldGrant?.scopes_json !== JSON.stringify(allowed);
+    if (changed) {
+      await db.batch([
+        db.prepare(`INSERT INTO connected_app_sessions(session_id,principal_id,profile_id,enabled,generation,updated_at)
+          VALUES(?,?,?,?,1,?) ON CONFLICT(session_id) DO UPDATE SET profile_id=excluded.profile_id,
+          enabled=1,generation=generation+1,updated_at=excluded.updated_at`)
+          .bind(verified.sessionId, verified.principalId, verified.profileId, 1, now),
+        ...(previous?.profile_id !== verified.profileId
+          ? [db.prepare('DELETE FROM connected_app_grants WHERE session_id = ?').bind(verified.sessionId)] : []),
+        db.prepare(`INSERT INTO connected_app_grants(session_id,audience,scopes_json) VALUES(?,?,?)
+          ON CONFLICT(session_id,audience) DO UPDATE SET scopes_json=excluded.scopes_json`)
+          .bind(verified.sessionId, handoffAudience, JSON.stringify(allowed)),
+      ]);
+    }
+    const current = await db.prepare('SELECT generation FROM connected_app_sessions WHERE session_id = ?')
+      .bind(verified.sessionId).first<{ generation: number }>();
+    if (!current) return respond({ error: 'session unavailable' }, 503);
+    const code = token();
+    await db.prepare(`INSERT INTO connected_app_browser_codes
+      (code_hash,session_id,generation,audience,scopes_json,redirect_uri,state_hash,code_challenge,created_at,expires_at,consumed_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,NULL)`).bind(await hash(code), verified.sessionId, current.generation, handoffAudience,
+      JSON.stringify(requested), registeredRedirect, await hash(state), challenge, now, now + 60).run();
+    const location = new URL(registeredRedirect);
+    location.searchParams.set('code', code);
+    location.searchParams.set('state', state);
+    location.searchParams.set('iss', config.issuer);
+    return new Response(null, { status: 303, headers: { location: location.href, 'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer' } });
+  }
+
+  if (isExchange) {
+    const registeredRedirect = handoffAudience ? redirectOf(config.redirectUris, handoffAudience) : null;
+    const code = body.code;
+    const state = body.state;
+    const verifier = body.code_verifier;
+    if (body.grant_type !== 'authorization_code' || !handoffAudience || !registeredRedirect ||
+        body.redirect_uri !== registeredRedirect ||
+        typeof code !== 'string' || !/^[a-f0-9]{64}$/.test(code) ||
+        typeof state !== 'string' || state.length < 16 || state.length > 256 ||
+        typeof verifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return invalid();
+    const codeHash = await hash(code);
+    const row = await db.prepare('SELECT * FROM connected_app_browser_codes WHERE code_hash = ?')
+      .bind(codeHash).first<Code>();
+    if (!row || row.audience !== handoffAudience || row.redirect_uri !== registeredRedirect ||
+        row.state_hash !== await hash(state) || row.code_challenge !== await s256(verifier) ||
+        row.expires_at <= now || row.consumed_at !== null)
+      return respond({ error: 'invalid code' }, 403);
+    // Conditional update is the one-use fence under concurrent exchanges.
+    const consume = await db.prepare(`UPDATE connected_app_browser_codes SET consumed_at = ?
+      WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?`).bind(now, codeHash, now).run();
+    if (consume.meta.changes !== 1) return respond({ error: 'invalid code' }, 403);
+    const session = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
+      .bind(row.session_id).first<Session>();
+    const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
+      .bind(row.session_id, handoffAudience).first<{ scopes_json: string }>();
+    const scopes = JSON.parse(row.scopes_json) as string[];
+    const allowed = grant ? JSON.parse(grant.scopes_json) as string[] : [];
+    if (!session || session.enabled !== 1 || session.generation !== row.generation ||
+        !scopes.every(scope => allowed.includes(scope))) return respond({ error: 'session changed' }, 403);
+    if (!config.issuer || !/^https:\/\//.test(config.issuer)) return respond({ error: 'issuer not configured' }, 503);
+    const bearer = token();
+    await db.prepare(`INSERT INTO connected_app_tokens(token_hash,session_id,generation,audience,scopes_json,issued_at,expires_at,revoked_at)
+      VALUES(?,?,?,?,?,?,?,NULL)`).bind(await hash(bearer), row.session_id, row.generation, handoffAudience,
+      JSON.stringify(scopes), now, now + MAX_AGE).run();
+    return respond({ token: bearer, expiresAt: now + MAX_AGE }, 201);
+  }
 
   if (isIntrospect) {
     if (!audience || typeof body.token !== 'string' || !/^[a-f0-9]{64}$/.test(body.token)) return respond(inactive());

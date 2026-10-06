@@ -121,6 +121,7 @@ export interface Env {
   CONNECTED_APP_HOST_KEY?: string;
   CONNECTED_APP_SERVICE_KEYS?: string;
   CONNECTED_APP_ISSUER?: string;
+  CONNECTED_APP_REDIRECT_URIS?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -1047,7 +1048,9 @@ const store = new TaskStore(env.DB);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
      const intake = new IntakeService(store, new PilotRouter({ env: env as unknown as Record<string, string | undefined> }));
     const body: Record<string, unknown> =
-      req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
+      req.method === 'POST' && url.pathname === '/v1/connected-app-sessions/exchange'
+        ? Object.fromEntries((await req.formData().catch(() => new FormData())).entries())
+        : req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
@@ -1057,6 +1060,7 @@ const store = new TaskStore(env.DB);
           hostKey: env.CONNECTED_APP_HOST_KEY,
           serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
           issuer: env.CONNECTED_APP_ISSUER,
+          redirectUris: env.CONNECTED_APP_REDIRECT_URIS,
         }, body);
       }
       if (url.pathname === '/') {
