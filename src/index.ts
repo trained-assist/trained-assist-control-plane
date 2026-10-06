@@ -1711,6 +1711,18 @@ const startResult = await port.submit(input);
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
+
+    // Тот же serverless Cron Trigger запускает пользовательские расписания.
+    // Без profileId проход охватывает все профили; HTTP /schedules/tick
+    // остаётся ограничен профилем вызывающего. Ключи occurrence и дедуп в D1
+    // делают повторный вызов безопасным. Ошибка здесь не отменяет проход watchdog.
+    let scheduleError: unknown;
+    try {
+      await scheduleServiceOf(env, store, new CfWorkflowPort(env.TASK_WORKFLOW, store)).tick();
+    } catch (error) {
+      scheduleError = error;
+    }
+
     const adapter = await resolveDeliveryAdapter(env);
     await workflowPortOf(env, store).recoverCredentialContinuations();
 
@@ -1742,5 +1754,7 @@ const startResult = await port.submit(input);
         ageMs: last ? Date.now() - last.last_run_at : null,
       }));
     }
+
+    if (scheduleError !== undefined) throw scheduleError;
   },
 };
