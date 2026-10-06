@@ -172,6 +172,7 @@ export interface SubmitRequest {
   conversationId?: string;
   engine: EngineSpec;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  ingressManifest?: { contractVersion: 1; manifestRef: string; manifestVersion: string };
   envAllowlist: string[];
   limits: RunLimits;
   deadline?: string;
@@ -184,7 +185,6 @@ export interface SubmitRequest {
   traceId?: string;
   instructions?: string;
   repository?: RepositorySpec;
-  ingressManifest?: IngressManifestRef;
 }
 
 /**
@@ -204,12 +204,16 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.userTaskId) body.userTaskId = spec.userTaskId;
   if (spec.conversationId) body.conversationId = spec.conversationId;
   if (spec.input) body.input = spec.input;
+  if (spec.ingressManifest) body.ingressManifest = {
+    contractVersion: spec.ingressManifest.contractVersion,
+    manifestRef: spec.ingressManifest.manifestRef,
+    manifestVersion: spec.ingressManifest.manifestVersion,
+  };
   if (spec.outputs) body.outputs = spec.outputs;
   if (spec.repository) body.repository = spec.repository;
   if (spec.result) body.result = spec.result;
   if (spec.mcp) body.mcp = spec.mcp;
   if (spec.traceId) body.traceId = spec.traceId;
-  if (spec.ingressManifest) body.ingressManifest = spec.ingressManifest;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
 }

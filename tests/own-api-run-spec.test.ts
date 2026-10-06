@@ -86,7 +86,11 @@ describe('run-spec: сборка по умолчанию', () => {
       ownerGeneration: 1,
     });
     expect(built.spec.input?.refs).toBeUndefined();
-    expect(toSubmitRequest(built.spec).ingressManifest).toEqual(built.spec.ingressManifest);
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
@@ -281,6 +285,24 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     );
     const body = toSubmitRequest(built.spec);
     expect(body['input']).toEqual({ inlinePrompt: 'собери отчёт', refs: [{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }] });
+  });
+
+  it('передаёт только immutable ingress pin в POST /v1/runs', () => {
+    const built = buildRunSpec(baseInput, policy);
+    built.spec.ingressManifest = {
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+      userTaskId: built.spec.userTaskId,
+      profileId: built.spec.profileId,
+      runId: built.spec.runId,
+      ownerGeneration: built.spec.ownerGeneration,
+    };
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
   });
 
   it('поля, которые Runner выводит сам, перечислены явно', () => {

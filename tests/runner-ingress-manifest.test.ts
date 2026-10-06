@@ -81,10 +81,6 @@ describe('CP routes admitted media as a pinned Runner ingress manifest', () => {
         contractVersion: 1,
         manifestRef: `cp-input-manifest:${taskId}`,
         manifestVersion: pinnedManifest?.manifestVersion,
-        userTaskId: taskId,
-        profileId,
-        runId: `run_${taskId}_1`,
-        ownerGeneration: 1,
       },
     });
     expect(submitted).not.toHaveProperty('input.refs');
