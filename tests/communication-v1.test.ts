@@ -176,6 +176,61 @@ describe('v1 routing', () => {
 });
 
 describe('Task Store and Output ownership', () => {
+  it('carries prior conversation turns with task IDs from intake into MCP routing and agent instructions', async () => {
+    const store = new TaskStore(env.DB);
+    const intake = new IntakeService(store);
+    const conversationId = nextId();
+    const priorRequestId = nextId();
+    const currentRequestId = nextId();
+    const priorFact = `phrase-${crypto.randomUUID()}`;
+    await store.upsertPrincipal({
+      principalId: 'selector-principal',
+      profileId: 'selector-profile',
+      scopes: ['tasks:intake'],
+    });
+
+    const prior = await intake.admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1,
+      requestId: priorRequestId,
+      profileId: 'selector-profile',
+      conversationRef: conversationId,
+      inputItems: [{ text: `Запомни кодовую фразу ${priorFact}` }],
+    });
+    createdIds.push(prior.userTaskId);
+    await store.commit(prior.userTaskId, 1, { status: 'done', result: { answer: `Сохранил ${priorFact}` } });
+
+    const current = await intake.admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1,
+      requestId: currentRequestId,
+      profileId: 'selector-profile',
+      conversationRef: conversationId,
+      inputItems: [{ text: 'Какую кодовую фразу я просил запомнить?' }],
+    });
+    createdIds.push(current.userTaskId);
+    expect(current.conversationId).toBe(conversationId);
+    expect(current.userTaskId).not.toBe(prior.userTaskId);
+
+    const currentTask = await store.requireTask(current.userTaskId);
+    const context = await durableConversationContext(store, currentTask);
+    let capturedSelectorPayload: Record<string, unknown> | null = null;
+    const select = vi.fn(async (payload: Record<string, unknown>) => {
+      capturedSelectorPayload = payload;
+      return selection('agent')();
+    });
+    const input = await routingInput('Какую кодовую фразу я просил запомнить?', current.userTaskId);
+    input.envelope.conversationId = conversationId;
+    input.prepared.durableContext = context;
+    const result = await routeRequest(input, { communicationV1: { select, health: healthy } });
+
+    const selectorPayload = capturedSelectorPayload as unknown as { dialog_context: { history: Array<{ id: string; text: string }> } };
+    expect(selectorPayload.dialog_context.history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `${prior.userTaskId}:input`, text: expect.stringContaining(priorFact) }),
+      expect.objectContaining({ id: `${prior.userTaskId}:result`, text: expect.stringContaining(priorFact) }),
+    ]));
+    expect(result.agentInstructions).toContain(priorFact);
+    expect(result.agentInstructions).toContain(prior.userTaskId);
+  });
+
   it('preserves full conversation inputs/results and excludes foreign profiles', async () => {
     const store = new TaskStore(env.DB);
     const conversationId = nextId();
