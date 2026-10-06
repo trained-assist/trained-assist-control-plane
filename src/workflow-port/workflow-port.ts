@@ -16,6 +16,7 @@ import { AnswerRejectedError, isTerminalStatus } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
+import type { McpSpec } from '../run-spec/run-spec';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
 import type { RouteResult } from '../router/service';
@@ -55,6 +56,8 @@ export interface SubmitInput extends AdmitTaskInput {
   waitPollSec?: number;
   /** Инструкции для попытки Runner'а и параметры опроса результата. */
   instructions?: string | null;
+  /** Trusted Output-built descriptor for the Telegram UX test profile. */
+  mcpDescriptor?: McpSpec | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
@@ -243,6 +246,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       // план строит его из env (deps) в TaskWorkflow.
       goal: task.goal,
       instructions: input.instructions ?? null,
+      mcpDescriptor: input.mcpDescriptor ?? null,
       runnerPollSec: input.runnerPollSec,
       runnerTimeoutSec: input.runnerTimeoutSec,
       runnerEngine: input.runnerEngine,

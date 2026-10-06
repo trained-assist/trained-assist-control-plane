@@ -45,6 +45,7 @@ export type RouteMode = (typeof ROUTE_MODES)[number];
 export const REASON_CODES = [
   'COMMUNICATION_SELECTED',
   'COMMUNICATION_FALLBACK',
+  'MCP_REVALIDATION_REQUIRED',
   // детерминированные пути (§11.2 шаг 1)
   'TYPED_COMMAND',
   'SERVICE_COMMAND',
@@ -221,6 +222,7 @@ export interface PreparedInput {
  * менять ни текст запроса, ни модель (§11.1).
  */
 export interface RoutingEnvelope {
+  generation?: number;
   principalId: string;
   profileId: string;
   userTaskId: string;
