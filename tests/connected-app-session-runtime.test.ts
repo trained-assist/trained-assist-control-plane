@@ -97,4 +97,16 @@ describe('connected app identity opt-in D1 runtime', () => {
     expect(await (await introspect(first)).json()).toEqual({ active: false });
     expect(await (await introspect(second)).json()).toEqual({ active: false });
   });
+
+  it('expires tokens and keeps malformed or legacy credentials inactive', async () => {
+    await select('session_demo_500', 'profile_demo_500');
+    const bearer = (await (await issue('session_demo_500')).json() as { token: string }).token;
+    expect(await (await introspect('legacy-agent-jwt')).json()).toEqual({ active: false });
+    expect(await (await introspect('rt_legacy_run_token')).json()).toEqual({ active: false });
+    const row = await env.DB.prepare('SELECT token_hash FROM connected_app_tokens WHERE session_id = ?')
+      .bind('session_demo_500').first<{ token_hash: string }>();
+    await env.DB.prepare('UPDATE connected_app_tokens SET expires_at = 1 WHERE token_hash = ?')
+      .bind(row?.token_hash).run();
+    expect(await (await introspect(bearer)).json()).toEqual({ active: false });
+  });
 });
