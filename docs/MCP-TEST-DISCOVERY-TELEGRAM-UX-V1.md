@@ -15,6 +15,16 @@ the `mcp:discover` scope. If transport temporarily uses a shared Bearer, Host
 must still reject invocation unless it validates the actual Runner-created
 `runId` against that run's binding.
 
+Invocation carries `X-MCP-Run-Binding`, a compact EdDSA JWS signed by the
+Runner process only after API admission has created the real Run. Its claims
+bind `runId`, task/profile/principal, `serverId`, `bindingRef`, exact tool
+allowlist, catalogue and policy versions, registry digest, audience, and
+expiry. Host verifies the Runner signature and exact match to invocation
+headers and its pinned fixture policy. A valid-looking `runId` or static Bearer
+without this proof is insufficient. The Runner private key and Host public JWK
+are operator provisioned in the later trusted-store stage; this CP session
+creates neither.
+
 The catalogue adapter may paginate `tools/list`, but it exposes only the
 host-policy allowlist. For this profile that allowlist must equal
 `["registry.fixture_read"]`. Names and selected metadata are accepted only from
@@ -39,10 +49,11 @@ Normal agent work is not required to call it. The end-to-end fixture task must
 explicitly ask the agent to read the fixture so that a tool invocation is an
 acceptance expectation for that task.
 
-CP never invokes tools itself. Runner creates the real `runId` at submit and
-resolves the descriptor dynamically after creation. Invocation authorization
-must bind the descriptor to that run and enforce the tool allowlist; discovery
-authorization does not grant invocation.
+CP never invokes tools itself. Runner creates the real `runId` at submit,
+resolves the descriptor dynamically after creation, and signs the run binding
+proof from the accepted RunSpec. Invocation authorization must bind the
+descriptor to that run and enforce the tool allowlist; discovery authorization
+does not grant invocation.
 
 ## Drift and ownership
 
