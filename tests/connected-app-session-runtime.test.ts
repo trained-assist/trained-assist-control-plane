@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { env } from './env';
 import worker from '../src/index';
+import { connectedAppRequest, type AgentProfileAuthority, type AgentProfileContext } from '../src/connected-app/session-service';
 
 const hostKey = 'host-test-key-with-at-least-thirty-two-chars';
 const recruitingKey = 'recruiting-test-key-with-at-least-thirty-two-chars';
@@ -13,11 +14,17 @@ const bindings = {
   CONNECTED_APP_ISSUER: 'https://control.example.invalid',
 };
 const path = '/v1/connected-app-sessions/';
-const request = (route: string, body: object, key: string, enabled = true) => worker.fetch(
+const contexts = new Map<string, AgentProfileContext>();
+const authority: AgentProfileAuthority = {
+  resolveBrowserSession: async () => null,
+  resolveCurrentSession: async sessionId => contexts.get(sessionId) ?? null,
+};
+const request = (route: string, body: object, key: string, enabled = true) => connectedAppRequest(
   new Request(`https://control.example.invalid${path}${route}`, {
     method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
-  }), { ...bindings, CONNECTED_APP_IDENTITY_ENABLED: enabled ? 'true' : undefined },
+  }), env.DB, { enabled: enabled ? 'true' : undefined, hostKey, serviceKeys: bindings.CONNECTED_APP_SERVICE_KEYS,
+    issuer: bindings.CONNECTED_APP_ISSUER }, body as Record<string, unknown>, authority,
 );
 async function membership(profileId: string, scopes: string[]) {
   await env.DB.prepare(`INSERT INTO connected_app_memberships
@@ -27,7 +34,12 @@ async function membership(profileId: string, scopes: string[]) {
     .bind('user_demo_001', profileId, 'recruiting-web', JSON.stringify(scopes)).run();
 }
 const select = async (sessionId: string, profileId: string, scopes = ['recruiting.responses.read'], enabled = true) => {
-  if (enabled) await membership(profileId, scopes);
+  if (enabled) {
+    await membership(profileId, scopes);
+    const previous = contexts.get(sessionId);
+    contexts.set(sessionId, { principalId: 'user_demo_001', profileId, sessionId,
+      profileGeneration: (previous?.profileGeneration ?? 0) + 1 });
+  }
   return request('select', { sessionId, principalId: 'user_demo_001', profileId, enabled,
     grants: { 'recruiting-web': scopes } }, hostKey);
 };
@@ -43,6 +55,14 @@ describe('connected app identity opt-in D1 runtime', () => {
     expect(disabled.headers.get('cache-control')).toBe('no-store');
     expect((await request('select', { sessionId: 's_wrong' }, 'wrong')).status).toBe(401);
     expect((await introspect('0'.repeat(64), 'recruiting-web', crmKey)).status).toBe(401);
+    const noAgentContext = await worker.fetch(new Request(`https://control.example.invalid${path}select`, {
+      method: 'POST', headers: { authorization: `Bearer ${hostKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 's_no_agent', principalId: 'u1', profileId: 'p1', enabled: true,
+        grants: { 'recruiting-web': ['recruiting.responses.read'] } }),
+    }), { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, CONNECTED_APP_IDENTITY_ENABLED: 'true',
+      CONNECTED_APP_HOST_KEY: hostKey, CONNECTED_APP_SERVICE_KEYS: bindings.CONNECTED_APP_SERVICE_KEYS,
+      CONNECTED_APP_ISSUER: bindings.CONNECTED_APP_ISSUER });
+    expect(noAgentContext.status).toBe(503);
   });
 
   it('issues a bounded opaque token for one exact audience and scope', async () => {
@@ -81,7 +101,9 @@ describe('connected app identity opt-in D1 runtime', () => {
     expect((await request('revoke', { token: search }, hostKey)).status).toBe(200);
     expect(await (await introspect(search)).json()).toEqual({ active: false });
     const after = (await (await issue('session_demo_200', ['recruiting.candidateSearch'])).json() as { token: string }).token;
-    await select('session_demo_200', 'profile_demo_201', ['recruiting.candidateSearch'], false);
+    const disabled = await select('session_demo_200', 'profile_demo_201', ['recruiting.candidateSearch'], false);
+    expect(disabled.status).toBe(200);
+    contexts.delete('session_demo_200');
     expect(await (await introspect(after)).json()).toEqual({ active: false });
     expect((await issue('session_demo_200', ['recruiting.candidateSearch'])).status).toBe(403);
   });
@@ -90,8 +112,13 @@ describe('connected app identity opt-in D1 runtime', () => {
     expect((await request('select', { sessionId: 'session_demo_300', principalId: 'user_demo_001',
       profileId: 'profile_demo_300', enabled: true, grants: { 'recruiting-web': ['crm.catalog.read'] } }, hostKey)).status).toBe(400);
     expect((await select('session_demo_300', 'profile_demo_300')).status).toBe(200);
+    contexts.set('session_demo_300', { principalId: 'user_other', profileId: 'profile_demo_300',
+      sessionId: 'session_demo_300', profileGeneration: 2 });
+    await env.DB.prepare(`INSERT INTO connected_app_memberships
+      (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)`)
+      .bind('user_other', 'profile_demo_300', 'recruiting-web', JSON.stringify(['recruiting.responses.read'])).run();
     expect((await request('select', { sessionId: 'session_demo_300', principalId: 'user_other',
-      profileId: 'profile_other', enabled: true, grants: { 'recruiting-web': ['recruiting.responses.read'] } }, hostKey)).status).toBe(409);
+      profileId: 'profile_demo_300', enabled: true, grants: { 'recruiting-web': ['recruiting.responses.read'] } }, hostKey)).status).toBe(409);
     expect((await request('select', { sessionId: 'session_demo_301', principalId: 'user_demo_001',
       profileId: 'profile_demo_300', enabled: true,
       grants: { 'recruiting-web': ['recruiting.responses.read', 'recruiting.responses.read'] } }, hostKey)).status).toBe(400);
