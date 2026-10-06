@@ -1,6 +1,8 @@
 import type { HostMcpCatalogueBinding, McpCatalogueScope, McpCatalogueSnapshot, SelectedMcpInstruction } from './mcp-catalogue-types';
 
 const namePattern = /^[A-Za-z][A-Za-z0-9_.:-]{0,199}$/;
+const TEST_PROFILE = 'integration-telegram-ux-v1';
+const TEST_TOOL = 'registry.fixture_read';
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const reference = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200;
 const scopeKey = (scope: McpCatalogueScope) => JSON.stringify([scope.taskId, scope.generation, scope.profileId, scope.principalId]);
@@ -35,7 +37,11 @@ export class McpCatalogueAdapter {
     const servers = new Set<string>();
     for (const binding of bindings) {
       if (!binding || !binding.scope || scopeKey(binding.scope) !== scopeKey(scope)) refuse('binding_scope_mismatch');
+      const discovery = binding.discoveryAuthorization;
+      if (!discovery || discovery.principalId !== scope.principalId || discovery.profileId !== scope.profileId
+        || discovery.scope !== 'mcp:discover' || !Array.isArray(discovery.methods) || discovery.methods.length !== 1 || discovery.methods[0] !== 'tools/list') refuse('discovery_authorization_invalid');
       if (!reference(binding.serverId) || !reference(binding.bindingRef) || !reference(binding.policyVersion) || typeof binding.request !== 'function' || !Array.isArray(binding.allowedTools) || binding.allowedTools.some((name: unknown) => typeof name !== 'string' || !namePattern.test(name))) refuse('binding_invalid');
+      if (scope.profileId === TEST_PROFILE && (binding.allowedTools.length !== 1 || binding.allowedTools[0] !== TEST_TOOL)) refuse('binding_invalid');
       if (servers.has(binding.serverId) || new Set(binding.allowedTools).size !== binding.allowedTools.length) refuse('binding_conflict');
       servers.add(binding.serverId);
     }

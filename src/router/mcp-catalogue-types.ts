@@ -5,6 +5,14 @@ export interface McpCatalogueScope {
   principalId: string;
 }
 
+/** Separate pre-Run authorization. It has no runId and can only list tools. */
+export interface McpDiscoveryAuthorization {
+  principalId: string;
+  profileId: string;
+  scope: 'mcp:discover';
+  methods: readonly ['tools/list'];
+}
+
 export interface McpListRequest {
   jsonrpc: '2.0';
   id: string;
@@ -14,6 +22,7 @@ export interface McpListRequest {
 
 export interface HostMcpCatalogueBinding {
   scope: McpCatalogueScope;
+  discoveryAuthorization: McpDiscoveryAuthorization;
   serverId: string;
   bindingRef: string;
   policyVersion: string;

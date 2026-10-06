@@ -29,6 +29,8 @@ import {
   logRunSpecBuilt,
   untransmittedRunSpecFields,
   type RunSpecPolicy,
+  type McpSpec,
+  RunSpecMappingError,
 } from '../run-spec/run-spec';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
@@ -76,6 +78,8 @@ export interface PlanParams {
   crashRunOnce?: boolean;
   goal?: string | null;
   instructions?: string | null;
+  /** Host-built, policy-pinned MCP descriptor; never accepted from user/model input. */
+  mcpDescriptor?: McpSpec | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
@@ -495,12 +499,16 @@ export async function conversationPlan(
   let runnerDeclaredOutputs: string[] | undefined;
   let runnerResultTimeoutSec = p.runnerTimeoutSec ?? 120;
   if (adapter) {
-    const runSpecPolicy = deps.runSpecPolicy ?? defaultRunSpecPolicy();
+    const baseRunSpecPolicy = deps.runSpecPolicy ?? defaultRunSpecPolicy();
+    const taskProfileId = current?.profile_id ?? p.profileId;
+    if (p.mcpDescriptor && taskProfileId !== 'integration-telegram-ux-v1') {
+      throw new RunSpecMappingError('MCP descriptor is limited to the Telegram UX test profile', 'mcp');
+    }
+    const runSpecPolicy = p.mcpDescriptor ? { ...baseRunSpecPolicy, mcp: p.mcpDescriptor } : baseRunSpecPolicy;
     const attemptKey = await stableAttemptKey(taskId, generation);
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
-    const taskProfileId = current?.profile_id ?? p.profileId;
     const runSpec = buildRunSpec(
       {
         userTaskId: taskId,
