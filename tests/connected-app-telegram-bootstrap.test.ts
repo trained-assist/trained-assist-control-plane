@@ -15,10 +15,10 @@ const profile = 'profile_telegram_001';
 let nextUpdate = 800000;
 async function provision() {
   await env.DB.prepare(`INSERT INTO connected_app_telegram_bindings
-    (bot_id,telegram_user_id,principal_id,profile_id,enabled,updated_at) VALUES(?,?,?,?,1,1)
+    (bot_id,telegram_user_id,principal_id,enabled,updated_at) VALUES(?,?,?,1,1)
     ON CONFLICT(bot_id,telegram_user_id) DO UPDATE SET principal_id=excluded.principal_id,
-    profile_id=excluded.profile_id,enabled=1,updated_at=updated_at+1`)
-    .bind(bot, user, principal, profile).run();
+    enabled=1,updated_at=updated_at+1`)
+    .bind(bot, user, principal).run();
   await env.DB.prepare(`INSERT INTO connected_app_memberships
     (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)
     ON CONFLICT(principal_id,profile_id,audience) DO UPDATE SET scopes_json=excluded.scopes_json,
@@ -50,6 +50,18 @@ async function redeem(link: string, csrf: string, csrfCookie: string, old = '') 
     method: 'POST', headers: { origin: issuer, 'content-type': 'application/x-www-form-urlencoded',
       cookie: `${csrfCookie}${old ? `; ${old}` : ''}` },
     body: new URLSearchParams({ c: new URL(link).searchParams.get('c') ?? '', csrf }),
+  }), env.DB, config);
+}
+async function selectProfile(browserCookie: string, selected = profile) {
+  const page = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
+    headers: { cookie: browserCookie },
+  }), env.DB, config);
+  const csrf = csrfFrom(await page.text());
+  const csrfCookie = page.headers.get('set-cookie')?.split(';')[0] ?? '';
+  return telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/select-profile`, {
+    method: 'POST', headers: { origin: issuer, 'content-type': 'application/x-www-form-urlencoded',
+      cookie: `${browserCookie}; ${csrfCookie}` },
+    body: new URLSearchParams({ profile_id: selected, csrf }),
   }), env.DB, config);
 }
 
@@ -128,6 +140,7 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const browserCookie = accepted.headers.get('set-cookie')?.split(';')[0] ?? '';
     expect(browserCookie).toMatch(/^__Host-ta_platform=[a-f0-9]{64}$/);
     expect(accepted.headers.get('location')).toBe('/v1/connected-app-bootstrap/apps');
+    expect((await selectProfile(browserCookie)).status).toBe(303);
     const landing = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
       headers: { cookie: browserCookie },
     }), env.DB, config);
@@ -179,6 +192,7 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const csrfCookie = page.headers.get('set-cookie')?.split(';')[0] ?? '';
     const accepted = await redeem(link, csrf, csrfCookie);
     const browserCookie = accepted.headers.get('set-cookie')?.split(';')[0] ?? '';
+    expect((await selectProfile(browserCookie)).status).toBe(303);
     const resolver = telegramPlatformSessionResolver(env.DB);
     const request = () => new Request(`${issuer}/v1/connected-app-sessions/authorize`, { headers: { cookie: browserCookie } });
     expect(await resolver(request())).not.toBeNull();
@@ -232,5 +246,45 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const prior = await env.DB.prepare('SELECT enabled,generation FROM connected_app_sessions WHERE session_id=?')
       .bind(row!.session_id).first<{ enabled: number; generation: number }>();
     expect(prior).toMatchObject({ enabled: 0, generation: 2 });
+  });
+
+  it('lets one verified actor choose either reviewed profile and fences a switch', async () => {
+    await provision();
+    const second = 'profile_telegram_002';
+    await env.DB.prepare(`INSERT INTO connected_app_memberships
+      (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)`)
+      .bind(principal, second, 'recruiting-web', JSON.stringify(['recruiting.candidateSearch'])).run();
+    const link = await linkFor();
+    const page = await preview(link);
+    const accepted = await redeem(link, csrfFrom(await page.text()),
+      page.headers.get('set-cookie')?.split(';')[0] ?? '');
+    const browserCookie = accepted.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const resolver = telegramPlatformSessionResolver(env.DB);
+    const request = () => new Request(`${issuer}/v1/connected-app-sessions/authorize`, {
+      headers: { cookie: browserCookie },
+    });
+    expect(await resolver(request())).toBeNull();
+    const chooser = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
+      headers: { cookie: browserCookie },
+    }), env.DB, config);
+    const chooserText = await chooser.text();
+    expect(chooserText).toContain(profile);
+    expect(chooserText).toContain(second);
+    expect(chooserText).not.toContain('https://recruiting.example.invalid/auth/connected/start');
+    expect((await selectProfile(browserCookie, 'foreign_profile')).status).toBe(403);
+    expect((await selectProfile(browserCookie, profile)).status).toBe(303);
+    const first = await resolver(request());
+    expect(first?.profileId).toBe(profile);
+    await env.DB.prepare(`INSERT INTO connected_app_sessions
+      (session_id,principal_id,profile_id,enabled,generation,updated_at) VALUES(?,?,?,1,1,1)`)
+      .bind(first!.sessionId, principal, profile).run();
+    expect((await selectProfile(browserCookie, second)).status).toBe(303);
+    expect((await resolver(request()))?.profileId).toBe(second);
+    const prior = await env.DB.prepare('SELECT enabled,generation FROM connected_app_sessions WHERE session_id=?')
+      .bind(first!.sessionId).first<{ enabled: number; generation: number }>();
+    expect(prior).toMatchObject({ enabled: 0, generation: 2 });
+    await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0,updated_at=updated_at+1
+      WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`).bind(principal, second).run();
+    expect(await resolver(request())).toBeNull();
   });
 });
