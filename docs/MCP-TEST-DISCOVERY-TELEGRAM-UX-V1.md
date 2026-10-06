@@ -14,6 +14,14 @@ session has been demonstrated. The only profile in scope is
 `integration-telegram-ux-v1`; the only capability exposed to the agent is
 `registry.fixture_read`.
 
+The updated CP test Worker deployment is `ec0f7d71-dcc6-44af-9655-f412866d5870`.
+Unauthenticated route probes reach the Worker, but an external Host request with
+the provisioned Bearer is stopped at Cloudflare edge with `1010
+browser_signature_banned`; the Host Worker's Wrangler tail showed no matching
+invocation. Treat this as an edge/network access blocker until Cloudflare permits
+the intended server-to-server path. Do not weaken Host proof checks or disguise
+the caller fingerprint to get around the edge rule.
+
 ## Discovery before Runner submit
 
 CP discovers the host catalogue after task admission and before Runner submit.
@@ -123,4 +131,6 @@ lease and matching secret/key material are provisioned in test-only trusted
 stores. This PR created no secrets; the CP test Worker was deployed separately.
 Remaining acceptance is an authorized test task through the deployed CP,
 admission and proof-bound Host invocation through the active Runner service, then
-a real Telegram agent session if required by the user-facing acceptance.
+a real Telegram agent session if required by the user-facing acceptance. First
+resolve the Cloudflare edge 1010 for legitimate server-to-server traffic, then
+retry exactly one discovery call and continue only if it reaches the Host Worker.
