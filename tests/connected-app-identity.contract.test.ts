@@ -41,6 +41,13 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.audiences['crm-web']).toContain('crm.deals.create');
     expect(contract.rules.writeScopeVocabularyOnly).toBe(true);
     expect(contract.rules.writeScopeGrantDoesNotImplyHumanApproval).toBe(true);
+    expect(contract.agentProfileAuthority).toMatchObject({
+      urn: 'urn:trained-assist:agent-profile-context:v1', version: 1,
+      owner: 'trained-assist-agent',
+      sourceRevision: '4a60c2e4c45eca9de1b84bba55e38bb83e1478c8',
+      contextFields: ['principalId', 'profileId', 'sessionId', 'profileGeneration'],
+      runtimeStatus: 'not_wired',
+    });
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });
 
