@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { observeHealth, observeHealthCatalogue, parseHealthCatalogue } from '../src/diagnostics/health-catalogue';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
+
+afterEach(() => vi.unstubAllGlobals());
 
 const descriptor = (patch: Record<string, unknown> = {}) => ({
   serviceId: 'control-plane', environment: 'sandbox', region: null,
@@ -106,6 +108,7 @@ describe('Control Plane diagnostics routes', () => {
   });
 
   it('returns timeout as unknown and serves a short-lived cached summary', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new DOMException('timeout', 'TimeoutError'); }));
     const request = () => worker.fetch(new Request('https://cp.test/internal/health/summary', {
       headers: { authorization: `Bearer ${token}` },
     }), bindings);
@@ -115,7 +118,7 @@ describe('Control Plane diagnostics routes', () => {
     const second = await request();
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({ status: 'unknown', cached: true });
-    await new Promise((resolve) => setTimeout(resolve, 1050));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     const stale = await request();
     expect(stale.status).toBe(200);
     expect(await stale.json()).toMatchObject({ status: 'unknown', cached: true, stale: true, reasonCodes: expect.arrayContaining(['stale_cache_served']) });
