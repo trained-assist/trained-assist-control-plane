@@ -19,6 +19,7 @@ import {
   IngressArtifactUnavailableError,
   IntakeService,
   ingressArtifactVerifierOf,
+  inputManifestForTask,
   resolveDeliveryAdapter,
   runStuckInputSweep,
 } from './intake';
@@ -280,57 +281,7 @@ const authorizeTaskRoute = async (
   return task;
 };
 
-const inputManifestForTask = async (task: TaskRow) => {
-  let userValue: Record<string, unknown>;
-  try {
-    userValue = JSON.parse(task.user_value ?? '{}') as Record<string, unknown>;
-  } catch {
-    throw new Error('task input manifest is invalid');
-  }
-  if (!Array.isArray(userValue.inputItems)) throw new Error('task input manifest is invalid');
-  const inputItems = userValue.inputItems.map((rawItem) => {
-    if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) throw new Error('task input manifest is invalid');
-    const item = rawItem as Record<string, unknown>;
-    if (item.text !== undefined && item.text !== null && typeof item.text !== 'string') throw new Error('task input manifest is invalid');
-    const rawArtifacts = Array.isArray(item.artifacts) ? item.artifacts : [];
-    const artifacts = rawArtifacts.map((rawArtifact) => {
-      if (!rawArtifact || typeof rawArtifact !== 'object' || Array.isArray(rawArtifact)) throw new Error('task input manifest is invalid');
-      const artifact = rawArtifact as Record<string, unknown>;
-      if (artifact.contractVersion !== 1
-        || typeof artifact.ref !== 'string'
-        || typeof artifact.version !== 'string'
-        || artifact.ownerProfileId !== task.profile_id
-        || typeof artifact.mediaType !== 'string'
-        || typeof artifact.name !== 'string'
-        || !Number.isSafeInteger(artifact.sizeBytes)
-        || typeof artifact.sha256 !== 'string') throw new Error('task input manifest is invalid');
-      return {
-        contractVersion: 1,
-        ref: artifact.ref,
-        version: artifact.version,
-        ownerProfileId: artifact.ownerProfileId,
-        mediaType: artifact.mediaType,
-        name: artifact.name,
-        sizeBytes: artifact.sizeBytes,
-        sha256: artifact.sha256,
-      };
-    });
-    return { ...(typeof item.text === 'string' ? { text: item.text } : {}), artifacts };
-  });
-  const canonical = JSON.stringify({ contractVersion: 1, userTaskId: task.id, profileId: task.profile_id, inputItems });
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
-  const version = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-  return {
-    manifestRef: `cp-input-manifest:${task.id}`,
-    manifestVersion: version,
-    contractVersion: 1 as const,
-    userTaskId: task.id,
-    profileId: task.profile_id,
-    inputItems,
-  };
-};
-
-const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: Awaited<ReturnType<typeof inputManifestForTask>>, ref: string, version: string): Promise<Response> => {
+const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: NonNullable<Awaited<ReturnType<typeof inputManifestForTask>>>, ref: string, version: string): Promise<Response> => {
   const bufferToken = String(env.INGRESS_BUFFER_TOKEN ?? '').trim();
   if (!env.INGRESS_BUFFER || !bufferToken) return json({ error: 'input artifact transport unavailable' }, 503);
   const artifact = manifest.inputItems.flatMap((item) => item.artifacts).find((entry) => entry.ref === ref && entry.version === version);
@@ -1341,7 +1292,8 @@ const store = new TaskStore(env.DB);
         const inputTaskId = url.searchParams.get('taskId');
         if (!inputTaskId) return json({ error: 'taskId is required' }, 400);
         const task = await authorizeTaskRoute(store, req, inputTaskId, 'tasks:read', auth);
-        return json(await inputManifestForTask(task));
+        const manifest = await inputManifestForTask(task);
+        return manifest ? json(manifest) : json({ error: 'input manifest not found' }, 404);
       }
       if (url.pathname === '/runner/input-artifact') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
@@ -1355,6 +1307,7 @@ const store = new TaskStore(env.DB);
         }
         const task = await authorizeTaskRoute(store, req, inputTaskId, 'tasks:read', auth);
         const manifest = await inputManifestForTask(task);
+        if (!manifest) return json({ error: 'input manifest not found' }, 404);
         if (manifest.manifestRef !== manifestRef || manifest.manifestVersion !== manifestVersion) {
           return json({ error: 'input manifest version mismatch' }, 409);
         }

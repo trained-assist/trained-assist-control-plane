@@ -24,7 +24,7 @@
 import { logStructured } from '../logging/structured-log';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v3';
+export const RUN_SPEC_VERSION = 'run-spec-v4';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -99,6 +99,21 @@ export interface RepositorySpec {
   token?: string;
 }
 
+export interface InputManifestPin {
+  manifestRef: string;
+  manifestVersion: string;
+}
+
+export interface IngressManifestRef {
+  contractVersion: 1;
+  manifestRef: string;
+  manifestVersion: string;
+  userTaskId: string;
+  profileId: string;
+  runId: string;
+  ownerGeneration: number;
+}
+
 export interface ResultPolicy {
   destinationRef?: string;
   retentionPolicy?: string;
@@ -124,6 +139,7 @@ export interface RunSpec {
   envAllowlist: string[];
   limits: RunLimits;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  ingressManifest?: IngressManifestRef;
   outputs?: OutputSpec[];
   mcp?: McpSpec;
   credentialBindings?: CredentialBinding[];
@@ -168,6 +184,7 @@ export interface SubmitRequest {
   traceId?: string;
   instructions?: string;
   repository?: RepositorySpec;
+  ingressManifest?: IngressManifestRef;
 }
 
 /**
@@ -192,6 +209,7 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.result) body.result = spec.result;
   if (spec.mcp) body.mcp = spec.mcp;
   if (spec.traceId) body.traceId = spec.traceId;
+  if (spec.ingressManifest) body.ingressManifest = spec.ingressManifest;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
 }
@@ -220,6 +238,7 @@ export interface RunSpecInput {
   prompt: string;
   /** Разрешённые вложения: `artifactRefs` из envelope приёма. */
   refs: InputRef[];
+  inputManifest?: InputManifestPin | null;
   instructions: string | null;
   /** Внутренний runId попытки control plane — корреляция (traceId). */
   attemptRunId: string | null;
@@ -442,6 +461,11 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   const runId = `run_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}_${input.ownerGeneration}`;
   const jobId = `job_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}`;
   const operationId = `op_${input.attemptRunId ?? runId}`;
+  if (input.inputManifest) {
+    if (refs.length > 0) fail('inputManifest', 'ingress manifest cannot be combined with other input refs');
+    if (input.inputManifest.manifestRef !== `cp-input-manifest:${input.userTaskId}`) fail('inputManifest.manifestRef', 'expected the task-scoped Control Plane manifest ref');
+    if (!/^[0-9a-f]{64}$/.test(input.inputManifest.manifestVersion)) fail('inputManifest.manifestVersion', 'expected lowercase sha256');
+  }
 
   const spec: RunSpec = {
     contractVersion: RUN_SPEC_CONTRACT_VERSION,
@@ -464,6 +488,15 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
       ...(inlinePrompt ? { inlinePrompt } : {}),
       ...(refs.length ? { refs } : {}),
     },
+    ...(input.inputManifest ? { ingressManifest: {
+      contractVersion: 1,
+      manifestRef: input.inputManifest.manifestRef,
+      manifestVersion: input.inputManifest.manifestVersion,
+      userTaskId: input.userTaskId,
+      profileId: input.profileId,
+      runId,
+      ownerGeneration: input.ownerGeneration,
+    } } : {}),
     ...(policy.outputs.length ? { outputs: policy.outputs } : {}),
     ...(policy.mcp ? { mcp: policy.mcp } : {}),
     ...(policy.repository ? { repository: policy.repository } : {}),
@@ -580,6 +613,18 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
         }
       }
     }
+  }
+
+  if (spec.ingressManifest !== undefined) {
+    const manifest = spec.ingressManifest;
+    if (manifest.contractVersion !== 1) errors.push('spec.ingressManifest.contractVersion: expected 1');
+    if (manifest.manifestRef !== `cp-input-manifest:${spec.userTaskId}`) errors.push('spec.ingressManifest.manifestRef: expected task-scoped manifest ref');
+    if (!/^[0-9a-f]{64}$/.test(manifest.manifestVersion)) errors.push('spec.ingressManifest.manifestVersion: expected lowercase sha256');
+    if (manifest.userTaskId !== spec.userTaskId) errors.push('spec.ingressManifest.userTaskId: must match spec.userTaskId');
+    if (manifest.profileId !== spec.profileId) errors.push('spec.ingressManifest.profileId: must match spec.profileId');
+    if (manifest.runId !== spec.runId) errors.push('spec.ingressManifest.runId: must match spec.runId');
+    if (manifest.ownerGeneration !== spec.ownerGeneration) errors.push('spec.ingressManifest.ownerGeneration: must match spec.ownerGeneration');
+    if ((spec.input?.refs?.length ?? 0) > 0) errors.push('spec.input.refs: cannot be combined with spec.ingressManifest');
   }
 
   if (spec.outputs !== undefined) {
