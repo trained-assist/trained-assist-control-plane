@@ -34,7 +34,7 @@ async function start(updateId: string, body: Record<string, unknown> = {}, key =
 }
 async function linkFor(updateId = String(nextUpdate++)) {
   let link = '';
-  const response = await start(updateId, {}, gatewayKey, async (_config, actualChat, _update, value) => {
+  const response = await start(updateId, {}, gatewayKey, async (_config, actualChat, _bot, _update, value) => {
     expect(actualChat).toBe(chat);
     link = value;
   });
@@ -69,17 +69,19 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     try {
       const outbound = { ...config, gatewayUrl: 'https://gateway.example.invalid',
         gatewaySecret: 'gateway-outbound-key-with-thirty-two-chars' };
-      await sendPrivateLink(outbound, chat, '5000', 'https://control.example.invalid/link');
+      await sendPrivateLink(outbound, chat, bot, '5000', 'https://control.example.invalid/link');
       const actual = sent as Request | null;
       expect(actual?.url).toBe('https://gateway.example.invalid/deliver');
       expect(actual?.headers.get('authorization')).toBe(`Bearer ${outbound.gatewaySecret}`);
-      expect(await actual?.json()).toMatchObject({ channel: 'telegram', destinationId: chat,
+      const sentBody = await actual?.json() as Record<string, unknown>;
+      expect(sentBody).toMatchObject({ channel: 'telegram', destinationId: chat,
         message: { kind: 'text' } });
+      expect(sentBody.deliveryId).toMatch(/^login-[a-f0-9]{64}$/);
       expect(stub.mock.calls[0]?.[1]?.redirect).toBe('manual');
       stub.mockResolvedValueOnce(Response.json({}, { status: 200 }));
-      await expect(sendPrivateLink(outbound, chat, '5001', 'https://control.example.invalid/link'))
+      await expect(sendPrivateLink(outbound, chat, bot, '5001', 'https://control.example.invalid/link'))
         .rejects.toThrow('gateway unavailable');
-      await expect(sendPrivateLink({ ...outbound, gatewayUrl: 'http://gateway.example.invalid' }, chat, '5002', 'x'))
+      await expect(sendPrivateLink({ ...outbound, gatewayUrl: 'http://gateway.example.invalid' }, chat, bot, '5002', 'x'))
         .rejects.toThrow('gateway unavailable');
     } finally { vi.unstubAllGlobals(); }
   });

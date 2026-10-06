@@ -87,18 +87,19 @@ async function currentBinding(db: D1Database, botId: string, telegramUserId: str
     WHERE bot_id = ? AND telegram_user_id = ?`).bind(botId, telegramUserId).first<Binding>();
 }
 
-export type SendPrivateLink = (config: TelegramBootstrapConfig, chatId: number, updateId: string,
+export type SendPrivateLink = (config: TelegramBootstrapConfig, chatId: number, botId: string, updateId: string,
   link: string) => Promise<void>;
 
 /** Uses the existing authenticated gateway /deliver seam, never a synthetic success adapter. */
-export const sendPrivateLink: SendPrivateLink = async (config, chatId, updateId, link) => {
+export const sendPrivateLink: SendPrivateLink = async (config, chatId, botId, updateId, link) => {
   if (!config.gatewayUrl || !config.gatewaySecret || config.gatewaySecret.length < 32) throw new Error('gateway unavailable');
   const base = new URL(config.gatewayUrl);
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error('gateway unavailable');
   const target = new URL('deliver', `${base.href.replace(/\/$/, '')}/`);
+  const deliveryId = `login-${await hash(`${botId}:${updateId}`)}`;
   const response = await fetch(target, { method: 'POST', redirect: 'manual',
     headers: { authorization: `Bearer ${config.gatewaySecret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ deliveryId: `login-${updateId}`, channel: 'telegram', destinationId: chatId,
+    body: JSON.stringify({ deliveryId, channel: 'telegram', destinationId: chatId,
       message: { kind: 'text', text: `Открыть веб-приложение: ${link}` } }),
     signal: AbortSignal.timeout(10_000),
   });
@@ -142,7 +143,7 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
       .bind(await hash(code), botId, updateId, userId, binding.principal_id, binding.profile_id, now, now + CODE_AGE).run();
     if (inserted.meta.changes !== 1) return json(202, { accepted: true, duplicate: true });
     const link = `${base}/v1/connected-app-bootstrap/telegram?c=${code}`;
-    try { await send(config, chatId, updateId, link); }
+    try { await send(config, chatId, botId, updateId, link); }
     catch {
       await db.prepare(`UPDATE connected_app_telegram_challenges SET invalidated_at = ? WHERE code_hash = ?`)
         .bind(now, await hash(code)).run();
