@@ -9,6 +9,10 @@
     {
       "binding": "COMMUNICATION_SERVICE",
       "service": "trained-assist-communication-v1-sandbox"
+    },
+    {
+      "binding": "INGRESS_BUFFER",
+      "service": "trained-assist-ingress-buffer-sandbox"
     }
   ],
   "d1_databases": [
