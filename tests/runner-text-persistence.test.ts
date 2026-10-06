@@ -13,10 +13,10 @@ describe('text-only native persistence contract', () => {
     { persistence: 'not_required', declared: false, refs: false, ok: true },
     { persistence: 'not_required', declared: true, refs: false, ok: false },
     { persistence: 'not_required', declared: false, refs: true, ok: false },
-    { persistence: 'pending', declared: false, refs: false, ok: false },
+    { persistence: 'pending', declared: false, refs: false, ok: true, finalPersistence: 'persisted' },
     { persistence: 'failed', declared: false, refs: false, ok: false },
     { persistence: 'persisted', declared: true, refs: true, ok: true },
-  ] as const)('$persistence with declared=$declared refs=$refs yields success=$ok', async ({ persistence, declared, refs, ok }) => {
+  ] as const)('$persistence with declared=$declared refs=$refs yields success=$ok', async ({ persistence, declared, refs, ok, finalPersistence = persistence }) => {
     const store = new TaskStore(env.DB);
     const taskId = `ut-text-persistence-${++sequence}`;
     const runId = `run_40085128-f369-4dea-a3e2-${String(sequence).padStart(12, '0')}`;
@@ -24,6 +24,7 @@ describe('text-only native persistence contract', () => {
     await store.admitTask({ id: taskId, profileId, goal: 'Return exactly the fixture answer without creating files' });
     const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
     const submit = vi.fn();
+    let resultCalls = 0;
     const fetchImpl: typeof fetch = async (input, init) => {
       const path = new URL(String(input)).pathname;
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-key');
@@ -35,10 +36,14 @@ describe('text-only native persistence contract', () => {
       }
       expect(path.startsWith(`/v1/runs/${runId}/`)).toBe(true);
       if (path.endsWith('/status')) return Response.json({ runId, state: 'succeeded', connectionLost: false, answer: '42 fixture nonce' });
-      if (path.endsWith('/result')) return Response.json({ runId, userTaskId: taskId, profileId, ownerGeneration: 1,
+      if (path.endsWith('/result')) {
+        resultCalls += 1;
+        const resolvedPersistence = persistence === 'pending' && resultCalls > 1 ? 'persisted' : persistence;
+        return Response.json({ runId, userTaskId: taskId, profileId, ownerGeneration: 1,
         outcome: 'succeeded', exitReason: 'completed', exitCode: 0, exitSignal: null, exitObserved: true,
         startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), usage: { status: 'unknown' },
-        persistence, outputRefs: refs ? ['outputs/required.csv'] : [], cleanup: 'completed', logPath: 'fixture-log' });
+        persistence: resolvedPersistence, outputRefs: refs ? ['outputs/required.csv'] : [], cleanup: 'completed', logPath: 'fixture-log' });
+      }
       if (path.endsWith('/events')) return Response.json({ events: [], cursor: 0, hasMore: false });
       if (path.endsWith('/artifacts')) return Response.json({ artifacts: [] });
       throw new Error('Unexpected fixture endpoint');
@@ -55,7 +60,7 @@ describe('text-only native persistence contract', () => {
         cache.set(name, structuredClone(value));
         return value;
       },
-      sleep: async () => { throw new Error('Unexpected reconciliation sleep'); },
+      sleep: async () => {},
       waitFor: async () => { throw new Error('Unexpected awaiting'); },
     };
     const params = { taskId, profileId, generation: 1, runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run' };
@@ -70,7 +75,7 @@ describe('text-only native persistence contract', () => {
     const task = await store.requireTask(taskId);
     expect(task).toMatchObject({ status: ok ? 'done' : 'failed', generation: 1 });
     const result = JSON.parse(task.result_json!);
-    expect(result.persistence).toBe(persistence);
+    expect(result.persistence).toBe(finalPersistence);
     expect(result.runId).toBe(runId);
     if (ok) expect(result).toMatchObject({ answer: '42 fixture nonce', engineText: { source: 'runner_status_answer' } });
     else expect(result.reason).toBe('export_not_persisted');
@@ -79,6 +84,60 @@ describe('text-only native persistence contract', () => {
     expect(await store.listArtifacts(taskId)).toHaveLength(refs ? 1 : 0);
     expect(await conversationPlan(context, store, params, deps)).toMatchObject({ reason: 'already_terminal' });
     expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it('keeps messy multiline answer and output manifest while persistence moves pending → persisted', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = `ut-messy-persistence-${++sequence}`;
+    const runId = `run_40085128-f369-4dea-a3e2-${String(sequence).padStart(12, '0')}`;
+    const profileId = 'integration-telegram-ux-v1';
+    const messyAnswer = 'Итог:\n\t• сумма — 1 234,50 ₽\n\nCSV: "a,b",\t42\nUnicode: 東京 🧪';
+    const expectedArtifact = { ref: 'artifact-output-7', name: 'summary.csv', mime: 'text/csv', size: 42, sha256: 'a'.repeat(64) };
+    await store.admitTask({ id: taskId, profileId, goal: 'Сформируй отчёт и сохрани CSV' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    let resultCalls = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-key');
+      if (path === '/v1/runs') return Response.json({ requestId: 'fixture-request', userTaskId: taskId, runId, deduplicated: false });
+      expect(path.startsWith(`/v1/runs/${runId}/`)).toBe(true);
+      if (path.endsWith('/status')) return Response.json({ runId, state: 'succeeded', connectionLost: false, answer: messyAnswer });
+      if (path.endsWith('/result')) {
+        resultCalls += 1;
+        return Response.json({ runId, userTaskId: taskId, profileId, ownerGeneration: 1,
+          outcome: 'succeeded', exitReason: 'completed', exitCode: 0, exitSignal: null, exitObserved: true,
+          startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), usage: { status: 'unknown' },
+          persistence: resultCalls === 1 ? 'pending' : 'persisted', persistenceReason: 'object store confirmation pending',
+          outputRefs: [expectedArtifact.ref], cleanup: 'pending', logPath: 'fixture-log', text: messyAnswer });
+      }
+      if (path.endsWith('/events')) return Response.json({ events: [], cursor: 0, hasMore: false });
+      if (path.endsWith('/artifacts')) return Response.json({ artifacts: [expectedArtifact] });
+      throw new Error(`Unexpected fixture endpoint: ${path}`);
+    };
+    const adapter = new RunnerApiAdapter('https://runner.example.test', 'fixture-key', fetchImpl);
+    const context: StepCtx = {
+      step: async (_name, callback) => callback({ attempt: 1 }),
+      sleep: async () => {},
+      waitFor: async () => { throw new Error('Unexpected awaiting'); },
+    };
+    const params = { taskId, profileId, generation: 1, runId: attempt.id,
+      runnerEngine: 'dynamic-ip-azure-agent-run', runnerPersistencePollSec: 0 };
+    const deps = { adapter, runSpecPolicy: { ...defaultRunSpecPolicy(), outputs: [{ path: 'outputs/summary.csv' }] } };
+
+    expect((await conversationPlan(context, store, params, deps)).ok).toBe(true);
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('done');
+    const result = JSON.parse(task.result_json!);
+    expect(result.answer).toBe(messyAnswer);
+    expect(result.persistence).toBe('persisted');
+    expect(result.artifacts).toContainEqual({ ref: expectedArtifact.ref, name: expectedArtifact.name,
+      mime: expectedArtifact.mime, sizeBytes: expectedArtifact.size, sha256: expectedArtifact.sha256 });
+    expect(await store.listArtifacts(taskId)).toMatchObject([
+      { artifact_ref: expectedArtifact.ref, size_bytes: expectedArtifact.size, checksum: `sha256:${expectedArtifact.sha256}` },
+    ]);
+    expect(resultCalls).toBe(2);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+    expect(await store.requireRun(attempt.id)).toMatchObject({ session_id: runId, generation: 1, status: 'success' });
   });
 
   it('cached historical submit receipts without frozen output expectations fail closed', async () => {

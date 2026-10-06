@@ -86,6 +86,8 @@ export interface PlanParams {
   executionContext?: ExecutionContextManifest | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
+  /** Periodic same-run reconciliation while Runner is saving captured outputs. */
+  runnerPersistencePollSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
   runnerEngine?: string;
 }
@@ -319,6 +321,7 @@ export interface EngineRun {
   /** Манифесты выходов (ссылка + размер + sha256), а не голые строки ссылок. */
   artifacts: TaskArtifactManifest[];
   persistence: string;
+  persistenceReason?: string | null;
   exitReason: string;
   runId: string;
   ownerGeneration: number;
@@ -755,10 +758,49 @@ export async function conversationPlan(
       answerSource: outcome.answer?.answerSource ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
+      persistenceReason: runnerResult.persistenceReason ?? null,
       exitReason: runnerResult.exitReason,
       runId: runnerResult.runId,
       ownerGeneration: runnerResult.ownerGeneration,
     };
+  }
+
+  if (adapter && engine?.persistence === 'pending') {
+    // Deliver the captured engine answer immediately as a durable output event.
+    // The task remains non-terminal until Runner confirms custody; retries only
+    // inspect this accepted run and never submit a replacement engine attempt.
+    await ctx.step('publish-engine-answer', () => store.commit(taskId, generation, {
+      kind: 'result_ready', source: 'output', executionId: engine!.runId,
+      payload: { runId: engine!.runId, answer: engine!.text, outcome: engine!.ok ? 'succeeded' : 'failed',
+        persistence: 'pending', persistenceStatus: 'saving', reason: 'engine completed; data save is continuing' },
+    }));
+    let observation = 0;
+    for (;;) {
+      await ctx.sleep(`persistence-backoff-${observation}`, p.runnerPersistencePollSec ?? 10);
+      const persistence = await ctx.step(`runner-persistence-${observation}`, () => adapter!.result(engine!.runId),
+        { limit: 4, delaySec: 2, timeoutSec: 30 });
+      observation += 1;
+      if (persistence.persistence === 'pending') continue;
+      engine.persistence = persistence.persistence;
+      engine.persistenceReason = persistence.persistenceReason ?? null;
+      if (persistence.persistence === 'persisted') {
+        const manifests = await ctx.step(`runner-artifacts-final-${observation}`, () => adapter!.artifacts(engine!.runId),
+          { limit: 4, delaySec: 2, timeoutSec: 30 });
+        engine.artifacts = manifests.map(manifest => ({ ref: manifest.ref, name: manifest.name ?? null,
+          mime: manifest.mime ?? null, sizeBytes: manifest.size ?? null, sha256: manifest.sha256 ?? null }));
+        for (const artifact of engine.artifacts) await ctx.step(`record-final-artifact-${observation}-${artifact.ref}`, () => store.recordArtifact({
+          taskId, kind: 'file', artifactRef: artifact.ref, sizeBytes: artifact.sizeBytes,
+          checksum: artifact.sha256 ? `sha256:${artifact.sha256}` : null, runId: engine!.runId, generation,
+        }));
+      }
+      await ctx.step(`publish-persistence-${observation}`, () => store.commit(taskId, generation, {
+        kind: 'step_done', source: 'output', executionId: engine!.runId,
+        payload: { runId: engine!.runId, persistence: persistence.persistence,
+          persistenceStatus: persistence.persistence === 'persisted' ? 'saved' : 'failed_attention',
+          persistenceReason: persistence.persistenceReason ?? null, cleanup: persistence.cleanup },
+      }));
+      break;
+    }
   }
 
   return finalizeRun(ctx, store, p, engine, userAnswer);
