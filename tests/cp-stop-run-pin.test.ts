@@ -69,6 +69,7 @@ describe('immutable stop execution pins', () => {
     if (!resolved.ok) throw new Error('null run fixture failed');
     await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
       .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+
     const submission = () => current.store.logEvent({ taskId: current.taskId, kind: 'progress', source: 'executor', generation: 1,
       payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey: resolved.targets[0]!.attempts[0]!.idempotencyKey } });
     if (state === 'submitted') await submission();
@@ -83,6 +84,32 @@ describe('immutable stop execution pins', () => {
     current.status.mockResolvedValue({ status: 'complete' });
     const service = new CpStopTargetsService(current.store, current.port);
     expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: state === 'finished' });
+    expect(current.stop).not.toHaveBeenCalled();
+  });
+
+  it('accepts an exact durable pre-admission rejection as no native run during stop reconciliation', async () => {
+    const current = await fixture();
+    current.status.mockResolvedValue({ status: 'errored' });
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const targetAttempt = current.target.attempts[0]!;
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey: targetAttempt.idempotencyKey } });
+    await current.store.finishRun(current.attempt.id, 'failed', { errorClass: 'runner_rejected', errorText: 'INVALID_REQUEST' });
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', executionId: current.attempt.id,
+      source: 'executor', payload: { event: 'runner_submit_rejected', attemptId: current.attempt.id,
+        idempotencyKey: targetAttempt.idempotencyKey } });
+    await current.store.commit(current.taskId, 1, { status: 'failed' });
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('rejected attempt target resolution failed');
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+
+    expect(await current.store.runnerSubmitMayHaveStarted(current.taskId, current.attempt.id)).toBe(false);
+    expect(await current.store.cpStopTargetMatches(resolved.targets[0]!, current.snapshotId, 1)).toBe(true);
+
+    const service = new CpStopTargetsService(current.store, current.port);
+    expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: true, unresolved: false });
     expect(current.stop).not.toHaveBeenCalled();
   });
 

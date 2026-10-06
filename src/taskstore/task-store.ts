@@ -1445,12 +1445,16 @@ export class TaskStore {
       `SELECT payload_json FROM task_events WHERE user_task_id = ? AND kind = 'progress'
        AND source = 'executor' ORDER BY id`,
     ).bind(taskId).all<{ payload_json: string }>();
-    return events.results.some((event) => {
+    let started = false;
+    for (const event of events.results) {
       try {
         const payload = JSON.parse(event.payload_json) as { event?: string; attemptId?: string | null };
-        return payload.event === 'runner_submit_started' && payload.attemptId === attemptId;
-      } catch { return false; }
-    });
+        if (payload.attemptId !== attemptId) continue;
+        if (payload.event === 'runner_submit_started') started = true;
+        if (payload.event === 'runner_submit_rejected') started = false;
+      } catch { /* Ignore unrelated or malformed progress payloads. */ }
+    }
+    return started;
   }
 
   // ----------------------------------------------------------- переходы
@@ -2682,7 +2686,13 @@ export class TaskStore {
                OR (json_type(attempt.value, '$.runId') = 'null' AND EXISTS (
                  SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
                    AND json_extract(submission.payload, '$.event') = 'runner_submit_started'
-                   AND json_extract(submission.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')))
+                   AND json_extract(submission.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+                   AND NOT EXISTS (SELECT 1 FROM events AS rejection WHERE rejection.user_task_id = task.id
+                     AND rejection.kind = 'progress' AND rejection.source = 'executor'
+                     AND rejection.generation = json_extract(attempt.value, '$.ownerGeneration')
+                     AND json_extract(rejection.payload, '$.event') = 'runner_submit_rejected'
+                     AND json_extract(rejection.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+                     AND json_extract(rejection.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey'))))
                OR NOT EXISTS (SELECT 1 FROM executions AS execution
                  WHERE execution.task_id = task.id AND execution.id = json_extract(attempt.value, '$.attemptId')
                    AND execution.generation = json_extract(attempt.value, '$.ownerGeneration')
@@ -2704,6 +2714,12 @@ export class TaskStore {
            AND NOT EXISTS (SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
              AND submission.kind = 'progress' AND submission.source = 'executor'
              AND json_extract(submission.payload, '$.event') = 'runner_submit_started'
+             AND NOT EXISTS (SELECT 1 FROM events AS rejection WHERE rejection.user_task_id = task.id
+               AND rejection.kind = 'progress' AND rejection.source = 'executor'
+               AND rejection.generation = submission.generation
+               AND json_extract(rejection.payload, '$.event') = 'runner_submit_rejected'
+               AND json_extract(rejection.payload, '$.attemptId') = json_extract(submission.payload, '$.attemptId')
+               AND json_extract(rejection.payload, '$.idempotencyKey') = json_extract(submission.payload, '$.idempotencyKey'))
              AND NOT EXISTS (SELECT 1 FROM json_each(task.attempts) AS attempt
                WHERE json_extract(submission.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
                  AND submission.generation = json_extract(attempt.value, '$.ownerGeneration')
