@@ -1,8 +1,10 @@
 # Test MCP discovery contract for Telegram UX v1
 
-Status: offline source contract, not a provisioned or live integration. The only
-profile in scope is `integration-telegram-ux-v1`; the only capability exposed to
-the agent is `registry.fixture_read`.
+Status: test-only CP wiring is implemented, but the Host Worker returns `503`
+until its token, public Runner JWK, and expiry are configured. No live discovery,
+Runner invocation, or fixture read is claimed yet. The only profile in scope is
+`integration-telegram-ux-v1`; the only capability exposed to the agent is
+`registry.fixture_read`.
 
 ## Discovery before Runner submit
 
@@ -10,8 +12,10 @@ CP discovers the host catalogue after task admission and before Runner submit.
 Discovery authorization is separate from invocation authorization and is scoped
 to the authenticated test principal, `integration-telegram-ux-v1`, and the
 single method `tools/list`. The discovery request has no `runId`; CP does not
-reserve one, fabricate one, or use a probe ID. Discovery credentials carry only
-the `mcp:discover` scope. If transport temporarily uses a shared Bearer, Host
+reserve one, fabricate one, or use a probe ID. CP's test transport is pinned to
+`https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp`; its
+`MCP_TEST_AUTH_TOKEN` secret is sent only on bounded, redirect-refusing
+`tools/list` requests. Discovery credentials carry only the `mcp:discover` scope. If transport temporarily uses a shared Bearer, Host
 must still reject invocation unless it validates the actual Runner-created
 `runId` against that run's binding.
 
@@ -22,7 +26,7 @@ allowlist, catalogue and policy versions, registry digest, audience, and
 expiry. Host verifies the Runner signature and exact match to invocation
 headers and its pinned fixture policy. A valid-looking `runId` or static Bearer
 without this proof is insufficient. The Runner private key and Host public JWK
-are operator provisioned in the later trusted-store stage; this CP session
+are operator provisioned in their respective trusted stores; this CP change
 creates neither.
 
 The catalogue adapter may paginate `tools/list`, but it exposes only the
@@ -73,8 +77,9 @@ or broaden the allowlist.
 - **Host:** discovery transport and separate discovery/invocation
   authorization.
 - **Runner:** dynamic binding resolver after a real `runId` exists.
-- **CP:** discovery adapter, trusted-policy composition, Output → RunSpec
-  descriptor handoff.
+- **CP:** pinned discovery adapter, trusted profile-policy composition, Output
+  → RunSpec descriptor handoff. Runtime activation requires the exact profile
+  override plus `MCP_TEST_AUTH_TOKEN` in the sandbox Worker secret store.
 
 ### Runtime ownership: do not infer a GCP VM
 
@@ -93,8 +98,9 @@ credentials and runtime readiness.
 
 ## Offline boundary
 
-Tests inject catalogue and Runner fixtures. They prove request shape, policy
-checks, descriptor handoff, and no CP-side `tools/call`; they do not prove Host
-stores, deployed credentials, Runner dynamic resolution, or live tool execution.
-This CP session creates no secrets and deploys nothing. Trusted-store setup and
-the live fixture read require the separately agreed Host/Runner stage.
+Tests inject catalogue and Runner fixtures and mock the pinned Host fetch. They
+prove request shape, bounded discovery policy, descriptor handoff, and no CP-side
+`tools/call`; they do not prove Host stores, deployed credentials, Runner dynamic
+resolution, or live tool execution. This change creates no secrets and deploys
+nothing. Trusted-store setup and a live fixture read remain required acceptance
+steps.

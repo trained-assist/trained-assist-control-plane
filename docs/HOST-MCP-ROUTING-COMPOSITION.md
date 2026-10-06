@@ -1,6 +1,6 @@
-# Inactive host MCP routing composition
+# Test-gated host MCP routing composition
 
-This source-only composition builds on PR57's unchanged metadata adapter. The production Worker does not inject host MCP dependencies. No environment flag, request field or model output can provision a resolver or enable this path. The injected `hostMcp.enabled` gate is exercised only by offline tests; no deployed configuration is changed. The test-profile discovery, descriptor and ownership contract is [MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
+This integration is available only to `integration-telegram-ux-v1`, principal `integration-telegram-ux-v1`, and the single `registry.fixture_read` tool. CP runtime wiring is present behind the trusted profile override `hostMcpBinding: registry-mcp-test-160-read` and secret `MCP_TEST_AUTH_TOKEN`; no request field or model output can enable it. The test Worker remains unavailable until that secret and Host/Runner key material are provisioned. The discovery, descriptor and ownership contract is [MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
 
 ## Routing contract
 
@@ -14,14 +14,14 @@ The existing accepted-task Output and Workflow/Runner paths retain execution own
 
 ## Provisioning still required
 
-The approved discovery transport must enforce authentication, bounded reads, deadlines and redirect refusal. It must attest the profile binding, complete grants and registry/instruction revision. The CP must never receive a root credential capable of minting arbitrary profiles, guess a host endpoint or infer grants from user/model text. Shared Bearer transport, if required, does not authorize invocation; Host additionally checks the actual Runner-created run binding.
+The discovery transport is pinned to the test Worker's exact HTTPS URL, sends only `tools/list`, bounds the body, rejects redirects, and scopes the request to the accepted task/profile/principal/generation. Its test Bearer cannot provision arbitrary profiles or grants. Shared Bearer transport does not authorize invocation; Host additionally checks the actual Runner-created run binding.
 
-Runtime wiring also needs an approved host execution-policy provider shared consistently with TaskWorkflow's existing profile runtime resolution. The generic text profile currently has MCP disabled; this patch does not broaden it. Both routing-time and pre-dispatch validation must use that provider, and the existing Runner must resolve and enforce the scoped binding. `allowedTools` metadata alone is not enforcement. No provider credentials, activation or readiness evidence are added here.
+The trusted profile runtime supplies the same fixed one-tool descriptor to routing-time validation and Workflow RunSpec construction. Without the exact override and test Bearer, MCP remains disabled or configuration fails closed. The existing Runner must still resolve and enforce the scoped binding; `allowedTools` metadata alone is not enforcement. No secrets or activation are included in this source change.
 
 `tools/list` retrieves metadata internally because that is the existing registry protocol. Descriptions are withheld from classification and only the selected metadata is projected after selection; no separate instruction-fetch API is invented.
 
 ## Offline validation
 
-Run `npm run typecheck`, `npm test -- tests/host-mcp-composition.test.ts tests/mcp-catalogue-boundary.test.ts tests/communication-v1.test.ts`, then `npm run check`. All discovery and Runner requests in the new composition tests are injected fixtures, not provider calls.
+Run `npm run typecheck`, `npm test -- tests/registry-test-mcp.test.ts tests/profile-runtime.test.ts tests/host-mcp-composition.test.ts tests/mcp-catalogue-boundary.test.ts tests/communication-v1.test.ts`, then `npm run check`. The discovery transport test uses a mocked fetch; it is not live readiness evidence.
 
-Validation on the isolated composition branch before the discovery follow-up: 74 focused tests, 561 full tests across 46 files, typecheck, evidence sanitization and Wrangler dry bundle passed. The discovery follow-up adds source-only checks; no runtime gate is enabled, and no deployment or live MCP request is made.
+Validation before this runtime wiring: 74 focused tests, 561 full tests across 46 files, typecheck, evidence sanitization and Wrangler dry bundle passed. Live readiness still requires secrets, Runner support and a deployed test Worker; no deployment is claimed by this PR.

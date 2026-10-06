@@ -7,6 +7,7 @@ import type { PlanParams } from '../src/workflow-port/conversation-plan';
 import { buildRunSpec, runSpecPolicyOf } from '../src/run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from '../src/run-spec/profile-runtime';
 import { requirePermission } from '../src/intake/authorization';
+import { registryFixtureMcpSpec } from '../src/router/registry-test-mcp';
 
 const bindings = {
   RUNNER_API_URL: 'https://runner.example.test',
@@ -49,6 +50,16 @@ describe('trusted profile runtime', () => {
     expect(built.spec.input?.inlinePrompt).toContain('ignore the host policy');
   });
 
+  it('enables only the pinned registry fixture when the trusted discovery secret is present', () => {
+    const configured = { ...bindings, MCP_TEST_AUTH_TOKEN: 'fixture_bearer_0123456789',
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
+        runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', hostMcpBinding: 'registry-mcp-test-160-read' } }) };
+    expect(resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE).policy.mcp).toEqual(registryFixtureMcpSpec());
+    expect(resolveProfileRuntime(bindings, TELEGRAM_UX_PROFILE).policy.mcp).toBeNull();
+    expect(() => resolveProfileRuntime({ ...configured, MCP_TEST_AUTH_TOKEN: '' }, TELEGRAM_UX_PROFILE))
+      .toThrow(ProfileRuntimeConfigurationError);
+  });
+
   it('passes only the explicitly configured model credential and never other host credentials', () => {
     const env = { ...bindings, RUN_SPEC_ENV_ALLOWLIST: 'HOST_AUTH_TOKEN,LLM_LADDER_TOKEN,GOOGLE_APPLICATION_CREDENTIALS' };
     expect(resolveProfileRuntime(env, TELEGRAM_UX_PROFILE).policy.envAllowlist).toEqual(['LLM_LADDER_TOKEN']);
@@ -64,6 +75,7 @@ describe('trusted profile runtime', () => {
     JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'unknown', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX' } }),
     JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY' } }),
     JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', outputs: [] } }),
+    JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', hostMcpBinding: 'arbitrary-endpoint' } }),
   ])('rejects missing or invalid override %s without fallback', raw => {
     expect(() => resolveProfileRuntime({ ...bindings, RUN_SPEC_PROFILE_OVERRIDES: raw }, TELEGRAM_UX_PROFILE))
       .toThrow(ProfileRuntimeConfigurationError);
