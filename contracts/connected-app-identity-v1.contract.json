@@ -21,6 +21,16 @@
     "inactiveResponse": { "active": false },
     "invalidation": ["token_revoked", "session_revoked", "profile_switched", "principal_disabled", "scope_removed", "audience_changed", "expired"]
   },
+  "agentProfileAuthority": {
+    "urn": "urn:trained-assist:agent-profile-context:v1",
+    "version": 1,
+    "owner": "trained-assist-agent",
+    "sourceRevision": "4a60c2e4c45eca9de1b84bba55e38bb83e1478c8",
+    "sourcePath": "contracts/agent-profile-context-v1/contract.json",
+    "contextSchemaPath": "contracts/agent-profile-context-v1/profile-context.schema.json",
+    "contextFields": ["principalId", "profileId", "sessionId", "profileGeneration"],
+    "runtimeStatus": "not_wired"
+  },
   "audiences": {
     "recruiting-web": ["recruiting.responses.read", "recruiting.responses.conversation.open", "recruiting.reports.read", "recruiting.reports.create", "recruiting.reports.review", "recruiting.assignment.review", "recruiting.candidateSearch"],
     "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read", "crm.deals.create"]

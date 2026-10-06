@@ -1,0 +1,9 @@
+{
+  "repository": "trained-assist/trained-assist-agent",
+  "revision": "4a60c2e4c45eca9de1b84bba55e38bb83e1478c8",
+  "contractPath": "contracts/agent-profile-context-v1/contract.json",
+  "artifacts": {
+    "contract.json": "d1e9e0644fe65faec8eed668ba4ccf897245fa76e80a6d77d3434341418a248d",
+    "profile-context.schema.json": "06f23e683ed2cb8c862a26a70aa973160cc2c545d93542c42265ce1ceef51591"
+  }
+}

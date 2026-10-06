@@ -31,6 +31,8 @@ jobs:
       # файловые операции в workerd-пуле vitest запрещены.
       - name: Connected App approval contract self-check
         run: node tools/connected-app-approval-contract-check.mjs
+      - name: Agent Profile Context contract pin
+        run: node tools/agent-profile-context-contract-check.mjs
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
       - name: Read-only credential boundary verifier
