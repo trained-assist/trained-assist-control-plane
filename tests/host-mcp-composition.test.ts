@@ -12,7 +12,7 @@ import type { HostMcpRoutingDeps } from '../src/router/host-mcp-routing';
 import { deriveAuthorization } from '../src/router/authorization';
 import { routeRequest } from '../src/router/service';
 import type { RoutingInput } from '../src/router/router-types';
-import { dispatchAcceptedAgent, persistMcpTaskBlock } from '../src/output/communication-v1';
+import { dispatchAcceptedAgent } from '../src/output/communication-v1';
 import { signPrincipal } from '../src/auth/principal-auth';
 import worker from '../src/index';
 import { registryMcpTest160Descriptor as runnerDescriptorFixture } from './fixtures/registry-mcp-test-160-descriptor';
@@ -202,7 +202,7 @@ describe('inactive host MCP routing composition', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it('revalidates the catalogue after model selection and preserves non-drift discovery errors', async () => {
+  it('keeps policy drift blocked but routes without MCP after discovery failure', async () => {
     const current = await fixture();
     const drifted = await routeRequest(current.input, { communicationV1: { select: async () => {
       current.changeCatalogue();
@@ -213,9 +213,13 @@ describe('inactive host MCP routing composition', () => {
 
     const unavailable = await fixture();
     unavailable.hostMcp.catalogue = new McpCatalogueAdapter(async () => { throw new McpCatalogueError('discovery_unavailable'); });
-    const fallback = await routeRequest(unavailable.input, { communicationV1: { select: async () => ({ user_goal: '', decision: 'agent' }),
+    const fallback = await routeRequest(unavailable.input, { communicationV1: { namesOnly: true, select: async () => ({ user_goal: '', decision: 'agent' }),
       health: unavailable.health, hostMcp: unavailable.hostMcp } });
-    expect(fallback.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_BINDING_UNAVAILABLE', providerCode: 'binding_unavailable' });
+    expect(fallback).toMatchObject({ mcpRefusalCode: 'binding_unavailable', decision: {
+      outcome: 'dispatched', needsExecutor: true, degraded: true, reasonCode: 'COMMUNICATION_FALLBACK',
+      providerCode: 'binding_unavailable',
+    } });
+    expect(fallback.mcpInstruction).toBeUndefined();
   });
 
   it.each(['policy-drift', 'discovery-failure'] as const)(
@@ -291,16 +295,42 @@ describe('inactive host MCP routing composition', () => {
     expect(routed.mcpInstruction).toBeUndefined();
   });
 
-  it('preserves discovery/network refusal instead of relabeling it as policy drift', async () => {
+  it('keeps agent routing available without MCP when discovery is unavailable', async () => {
     const current = await fixture();
     current.rpc.mockRejectedValue(new Error('fixture network failure'));
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
+    const select = vi.fn(async (_request: Record<string, unknown>) => ({ user_goal: 'original request', decision: 'agent' }));
+    const routed = await routeRequest(current.input, { communicationV1: { namesOnly: true, select,
       health: current.health, hostMcp: current.hostMcp } });
+    expect(select.mock.calls[0]?.[0].decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
     expect(routed).toMatchObject({ mcpRefusalCode: 'discovery_unavailable', decision: {
-      outcome: 'blocked', reasonCode: 'MCP_DISCOVERY_UNAVAILABLE', providerCode: 'discovery_unavailable' }, continuation: null });
-    await persistMcpTaskBlock(current.store, await current.store.requireTask(current.taskId), routed.mcpRefusalCode!);
-    expect(await current.store.requireTask(current.taskId)).toMatchObject({ status: 'blocked', blocker_reason: 'discovery_unavailable' });
+      route: 'agent', outcome: 'dispatched', needsExecutor: true, degraded: true, providerCode: 'discovery_unavailable',
+      schemaOutcome: 'valid',
+      degradedNotice: { text: 'Каталог MCP недоступен; задача передана агенту без MCP-инструментов.' },
+    } });
+    expect(routed.mcpInstruction).toBeUndefined();
+    const submit = vi.fn(async (_input: Record<string, unknown>) => ({ runId: `run_${crypto.randomUUID()}`, generation: 1 }));
+    const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
+      await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
+    expect(outcome.issued).toBe(true);
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0]?.[0].mcpDescriptor).toBeUndefined();
     expect(await current.store.listRuns(current.taskId)).toHaveLength(0);
+  });
+
+  it('keeps built-in handlers available when MCP discovery returns unauthorized', async () => {
+    const current = await fixture();
+    current.rpc.mockImplementation(async message => ({ jsonrpc: '2.0', id: message.id,
+      error: { code: -32001, message: 'Unauthorized' } } as never));
+    const select = vi.fn(async (_request: Record<string, unknown>) => ({ user_goal: 'Проверь, работает ли сервис', decision: 'system_health' }));
+    const routed = await routeRequest(current.input, { communicationV1: { namesOnly: true, select, health: current.health, hostMcp: current.hostMcp } });
+    expect(select.mock.calls[0]?.[0].decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
+    expect(routed).toMatchObject({ mcpRefusalCode: 'discovery_authorization_failed', decision: {
+      route: 'deterministic', outcome: 'reply', capabilityId: 'system_health', degraded: true,
+      providerCode: 'discovery_authorization_failed',
+      degradedNotice: { text: 'Каталог MCP недоступен; выполнен встроенный маршрут без MCP-инструментов.' },
+    } });
+    expect(routed.mcpInstruction).toBeUndefined();
+    expect(routed.continuation).toBeNull();
   });
 
   it.each([1, 256])('keeps all %i actual names without synthetic options or trimming', async count => {
