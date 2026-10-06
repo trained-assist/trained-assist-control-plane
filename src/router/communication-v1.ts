@@ -91,6 +91,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   let selected = 'agent';
   let agentGoalSummary: string | null = null;
   let failure: string | null = null;
+  let selectionFailure = false;
   let calls = 0;
   let mcpInstruction: SelectedMcpInstruction | undefined;
   let blockDispatch = false;
@@ -103,9 +104,20 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     if (hostMcp) {
       scope = { taskId: input.envelope.userTaskId, profileId: input.envelope.profileId,
         principalId: input.envelope.principalId, generation: input.envelope.generation ?? 0 };
-      const state = await hostMcp.readExecutionState();
-      if (!sameMcpScope(state.scope, scope)) throw new McpCatalogueError('execution_scope_changed');
-      snapshot = await hostMcp.catalogue.discover(scope);
+      let state: Awaited<ReturnType<HostMcpRoutingDeps['readExecutionState']>> | undefined;
+      try { state = await hostMcp.readExecutionState(); }
+      catch (error) {
+        failure = error instanceof McpCatalogueError ? error.code : 'execution_state_unavailable';
+        mcpRefusalCode = failure;
+      }
+      if (state) {
+        if (!sameMcpScope(state.scope, scope)) throw new McpCatalogueError('execution_scope_changed');
+        try { snapshot = await hostMcp.catalogue.discover(scope); }
+        catch (error) {
+          failure = error instanceof McpCatalogueError ? error.code : 'discovery_unavailable';
+          mcpRefusalCode = failure;
+        }
+      }
     }
     calls = 1;
     const result = await deps.select({
@@ -148,6 +160,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     }
     if (input.prepared.attachments.length && selected !== 'agent') throw new SelectorError('attachment_not_covered');
   } catch (error) {
+    selectionFailure = true;
     if (error instanceof McpCatalogueError) {
       blockDispatch = true;
       mcpRefusalCode = requiresMcpRevalidation(error.code) ? 'MCP_REVALIDATION_REQUIRED' : error.code;
@@ -159,7 +172,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   decision.modelCalls = calls;
   decision.usageSource = 'not_recorded';
   decision.modelId = 'communication:resolve_user_intent';
-  decision.schemaOutcome = failure ? 'invalid' : 'valid';
+  decision.schemaOutcome = selectionFailure ? 'invalid' : 'valid';
   decision.semanticOutcome = 'valid';
   decision.providerCode = failure;
   decision.reasonCode = failure ? 'COMMUNICATION_FALLBACK' : 'COMMUNICATION_SELECTED';
@@ -168,7 +181,11 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     ? mcpRefusalCode === 'MCP_REVALIDATION_REQUIRED'
       ? 'Каталог MCP или доверенная политика изменились; требуется повторная проверка. Агент не запущен.'
       : 'Проверка MCP отказала; агент не запущен.'
-    : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
+    : mcpRefusalCode
+      ? selected === 'agent'
+        ? 'Каталог MCP недоступен; задача передана агенту без MCP-инструментов.'
+        : 'Каталог MCP недоступен; выполнен встроенный маршрут без MCP-инструментов.'
+      : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
   let reply: RouteResult['reply'] = null;
   let continuation: RouteResult['continuation'] = null;
   let workOrder: RouteResult['workOrder'] = null;

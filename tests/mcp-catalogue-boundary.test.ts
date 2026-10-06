@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { McpCatalogueAdapter } from '../src/router/mcp-catalogue';
+import { McpCatalogueAdapter, mcpReasonCode } from '../src/router/mcp-catalogue';
 import type { HostMcpCatalogueBinding, McpCatalogueScope } from '../src/router/mcp-catalogue-types';
 
 const scope: McpCatalogueScope = { taskId: 'accepted-task', generation: 1, profileId: 'integration-v1', principalId: 'bound-principal' };
@@ -133,13 +133,24 @@ describe('host-authorized full MCP catalogue boundary', () => {
     expect(server.request).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    { jsonrpc: '2.0', id: 'wrong', result: { tools: [] } },
-    { jsonrpc: '2.0', id: 'wrong', error: { message: 'PRIVATE_PROVIDER_ERROR' } },
-  ])('sanitizes malformed protocol/provider failure without leaking raw errors', async reply => {
+  it('sanitizes malformed protocol responses without leaking raw errors', async () => {
     const server = binding(['web_current_page']);
-    server.request = async () => reply;
+    server.request = async () => ({ jsonrpc: '2.0', id: 'wrong', result: { tools: [] } });
     await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ message: 'discovery_malformed' });
+  });
+
+  it('classifies an MCP authorization error separately from malformed discovery', async () => {
+    const server = binding(['web_current_page']);
+    server.request = async message => ({ jsonrpc: '2.0', id: message.id, error: { code: -32001, message: 'Unauthorized' } });
+    await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ code: 'discovery_authorization_failed' });
+    expect(mcpReasonCode('discovery_authorization_failed')).toBe('MCP_DISCOVERY_INVALID');
+  });
+
+  it('sanitizes other valid MCP protocol errors without leaking provider text', async () => {
+    const server = binding(['web_current_page']);
+    server.request = async message => ({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'PRIVATE_PROVIDER_ERROR' } });
+    await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ code: 'discovery_rejected' });
+    expect(mcpReasonCode('discovery_rejected')).toBe('MCP_DISCOVERY_UNAVAILABLE');
   });
 
   it('sanitizes host credential failure', async () => {
