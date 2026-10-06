@@ -109,6 +109,23 @@ describe('Connected App browser authorization code with PKCE S256', () => {
     expect((await exchange(code)).status).toBe(201);
   });
 
+  it('rejects ambiguous authorization parameters and PKCE downgrade', async () => {
+    const url = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', 'recruiting-web');
+    url.searchParams.set('redirect_uri', redirect);
+    url.searchParams.append('redirect_uri', 'https://evil.example.invalid/callback');
+    url.searchParams.set('scope', 'recruiting.responses.read');
+    url.searchParams.set('state', state);
+    url.searchParams.set('code_challenge', await challenge());
+    url.searchParams.set('code_challenge_method', 'S256');
+    expect((await connectedAppRequest(new Request(url), env.DB, config, {}, resolver(id('duplicate')))).status).toBe(400);
+    url.searchParams.delete('redirect_uri');
+    url.searchParams.set('redirect_uri', redirect);
+    url.searchParams.set('code_challenge_method', 'plain');
+    expect((await connectedAppRequest(new Request(url), env.DB, config, {}, resolver(id('plain')))).status).toBe(400);
+  });
+
   it('rejects a code after profile switch or logout and revokes an issued token', async () => {
     const switchSession = id('switch');
     const beforeSwitch = codeFrom(await authorize(switchSession));

@@ -101,7 +101,10 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     const registeredRedirect = handoffAudience ? redirectOf(config.redirectUris, handoffAudience) : null;
     const state = params?.get('state');
     const challenge = params?.get('code_challenge');
-    if (params?.get('response_type') !== 'code' || params?.get('code_challenge_method') !== 'S256' ||
+    const required = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state',
+      'code_challenge', 'code_challenge_method'];
+    if (!required.every(key => params?.getAll(key).length === 1) ||
+        params?.get('response_type') !== 'code' || params?.get('code_challenge_method') !== 'S256' ||
         !handoffAudience || !requested || !registeredRedirect || params?.get('redirect_uri') !== registeredRedirect ||
         typeof state !== 'string' || state.length < 16 || state.length > 256 ||
         typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return invalid();
