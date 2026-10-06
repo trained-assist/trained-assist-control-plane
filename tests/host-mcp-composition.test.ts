@@ -38,13 +38,13 @@ async function fixture(count = 66, profileId = 'integration-telegram-ux-v1', use
   });
   const catalogue = new McpCatalogueAdapter(async requestedScope => [{ scope: { ...requestedScope },
     discoveryAuthorization: { principalId: requestedScope.principalId, profileId: requestedScope.profileId, scope: 'mcp:discover', methods: ['tools/list'] },
-    url: 'https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp',
+    url: 'https://registry-test.trainedassist.store/mcp',
     serverId: 'trained-assist-registry-test', bindingRef: 'registry-mcp-test-160-read', executionScope: 'registry:fixture-read', policyVersion,
     catalogueVersion: 'registry-fixture-catalogue-v1', catalogueDigest: 'sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d',
     registryDigest: '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9',
     allowedTools: ['registry.fixture_read'], request: rpc }]);
   const mcp = { servers: [{ serverId: 'trained-assist-registry-test', transport: 'remote' as const,
-    url: 'https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp', bindingRef: 'registry-mcp-test-160-read',
+    url: 'https://registry-test.trainedassist.store/mcp', bindingRef: 'registry-mcp-test-160-read',
     scope: 'registry:fixture-read', registryDigest: '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9',
     policyVersion: 'registry-fixture-policy-v1', catalogueVersion: 'registry-fixture-catalogue-v1', allowedTools: [selectedName] }] };
   const state = { scope: { ...scope }, policyVersion, mcp };
@@ -272,7 +272,7 @@ describe('inactive host MCP routing composition', () => {
     const current = await fixture();
     const adapter = new McpCatalogueAdapter(async scope => [{ scope,
       discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/call'] as unknown as ['tools/list'] },
-      url: 'https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp',
+      url: 'https://registry-test.trainedassist.store/mcp',
       serverId: 'trained-assist-registry-test', bindingRef: 'registry-mcp-test-160-read', executionScope: 'registry:fixture-read', policyVersion: 'registry-fixture-policy-v1',
       catalogueVersion: 'registry-fixture-catalogue-v1', catalogueDigest: 'sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d', allowedTools: ['registry.fixture_read'],
       registryDigest: '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9',

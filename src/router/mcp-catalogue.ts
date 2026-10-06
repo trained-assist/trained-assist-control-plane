@@ -10,7 +10,7 @@ const TEST_POLICY = 'registry-fixture-policy-v1';
 const TEST_CATALOGUE = 'registry-fixture-catalogue-v1';
 const TEST_SCOPE = 'registry:fixture-read';
 const TEST_REGISTRY_DIGEST = '129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9';
-const TEST_URL = 'https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp';
+const TEST_URL = 'https://registry-test.trainedassist.store/mcp';
 const TEST_CATALOGUE_DIGEST = 'sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d';
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const reference = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200;
