@@ -33,6 +33,7 @@ import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
+import { connectedAppRequest } from './connected-app/session-service';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -115,6 +116,11 @@ export interface Env {
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
    */
   PRINCIPAL_SECRET?: string;
+  /** Opt-in host/service identity boundary. Bindings only; never browser credentials. */
+  CONNECTED_APP_IDENTITY_ENABLED?: string;
+  CONNECTED_APP_HOST_KEY?: string;
+  CONNECTED_APP_SERVICE_KEYS?: string;
+  CONNECTED_APP_ISSUER?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -1045,6 +1051,14 @@ const store = new TaskStore(env.DB);
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
+      if (url.pathname.startsWith('/v1/connected-app-sessions/')) {
+        return connectedAppRequest(req, env.DB, {
+          enabled: env.CONNECTED_APP_IDENTITY_ENABLED,
+          hostKey: env.CONNECTED_APP_HOST_KEY,
+          serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
+          issuer: env.CONNECTED_APP_ISSUER,
+        }, body);
+      }
       if (url.pathname === '/') {
         return json({
           service: 'trained-assist-control-plane',
