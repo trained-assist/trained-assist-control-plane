@@ -40,7 +40,7 @@ async function membership(profileId: string, scopes = ['recruiting.responses.rea
 }
 async function authorize(sessionId: string, options: { audience?: string; redirectUri?: string; scopes?: string;
   challenge?: string; state?: string; agentAuthority?: AgentProfileAuthority | null; injectedProfile?: string;
-  agentProfile?: string; agentGeneration?: number } = {}) {
+  agentProfile?: string; agentGeneration?: number; grantedScopes?: string[] } = {}) {
   const url = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', options.audience ?? 'recruiting-web');
@@ -50,7 +50,7 @@ async function authorize(sessionId: string, options: { audience?: string; redire
   url.searchParams.set('code_challenge', options.challenge ?? await challenge());
   url.searchParams.set('code_challenge_method', 'S256');
   if (options.injectedProfile) url.searchParams.set('profileId', options.injectedProfile);
-  await membership('profile_demo_001');
+  await membership('profile_demo_001', options.grantedScopes);
   const context = { principalId: 'user_demo_001', profileId: options.agentProfile ?? 'profile_demo_001',
     sessionId, profileGeneration: options.agentGeneration ?? 1 };
   contexts.set(sessionId, context);
@@ -107,6 +107,18 @@ describe('Connected App browser authorization code with PKCE S256', () => {
     const workerResponse = await worker.fetch(new Request(`${issuer}/v1/connected-app-sessions/authorize`, { method: 'GET' }),
       { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, CONNECTED_APP_IDENTITY_ENABLED: 'true' });
     expect(workerResponse.status).toBe(503);
+  });
+
+  it('issues only explicitly granted Recruiting report and assignment scopes', async () => {
+    const scopes = ['recruiting.reports.read', 'recruiting.reports.create',
+      'recruiting.reports.review', 'recruiting.assignment.review'];
+    const code = codeFrom(await authorize(id('workflow-scopes'), {
+      scopes: scopes.join(' '), grantedScopes: scopes,
+    }));
+    const issued = await exchange(code);
+    expect(issued.status).toBe(201);
+    const { token } = await issued.json() as { token: string };
+    expect(await (await introspect(token)).json()).toMatchObject({ active: true, scopes });
   });
 
   it('exchanges once with exact client, redirect, state and PKCE verifier', async () => {

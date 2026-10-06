@@ -22,7 +22,8 @@
     "invalidation": ["token_revoked", "session_revoked", "profile_switched", "principal_disabled", "scope_removed", "audience_changed", "expired"]
   },
   "audiences": {
-    "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.candidateSearch"],
+    "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.reports.create",
+      "recruiting.reports.review", "recruiting.assignment.review", "recruiting.candidateSearch"],
     "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read"]
   },
   "rules": {
