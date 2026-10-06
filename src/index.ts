@@ -118,6 +118,8 @@ export interface Env {
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
    */
   PRINCIPAL_SECRET?: string;
+  /** Dedicated HMAC credential for the isolated Telegram UX test principal. */
+  PRINCIPAL_SECRET_TELEGRAM_UX?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
