@@ -86,7 +86,11 @@ describe('run-spec: сборка по умолчанию', () => {
       ownerGeneration: 1,
     });
     expect(built.spec.input?.refs).toBeUndefined();
-    expect(toSubmitRequest(built.spec).ingressManifest).toEqual(built.spec.ingressManifest);
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 

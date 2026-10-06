@@ -185,7 +185,6 @@ export interface SubmitRequest {
   traceId?: string;
   instructions?: string;
   repository?: RepositorySpec;
-  ingressManifest?: IngressManifestRef;
 }
 
 /**
@@ -215,7 +214,6 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.result) body.result = spec.result;
   if (spec.mcp) body.mcp = spec.mcp;
   if (spec.traceId) body.traceId = spec.traceId;
-  if (spec.ingressManifest) body.ingressManifest = spec.ingressManifest;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
 }
