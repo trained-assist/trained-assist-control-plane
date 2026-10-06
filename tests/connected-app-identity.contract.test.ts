@@ -32,7 +32,12 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.create');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.review');
     expect(contract.audiences['crm-web']).toContain('crm.catalog.read');
+    expect(contract.audiences['crm-web']).toContain('crm.deals.create');
+    expect(contract.rules.writeScopeVocabularyOnly).toBe(true);
+    expect(contract.rules.writeScopeGrantDoesNotImplyHumanApproval).toBe(true);
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });
 
@@ -45,6 +50,8 @@ describe('connected app identity v1 offline contract', () => {
     expect(active).not.toHaveProperty('token');
     expect(active.active && active.scopes.includes('recruiting.reports.read')).toBe(false);
     expect(active.active && active.scopes.includes('recruiting.assignment.review')).toBe(false);
+    expect(active.active && active.scopes.includes('recruiting.reports.create')).toBe(false);
+    expect(active.active && active.scopes.includes('crm.deals.create')).toBe(false);
     s.scopes = ['recruiting.candidateSearch'];
     expect(introspect(s, 'recruiting-web')).toMatchObject({ active: true,
       scopes: ['recruiting.candidateSearch'] });

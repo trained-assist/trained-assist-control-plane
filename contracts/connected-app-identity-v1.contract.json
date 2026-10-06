@@ -22,12 +22,14 @@
     "invalidation": ["token_revoked", "session_revoked", "profile_switched", "principal_disabled", "scope_removed", "audience_changed", "expired"]
   },
   "audiences": {
-    "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.candidateSearch", "recruiting.assignment.review"],
-    "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read"]
+    "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.reports.create", "recruiting.reports.review", "recruiting.candidateSearch", "recruiting.assignment.review"],
+    "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read", "crm.deals.create"]
   },
   "rules": {
     "profileSelection": "host_only",
     "scopeGrant": "explicit_per_audience",
+    "writeScopeVocabularyOnly": true,
+    "writeScopeGrantDoesNotImplyHumanApproval": true,
     "introspectionRechecksCurrentBinding": true,
     "browserHandoff": "one_time_code_exchange_required_before_live_issuance",
     "oldWebJwtOrRunTokenAccepted": false
