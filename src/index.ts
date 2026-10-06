@@ -61,7 +61,8 @@ import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
 import { communicationSelector, communicationWriter } from './router/communication-client';
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
-import { commitQuickAnswer, dispatchAcceptedAgent } from './output/communication-v1';
+import { registryFixtureHostMcp } from './router/registry-test-mcp';
+import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
 import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
@@ -76,6 +77,8 @@ export interface Env {
   ROUTER_SELECTOR?: string;
   COMMUNICATION_API_URL?: string;
   COMMUNICATION_SERVICE?: Fetcher;
+  /** Test-only direct Worker binding to the isolated Registry MCP host. */
+  REGISTRY_MCP_HOST_SERVICE?: Fetcher;
   COMMUNICATION_TOKEN?: string;
   COMMUNICATION_TIMEOUT_MS?: string;
   COMMUNICATION_WRITER_TIMEOUT_MS?: string;
@@ -101,6 +104,8 @@ export interface Env {
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
+  /** Test-only Bearer used only by the pinned tools/list discovery binding. */
+  MCP_TEST_AUTH_TOKEN?: string;
   RUN_SPEC_POLICY_PROFILE?: string;
   RUN_SPEC_REPOSITORY?: string;
   RUN_SPEC_INPUT_REFS?: string;
@@ -128,6 +133,8 @@ export interface Env {
   CONNECTED_APP_TELEGRAM_GATEWAY_KEY?: string;
   CONNECTED_APP_START_URLS?: string;
   CONNECTED_APP_APPROVALS_ENABLED?: string;
+  /** Dedicated HMAC credential for the isolated Telegram UX test principal. */
+  PRINCIPAL_SECRET_TELEGRAM_UX?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -392,6 +399,9 @@ async function handleRouteRoute(
   const ordinaryV1 = v1 && !typedSignal;
   if (ordinaryV1) await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
   const durableContext = ordinaryV1 ? await durableConversationContext(store, task) : undefined;
+  const hostMcp = ordinaryV1 && env.REGISTRY_MCP_HOST_SERVICE ? registryFixtureHostMcp({ taskId: task.id, generation: task.generation,
+    profileId: task.profile_id, principalId: principal.principalId }, env.MCP_TEST_AUTH_TOKEN, runtime.policy.mcp,
+    env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
   const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
   const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
 
@@ -441,7 +451,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter) } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter), hostMcp } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
@@ -489,10 +499,15 @@ async function handleRouteRoute(
   const continuation = ordinaryV1 && result.continuation && body.continue === true
     ? env.ROUTER_CONTINUATION_ENABLED === 'true'
       ? runtime.adapter
-        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode')
+        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode', hostMcp)
         : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
     : await issueContinuation(result, env, store, port, body);
+
+  if (ordinaryV1 && result.mcpRefusalCode && !result.continuation) {
+    await persistMcpTaskBlock(store, task, result.mcpRefusalCode);
+  }
+  const taskStatus = result.mcpRefusalCode ? await store.requireTask(task.id) : null;
 
   return json({
     decisionId: result.decisionId,
@@ -500,6 +515,8 @@ async function handleRouteRoute(
     route: result.decision.route,
     mode: result.decision.mode,
     reasonCode: result.decision.reasonCode,
+    ...(result.mcpRefusalCode ? { mcpRefusalCode: result.mcpRefusalCode } : {}),
+    ...(taskStatus ? { taskStatus: { status: taskStatus.status, reasonCode: taskStatus.blocker_reason ?? result.mcpRefusalCode } } : {}),
     degraded: result.decision.degraded,
     degradedNotice: result.decision.degradedNotice,
     rendering: result.rendering,

@@ -39,6 +39,20 @@ describe('principal-auth: подпись вместо доверия загол�
     expect(await verifyPrincipal(req('sandbox-user', sig), auth)).toBeNull();
   });
 
+  it('выбирает отдельный ключ для Telegram UX principal, не меняя общий ключ', async () => {
+    const scoped = principalAuthOf({
+      PRINCIPAL_SECRET: SECRET,
+      PRINCIPAL_SECRET_TELEGRAM_UX: 'dedicated-telegram-ux-secret',
+    });
+    const testSig = await signPrincipal('integration-telegram-ux-v1', 'dedicated-telegram-ux-secret');
+    const sharedSig = await signPrincipal('integration-telegram-ux-v1', SECRET);
+    const otherSig = await signPrincipal('sandbox-user', SECRET);
+
+    expect(await verifyPrincipal(req('integration-telegram-ux-v1', testSig), scoped)).toBe('integration-telegram-ux-v1');
+    expect(await verifyPrincipal(req('integration-telegram-ux-v1', sharedSig), scoped)).toBeNull();
+    expect(await verifyPrincipal(req('sandbox-user', otherSig), scoped)).toBe('sandbox-user');
+  });
+
   it('отсутствующая и неhex-подпись отклоняются', async () => {
     expect(await verifyPrincipal(req('sandbox-user', null), auth)).toBeNull();
     expect(await verifyPrincipal(req('sandbox-user', 'not-hex'), auth)).toBeNull();
