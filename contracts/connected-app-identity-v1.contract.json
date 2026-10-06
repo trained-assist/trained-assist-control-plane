@@ -1,0 +1,35 @@
+{
+  "urn": "urn:trained-assist:connected-app-identity:v1",
+  "version": 1,
+  "owner": "trained-assist-control-plane",
+  "status": "offline_contract_only",
+  "token": {
+    "format": "opaque_bearer",
+    "transport": "Authorization: Bearer <token>",
+    "maxLifetimeSeconds": 3600,
+    "urlQueryAllowed": false,
+    "legacyAgentCookieAllowed": false,
+    "agentRunRequired": false
+  },
+  "introspection": {
+    "method": "POST",
+    "path": "/v1/connected-app-sessions/introspect",
+    "caller": "registered_connected_app_service",
+    "cache": "no_store",
+    "requestFields": ["token", "audience"],
+    "activeResponseFields": ["active", "iss", "aud", "sub", "profileId", "sessionId", "nbf", "exp", "scopes"],
+    "inactiveResponse": { "active": false },
+    "invalidation": ["token_revoked", "session_revoked", "profile_switched", "principal_disabled", "scope_removed", "audience_changed", "expired"]
+  },
+  "audiences": {
+    "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.candidateSearch"],
+    "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read"]
+  },
+  "rules": {
+    "profileSelection": "host_only",
+    "scopeGrant": "explicit_per_audience",
+    "introspectionRechecksCurrentBinding": true,
+    "browserHandoff": "one_time_code_exchange_required_before_live_issuance",
+    "oldWebJwtOrRunTokenAccepted": false
+  }
+}
