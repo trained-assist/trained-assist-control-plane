@@ -1,0 +1,19 @@
+# First-party Telegram browser bootstrap (inactive)
+
+This slice supplies a Control Plane browser session without importing the old Agent's JWT or `web_current` cookie. It is **not active**: `CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED` is unset, no `(bot_id, telegram_user_id) → (principal_id, profile_id)` row has been reviewed or provisioned, and the Telegram gateway has no command that calls `/v1/connected-app-bootstrap/telegram/start`.
+
+## Wire and authority
+
+The Telegram gateway must accept only a provider-secret-verified `/connect` message in a private chat and send `{botId, updateId, telegramUserId: message.from.id, chatId: message.chat.id, chatType: 'private'}` to the Control Plane with its dedicated `CONNECTED_APP_TELEGRAM_GATEWAY_KEY`. It must verify `from.id === chat.id` and not use a group, forwarded message, old `/login` username, service principal or user-supplied profile as the person. The Control Plane repeats the private-chat check and reads its own **reviewed**, enabled Telegram actor binding and Connected App membership. Neither table has a public write route. Provisioning requires an independently verified actor→platform-principal mapping; chat allowlist alone is not enough.
+
+One `(botId, updateId)` creates at most one random challenge, stored as a hash for five minutes. The Control Plane calls the existing authenticated gateway `/deliver` seam with the link and requires a real `providerMessageId`; unknown delivery invalidates that challenge and an update replay cannot create a replacement. The gateway transport must use HTTPS and no redirects. No code or browser token appears in the start response.
+
+The link GET renders a plain confirmation form and sets a Secure, HttpOnly, SameSite=Strict CSRF cookie. It does not consume the challenge, so Telegram previews do not burn it. A same-origin form POST with matching CSRF atomically consumes the challenge, rechecks the reviewed binding and membership, rotates the prior browser session and sets a Secure, HttpOnly, SameSite=Lax platform cookie. The Worker resolver reads that session from D1 and supplies its selected profile and membership-limited grants to the first-party Authorization Code + PKCE handoff. Browser-supplied profile IDs are ignored. Logout revokes the browser session and its Connected App tokens. Binding or membership changes invalidate challenges and sessions; old sessions cannot revive if a row is re-enabled.
+
+## Activation evidence still required
+
+- Review and privately provision the actual Telegram actor→new principal/profile bindings for each intended user. Never infer them from the legacy username, old chat KV or CRM `USER_ID`.
+- Add the private `/connect` gateway handler behind its own opt-in flag and require the Telegram webhook secret even in the sandbox slice. Prove that a real signed update reaches `/start`, an unsigned update cannot, and the link is delivered to the same private chat. The current gateway does not call this endpoint.
+- Register gateway and Control Plane service secrets, exact HTTPS issuer and BFF redirect URIs; deploy migrations in an isolated environment, then test two users/two profiles, signed/unsigned and group updates, duplicate/late updates, delivery ambiguity, preview GET, CSRF, concurrent POST replay, logout, profile/membership changes and Recruiting/CRM authorization. Only then enable the bootstrap and Connected App identity flags.
+
+Local `npm run check` exercises the real Control Plane handler, D1 migrations and authorization resolver, with only the external gateway transport replaced by a fake. It does not prove Telegram ingress or live delivery.

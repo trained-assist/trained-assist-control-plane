@@ -34,6 +34,7 @@ import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { connectedAppRequest } from './connected-app/session-service';
+import { telegramBootstrapRequest, telegramPlatformSessionResolver } from './connected-app/telegram-bootstrap';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -122,6 +123,8 @@ export interface Env {
   CONNECTED_APP_SERVICE_KEYS?: string;
   CONNECTED_APP_ISSUER?: string;
   CONNECTED_APP_REDIRECT_URIS?: string;
+  CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED?: string;
+  CONNECTED_APP_TELEGRAM_GATEWAY_KEY?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -1050,10 +1053,20 @@ const store = new TaskStore(env.DB);
     const body: Record<string, unknown> =
       req.method === 'POST' && url.pathname === '/v1/connected-app-sessions/exchange'
         ? Object.fromEntries((await req.formData().catch(() => new FormData())).entries())
+        : url.pathname.startsWith('/v1/connected-app-bootstrap/') ? {}
         : req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
+      if (url.pathname.startsWith('/v1/connected-app-bootstrap/')) {
+        return telegramBootstrapRequest(req, env.DB, {
+          enabled: env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED,
+          gatewayKey: env.CONNECTED_APP_TELEGRAM_GATEWAY_KEY,
+          issuer: env.CONNECTED_APP_ISSUER,
+          gatewayUrl: env.GATEWAY_DELIVERY_URL,
+          gatewaySecret: env.GATEWAY_DELIVERY_SECRET,
+        });
+      }
       if (url.pathname.startsWith('/v1/connected-app-sessions/')) {
         return connectedAppRequest(req, env.DB, {
           enabled: env.CONNECTED_APP_IDENTITY_ENABLED,
@@ -1061,7 +1074,8 @@ const store = new TaskStore(env.DB);
           serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
           issuer: env.CONNECTED_APP_ISSUER,
           redirectUris: env.CONNECTED_APP_REDIRECT_URIS,
-        }, body);
+        }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
+          ? telegramPlatformSessionResolver(env.DB) : null);
       }
       if (url.pathname === '/') {
         return json({
