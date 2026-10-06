@@ -32,6 +32,7 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.conversation.open');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.create');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.edit');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
@@ -54,7 +55,11 @@ describe('connected app identity v1 offline contract', () => {
     expect(active.active && active.scopes.includes('recruiting.assignment.review')).toBe(false);
     expect(active.active && active.scopes.includes('recruiting.responses.conversation.open')).toBe(false);
     expect(active.active && active.scopes.includes('recruiting.reports.create')).toBe(false);
+    expect(active.active && active.scopes.includes('recruiting.reports.edit')).toBe(false);
     expect(active.active && active.scopes.includes('crm.deals.create')).toBe(false);
+    s.scopes = ['recruiting.reports.edit'];
+    expect(introspect(s, 'recruiting-web')).toMatchObject({ active: true,
+      scopes: ['recruiting.reports.edit'] });
     s.scopes = ['recruiting.candidateSearch'];
     expect(introspect(s, 'recruiting-web')).toMatchObject({ active: true,
       scopes: ['recruiting.candidateSearch'] });
