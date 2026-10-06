@@ -29,6 +29,7 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.rules.oldWebJwtOrRunTokenAccepted).toBe(false);
     expect(contract.introspection.inactiveResponse).toEqual({ active: false });
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.read');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.conversation.open');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
@@ -41,7 +42,7 @@ describe('connected app identity v1 offline contract', () => {
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });
 
-  it('keeps search, response, report and assignment grants separate without an Agent Run', () => {
+  it('keeps search, response history, report and assignment grants separate without an Agent Run', () => {
     const s = session();
     const active = introspect(s, 'recruiting-web');
     expect(active).toMatchObject({ active: true, profileId: 'profile_demo_001',
@@ -50,6 +51,7 @@ describe('connected app identity v1 offline contract', () => {
     expect(active).not.toHaveProperty('token');
     expect(active.active && active.scopes.includes('recruiting.reports.read')).toBe(false);
     expect(active.active && active.scopes.includes('recruiting.assignment.review')).toBe(false);
+    expect(active.active && active.scopes.includes('recruiting.responses.conversation.open')).toBe(false);
     expect(active.active && active.scopes.includes('recruiting.reports.create')).toBe(false);
     expect(active.active && active.scopes.includes('crm.deals.create')).toBe(false);
     s.scopes = ['recruiting.candidateSearch'];
