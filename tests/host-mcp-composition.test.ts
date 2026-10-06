@@ -100,7 +100,9 @@ describe('inactive host MCP routing composition', () => {
     await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
     await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
     expect(create).toHaveBeenCalledOnce();
-    expect(params).toMatchObject({ taskId: current.taskId, profileId: current.profileId, generation: 1, instructions: routed.agentInstructions });
+    expect(params).toMatchObject({ taskId: current.taskId, profileId: current.profileId, generation: 1,
+      instructions: expect.stringContaining(routed.agentInstructions!) });
+    expect(params!.instructions?.match(/\[work-style:v1\]/g)).toHaveLength(1);
     expect(params!.mcpDescriptor).toEqual({ servers: [runnerDescriptorFixture] });
     const canonicalRun = `run_${crypto.randomUUID()}`;
     const submit = vi.fn();
