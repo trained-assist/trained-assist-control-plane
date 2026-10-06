@@ -93,6 +93,11 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     await provision();
     expect((await start(update)).status).toBe(202);
     expect(await (await start(update)).json()).toMatchObject({ duplicate: true });
+    await env.DB.prepare(`UPDATE connected_app_memberships SET audience='crm-web',updated_at=updated_at+1
+      WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`).bind(principal, profile).run();
+    expect((await start(String(nextUpdate++))).status).toBe(403);
+    await env.DB.prepare(`UPDATE connected_app_memberships SET audience='recruiting-web',updated_at=updated_at+1
+      WHERE principal_id=? AND profile_id=? AND audience='crm-web'`).bind(principal, profile).run();
   });
 
   it('does not consume a preview, requires CSRF POST and atomically rejects replay', async () => {

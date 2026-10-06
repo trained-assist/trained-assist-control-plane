@@ -67,11 +67,20 @@ function appStarts(raw: string | undefined): Partial<Record<Audience, string>> {
     return result;
   } catch { return {}; }
 }
-async function hasMembership(db: D1Database, principalId: string, profileId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM connected_app_memberships
-    WHERE principal_id = ? AND profile_id = ? AND enabled = 1 LIMIT 1`)
-    .bind(principalId, profileId).first<{ present: number }>();
-  return row?.present === 1;
+async function hasMembership(db: D1Database, principalId: string, profileId: string,
+  audiences: readonly string[] = Object.keys(contract.audiences)): Promise<boolean> {
+  const rows = await db.prepare(`SELECT audience,scopes_json FROM connected_app_memberships
+    WHERE principal_id = ? AND profile_id = ? AND enabled = 1`)
+    .bind(principalId, profileId).all<{ audience: string; scopes_json: string }>();
+  return rows.results.some(row => {
+    if (!audiences.includes(row.audience) || !Object.hasOwn(contract.audiences, row.audience)) return false;
+    let scopes: unknown;
+    try { scopes = JSON.parse(row.scopes_json); } catch { return false; }
+    const allowed = contract.audiences[row.audience as Audience] as readonly string[];
+    return Array.isArray(scopes) && scopes.length > 0 && scopes.length <= 16 &&
+      scopes.every(scope => typeof scope === 'string' && allowed.includes(scope)) &&
+      new Set(scopes).size === scopes.length;
+  });
 }
 async function currentBinding(db: D1Database, botId: string, telegramUserId: string): Promise<Binding | null> {
   return db.prepare(`SELECT principal_id,profile_id,enabled FROM connected_app_telegram_bindings
@@ -124,7 +133,8 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
         String(chatId) !== userId || body?.chatType !== 'private') return json(400, { error: 'invalid private update' });
     const binding = await currentBinding(db, botId, userId);
     if (!binding || binding.enabled !== 1 || !ID.test(binding.principal_id) || !ID.test(binding.profile_id) ||
-        !await hasMembership(db, binding.principal_id, binding.profile_id)) return json(403, { error: 'forbidden' });
+        !await hasMembership(db, binding.principal_id, binding.profile_id, Object.keys(starts)))
+      return json(403, { error: 'forbidden' });
     const code = token();
     const inserted = await db.prepare(`INSERT INTO connected_app_telegram_challenges
       (code_hash,bot_id,update_id,telegram_user_id,principal_id,profile_id,created_at,expires_at,consumed_at,invalidated_at)
@@ -162,7 +172,8 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
     const binding = await currentBinding(db, challenge.bot_id, challenge.telegram_user_id);
     if (!binding || binding.enabled !== 1 || binding.principal_id !== challenge.principal_id ||
         binding.profile_id !== challenge.profile_id ||
-        !await hasMembership(db, challenge.principal_id, challenge.profile_id)) return html(403, 'Ссылка устарела');
+        !await hasMembership(db, challenge.principal_id, challenge.profile_id, Object.keys(starts)))
+      return html(403, 'Ссылка устарела');
     const consumed = await db.prepare(`UPDATE connected_app_telegram_challenges SET consumed_at = ?
       WHERE code_hash = ? AND consumed_at IS NULL AND invalidated_at IS NULL AND expires_at > ?`)
       .bind(now, digest, now).run();
@@ -246,7 +257,8 @@ export function telegramPlatformSessionResolver(db: D1Database): PlatformSession
       const audience = member.audience as Audience;
       let scopes: unknown;
       try { scopes = JSON.parse(member.scopes_json); } catch { continue; }
-      if (!Array.isArray(scopes) || !scopes.length || scopes.some(scope =>
+      if (!Array.isArray(scopes) || !scopes.length || scopes.length > 16 ||
+          new Set(scopes).size !== scopes.length || scopes.some(scope =>
         typeof scope !== 'string' || !contract.audiences[audience].includes(scope as never))) continue;
       grants[audience] = scopes as string[];
     }
