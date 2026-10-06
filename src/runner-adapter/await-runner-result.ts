@@ -10,17 +10,20 @@
  *    может воспроизвести их независимо от движка.
  *  - Финализация артефактов: каждый `outputRef` становится строкой
  *    `task_artifacts` (ссылка, не байты) И элементом `artifacts` результата,
- *    который собирает план. Экспорт не подтверждён
- *    (`persistence != 'persisted'`) — задача не завершается успехом молча.
+ *    который собирает план.
  */
 import type { TaskStore, TaskEventKind } from '../taskstore';
 import type { RunnerApiAdapter, RunnerEvent, RunnerResult, RunnerStatusView } from './runner-api-adapter';
 import { extractEngineText, type EngineText } from './engine-text';
+import { runnerArtifactRef } from './runner-api-adapter';
+import { RunnerArtifactManifestError } from './errors';
 
 export interface AwaitRunnerResultOptions {
   runId: string;
   taskId: string;
   generation: number;
+  engineName?: string;
+  declaredOutputPaths?: readonly string[];
   pollSec?: number;
   timeoutSec?: number;
 }
@@ -43,9 +46,16 @@ export interface TaskArtifactManifest {
   sha256: string | null;
 }
 
+export interface RunnerAnswer {
+  text: string | null;
+  source: 'runner_status_answer' | 'runner_log_stdout' | 'runner_result_text' | null;
+  version: 'runner-answer-v1' | EngineText['version'] | null;
+  answerSource: 'agent_file' | 'engine_stdout' | null;
+}
+
 export type AwaitRunnerResult =
-  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null }
-  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' };
+  | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null; answer?: RunnerAnswer }
+  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' | 'runner_artifact_manifest_invalid' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
 const RUNNER_EVENT_KIND: Record<string, TaskEventKind> = {
@@ -82,12 +92,14 @@ export async function awaitRunnerResult(
 
     // Потеря связи с Runner'ом — отдельное состояние, не failed.
     if (status.connectionLost) {
-      await store.markConnectionLost(opts.runId, 'runner connection_lost');
+      if ((await store.getRun(opts.runId))?.status !== 'unknown') {
+        await store.markConnectionLost(opts.runId, 'runner connection_lost');
+      }
       return { ok: false, reason: 'connection_lost' };
     }
 
     if (['succeeded', 'failed', 'cancelled'].includes(status.state)) {
-      return finalize(adapter, store, opts, status.state);
+      return finalize(adapter, store, opts, status);
     }
 
     if (Date.now() >= deadline) return { ok: false, reason: 'runner_timeout' };
@@ -99,7 +111,7 @@ async function finalize(
   adapter: RunnerApiAdapter,
   store: TaskStore,
   opts: AwaitRunnerResultOptions,
-  state: string,
+  status: RunnerStatusView,
 ): Promise<AwaitRunnerResult> {
   // События по курсору: читаем с нуля, записываем в журнал с курсором в payload.
   let cursor = 0;
@@ -132,6 +144,22 @@ async function finalize(
 
   const result = await adapter.result(opts.runId);
 
+  const commitFailure = async (reason: string, terminalStatus: 'failed' | 'cancelled') => {
+    const failureResult = { reason, runId: result.runId, ownerGeneration: result.ownerGeneration,
+      outcome: result.outcome, persistence: result.persistence, exitReason: result.exitReason, failure: result.failure ?? null };
+    const attempt = (await store.listRuns(opts.taskId)).find((run) => run.session_id === opts.runId && run.generation === opts.generation);
+    if (attempt) await store.finishRun(attempt.id, terminalStatus, {
+      errorClass: result.failure?.code ?? reason, errorText: result.failure?.safeSummary ?? result.exitReason, result: failureResult,
+    });
+    await store.commit(opts.taskId, opts.generation, { status: terminalStatus, stage: 'finished',
+      kind: 'task_status_changed', step: 'finalize', result: failureResult, payload: failureResult });
+  };
+
+  if (status.state !== 'succeeded' || result.outcome !== 'succeeded') {
+    await commitFailure(result.failure?.code ?? result.exitReason, result.outcome === 'cancelled' ? 'cancelled' : 'failed');
+    return { ok: false, reason: 'runner_failed' };
+  }
+
   // Финализация артефактов: ссылки на сохранённые выходы Runner'а. Источников
   // два, потому что Runner отдаёт их по-разному: `result.outputRefs` — то, что движок
   // сам положил в результат, а `GET /v1/runs/{runId}/artifacts` — манифесты
@@ -139,8 +167,19 @@ async function finalize(
   // outputRefs пуст, а артефакт виден только здесь). Дедуп — на уровне ссылки.
   // Этот же набор — источник для `task_artifacts` и для `result.artifacts` плана:
   // второго источника ссылок нет.
-  const manifests = await adapter.artifacts(opts.runId);
-  const byRef = new Map(manifests.map((m) => [m.storageKey || m.artifactId, m]));
+  let byRef;
+  try {
+    const manifests = await adapter.artifacts(opts.runId);
+    byRef = new Map(manifests.map(manifest => [runnerArtifactRef(manifest), manifest]));
+    if (!Array.isArray(result.outputRefs) || result.outputRefs.some(ref => typeof ref !== 'string' || !ref.trim() || ref !== ref.trim())) {
+      throw new RunnerArtifactManifestError();
+    }
+  } catch (error) {
+    if (!(error instanceof RunnerArtifactManifestError)) throw error;
+    await store.logEvent({ taskId: opts.taskId, generation: opts.generation, source: 'executor', kind: 'error',
+      payload: { class: 'runner_artifact_manifest_invalid', runId: opts.runId, reconciliationRequired: true } });
+    return { ok: false, reason: 'runner_artifact_manifest_invalid' };
+  }
   const artifactRefs = [...new Set([...result.outputRefs, ...byRef.keys()])];
   const artifacts: TaskArtifactManifest[] = artifactRefs.map((ref) => {
     const manifest = byRef.get(ref);
@@ -164,43 +203,28 @@ async function finalize(
     });
   }
 
-  if (result.persistence !== 'persisted') {
+  const noExportRequired = Array.isArray(opts.declaredOutputPaths) && opts.declaredOutputPaths.length === 0
+    && result.persistence === 'not_required' && artifactRefs.length === 0;
+  if (result.persistence !== 'persisted' && !noExportRequired) {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.
-    await store.commit(opts.taskId, opts.generation, {
-      status: 'failed',
-      kind: 'task_status_changed',
-      step: 'finalize',
-      result: {
-        reason: 'export_not_persisted',
-        runId: result.runId,
-        ownerGeneration: result.ownerGeneration,
-        persistence: result.persistence,
-        exitReason: result.exitReason,
-      },
-      payload: { runId: result.runId, persistence: result.persistence, exitReason: result.exitReason },
-    });
+    await commitFailure('export_not_persisted', 'failed');
     return { ok: false, reason: 'export_not_persisted' };
-  }
-
-  if (state !== 'succeeded') {
-    await store.commit(opts.taskId, opts.generation, {
-      status: 'failed',
-      kind: 'task_status_changed',
-      step: 'finalize',
-      result: {
-        reason: result.exitReason,
-        runId: result.runId,
-        ownerGeneration: result.ownerGeneration,
-        failure: result.failure ?? null,
-      },
-      payload: { runId: result.runId, exitReason: result.exitReason, failure: result.failure ?? null },
-    });
-    return { ok: false, reason: 'runner_failed' };
   }
 
   // Конечный текст движка — из потока событий, а не из поля результата: в
   // контракте Runner'а текста нет. Отсутствие текста не прячется за ok=true —
   // вызывающий видит `engineText: null` и решает сам.
   const engineText = extractEngineText(seenEvents);
-  return { ok: true, result, eventsRecorded, artifacts, engineText };
+  const native = opts.engineName === 'dynamic-ip-azure-agent-run';
+  const text = native
+    ? typeof status.answer === 'string' && status.answer.trim().length > 0 ? status.answer : null
+    : engineText?.text ?? result.text ?? null;
+  const resolution = [...seenEvents].sort((first, second) => second.sequence - first.sequence)
+    .find((event) => event.type === 'agent_exit_resolved')?.payload as { answerSource?: unknown } | undefined;
+  const answerSource = native && text !== null && (resolution?.answerSource === 'agent_file' || resolution?.answerSource === 'engine_stdout')
+    ? resolution.answerSource : null;
+  const answer: RunnerAnswer = { text, answerSource,
+    source: text === null ? null : native ? 'runner_status_answer' : engineText ? engineText.source : 'runner_result_text',
+    version: text === null ? null : native ? 'runner-answer-v1' : engineText?.version ?? 'runner-answer-v1' };
+  return { ok: true, result, eventsRecorded, artifacts, engineText, answer };
 }

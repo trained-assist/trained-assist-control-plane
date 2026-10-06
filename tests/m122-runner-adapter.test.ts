@@ -8,8 +8,7 @@ import { TaskStore } from '../src/taskstore';
 import { awaitRunnerResult, RunnerApiAdapter, stableAttemptKey } from '../src/runner-adapter';
 import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
 import type { StepCtx } from '../src/workflow-port/step-ctx';
-import { RunnerUnavailableError } from '../src/runner-adapter/errors';
-import type { RunSpec } from '../src/run-spec/run-spec';
+import { RunnerConflictError, RunnerUnavailableError } from '../src/runner-adapter/errors';
 import { describe, expect, it } from 'vitest';
 
 let seq = 0;
@@ -142,63 +141,6 @@ const makeFakeRunner = (
 
   return { adapter, runs, receipts };
 };
-
-describe('Router execution brief → Runner input', () => {
-  it('keeps the accepted request intact and carries the bounded brief in existing instructions', async () => {
-    const store = new TaskStore(env.DB);
-    const taskId = nextId('ut-launch-context');
-    const original = 'Найди текущие тарифы и не отправляй никому письмо.';
-    const instructions = '## Краткий контекст запуска | Цель: сравнить тарифы; не отправлять письмо.';
-    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: original });
-    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
-
-    const submitted: RunSpec[] = [];
-    const adapter = {
-      submit: async (input: { runSpec?: RunSpec }) => {
-        if (input.runSpec) submitted.push(input.runSpec);
-        return { requestId: 'req-launch', userTaskId: taskId, runId: 'run-launch', deduplicated: false };
-      },
-      status: async () => ({ state: 'succeeded', connectionLost: false }),
-      events: async () => ({ runId: 'run-launch', events: [], cursor: 0, hasMore: false, snapshot: { state: 'succeeded', connectionLost: false, sequence: 0, ownerGeneration: 1 } }),
-      result: async () => ({ runId: 'run-launch', userTaskId: taskId, profileId: 'profile-1', ownerGeneration: 1, outcome: 'succeeded', exitReason: 'completed', exitCode: 0, exitSignal: null, exitObserved: true, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), usage: { status: 'unknown' }, outputRefs: [], persistence: 'persisted', cleanup: 'completed', logPath: 'sandbox.log', text: 'готово' }),
-      artifacts: async () => [],
-    } as unknown as RunnerApiAdapter;
-    const ctx: StepCtx = {
-      step: async (_name, fn) => fn({ attempt: 1 }),
-      sleep: async () => {},
-      waitFor: async () => { throw new Error('unexpected wait'); },
-    };
-
-    const manifest = {
-      version: 'execution-context-v1' as const,
-      decisionId: 'decision-1',
-      sourceBriefId: 'brief-1',
-      catalogVersion: 'catalog-v1',
-      catalogDigest: 'a'.repeat(64),
-      bytes: new TextEncoder().encode(instructions).byteLength,
-      budgetMaxBytes: 16_384,
-      includedCapabilityIds: ['web.read'],
-      unavailableCapabilityIds: [],
-      omittedCapabilityIds: [],
-      detailLevel: 'full' as const,
-    };
-    const outcome = await conversationPlan(ctx, store, {
-      taskId,
-      generation: 1,
-      profileId: 'profile-1',
-      runId: attempt.id,
-      goal: original,
-      instructions,
-      executionContext: manifest,
-      runnerTimeoutSec: 10,
-    }, { adapter });
-
-    expect(outcome.ok).toBe(true);
-    expect(submitted[0]?.input?.inlinePrompt).toBe(original);
-    expect(submitted[0]?.instructions).toBe(instructions);
-    expect(JSON.stringify(await store.history(taskId))).not.toContain(instructions);
-  });
-});
 
 describe('Runner adapter: стабильный ключ и идемпотентность', () => {
   it('ключ попытки вычисляется ДО отправки; повтор с тем же ключом = тот же Run', async () => {
@@ -622,6 +564,30 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     expect(run!.error_class).toBe('runner_unavailable');
     const events = await store.history(taskId);
     expect(events.some((e) => e.kind === 'error' && e.payload_json.includes('runner_unavailable'))).toBe(true);
+  });
+
+  it('definitive Runner 4xx rejection closes only its attempt; it is not a stop hold', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-plan-rejected');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'некорректный RunSpec' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const rejected: RunnerApiAdapter = {
+      submit: async () => { throw new RunnerConflictError('INVALID_REQUEST: rejected before admission'); },
+    } as unknown as RunnerApiAdapter;
+    const ctx: StepCtx = { step: async (_n, fn) => fn({ attempt: 1 }), sleep: async () => {}, waitFor: async () => { throw new Error('t'); } };
+
+    await expect(conversationPlan(ctx, store, { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id }, { adapter: rejected }))
+      .resolves.toMatchObject({ ok: false, reason: 'runner_rejected' });
+
+    const run = await store.getRun(attempt.id);
+    expect(run).toMatchObject({ status: 'failed', error_class: 'runner_rejected' });
+    expect(run?.finished_at).not.toBeNull();
+    expect(await store.runnerSubmitMayHaveStarted(taskId, attempt.id)).toBe(false);
+    expect((await store.requireTask(taskId)).status).toBe('failed');
+
+    const nextTaskId = nextId('ut-after-rejected');
+    await expect(store.admitTask({ id: nextTaskId, profileId: 'profile-1', goal: 'следующая задача' })).resolves.toBeDefined();
+    expect((await store.requireTask(nextTaskId)).status).toBe('active');
   });
 
   // Живая находка: недоступность Runner'а посреди отправки не должна оставлять

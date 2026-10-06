@@ -1,12 +1,14 @@
 // Own-API dogfood (#23), шаг 1: результат задачи — конечный текст движка, а не
 // ответ человека. Ожидание человека открывается только по typed-запросу хоста.
 import { env } from './env';
+import type { WorkflowStep } from 'cloudflare:workers';
 import { TaskStore } from '../src/taskstore';
 import { extractEngineText, ENGINE_TEXT_VERSION } from '../src/runner-adapter/engine-text';
 import { awaitRunnerResult, RunnerApiAdapter } from '../src/runner-adapter';
 import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
-import type { StepCtx } from '../src/workflow-port/step-ctx';
-import { describe, expect, it } from 'vitest';
+import { cfStepCtx, type StepCtx } from '../src/workflow-port/step-ctx';
+import { describe, expect, it, vi } from 'vitest';
+import { runSpecPolicyOf } from '../src/run-spec/run-spec';
 
 let seq = 0;
 const nextId = (prefix: string) => `${prefix}-${++seq}-${Date.now()}`;
@@ -201,6 +203,167 @@ describe('one-shot с движком: результат = текст движк
 });
 
 describe('one-shot: RunSpec доходит до Runner целиком', () => {
+  it.each([
+    { answer: 'Итоги CSV:\n3 строки обработаны.', source: 'agent_file', expected: 'Итоги CSV:\n3 строки обработаны.' },
+    { answer: 'Only the final assistant answer', source: 'engine_stdout', expected: 'Only the final assistant answer' },
+    { answer: undefined, source: 'agent_file', expected: null },
+    { answer: null, source: null, expected: null },
+    { answer: '  \n', source: 'engine_stdout', expected: null },
+  ])('uses only explicit native answers, preserves provenance and terminal replay: %j', async ({ answer, source, expected }) => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-native-answer');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'process the CSV' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const { adapter, runId } = makeFakeRunner({ stdout: ['{"type":"tool_use","tool":"read","input":"not a final answer"}'] });
+    const submit = vi.fn(adapter.submit);
+    const status = vi.fn(async () => ({ ...await adapter.status(), ...(answer === undefined ? {} : { answer }) }));
+    const events = async () => {
+      const page = await adapter.events();
+      return { ...page, events: [...page.events, { type: 'agent_exit_resolved', sequence: page.cursor + 1, payload: { answerSource: source } }], cursor: page.cursor + 1 };
+    };
+    const native = { ...adapter, submit, status, events, result: async () => ({ ...await adapter.result(), text: 'result-text fallback must not leak' }) };
+    const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run', goal: 'process the CSV' };
+    expect(await conversationPlan(ctx, store, params, { adapter: native as unknown as RunnerApiAdapter })).toMatchObject({ ok: true, answer: expected });
+    const task = await store.requireTask(taskId);
+    const result = JSON.parse(task.result_json!);
+    expect(result.answer).toBe(expected);
+    expect(result.answerSource).toBe(expected === null ? null : source);
+    expect(result.engineText).toMatchObject({ text: expected, source: expected === null ? null : 'runner_status_answer', answerSource: expected === null ? null : source });
+    expect(task.result_json).not.toContain('tool_use');
+    expect(result.runId).toBe(runId);
+    const artifacts = await store.listArtifacts(taskId);
+    status.mockImplementation(async () => ({ ...await adapter.status(), answer: 'must not replace the durable answer' }));
+    expect(await conversationPlan(ctx, store, params, { adapter: native as unknown as RunnerApiAdapter })).toMatchObject({ ok: true, reason: 'already_terminal' });
+    expect((await store.requireTask(taskId)).result_json).toBe(task.result_json);
+    expect(await store.listArtifacts(taskId)).toEqual(artifacts);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+  });
+
+  it('replays a pre-upgrade cached wait by reading native status, never stdout or new jobs', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-native-cached-answer');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'original task' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const { adapter } = makeFakeRunner({ stdout: ['{"type":"tool_result","text":"diagnostic"}'] });
+    const submit = vi.fn(adapter.submit);
+    const status = vi.fn(async () => ({ ...await adapter.status(), answer: 'Authoritative answer' }));
+    const cachedCtx: StepCtx = { ...ctx, step: async (name, fn, options) => {
+      const value = await ctx.step(name, fn, options);
+      if (name === 'await-runner') {
+        const cached = { ...value as Record<string, unknown> };
+        delete cached.answer;
+        return cached as typeof value;
+      }
+      return value;
+    } };
+    const outcome = await conversationPlan(cachedCtx, store,
+      { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run', goal: 'original task' },
+      { adapter: { ...adapter, submit, status } as unknown as RunnerApiAdapter });
+    expect(outcome).toMatchObject({ ok: true, answer: 'Authoritative answer' });
+    expect(JSON.parse((await store.requireTask(taskId)).result_json!)).toMatchObject({ answerSource: 'runner_status_answer' });
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+  });
+
+  it('concurrent terminal completion writes one immutable attempt result and event', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-terminal-attempt');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'terminal refusal' });
+    const attempt = await store.startRun(taskId, { generation: 1 });
+    const result = { reason: 'WORKER_HTTP_ERROR' };
+    const finished = await Promise.all([store.finishRun(attempt.id, 'failed', { result }), store.finishRun(attempt.id, 'failed', { result })]);
+    expect(finished[0]).toEqual(finished[1]);
+    expect((await store.history(taskId)).filter((event) => event.kind === 'run_finished')).toHaveLength(1);
+    await expect(store.finishRun(attempt.id, 'success')).rejects.toThrow('finish rejected');
+    expect(JSON.parse((await store.requireRun(attempt.id)).result_json!)).toEqual(result);
+  });
+
+  it.each(['pending', 'failed'] as const)('preserves WORKER_HTTP_ERROR before export checks (%s) and closes the attempt once', async (persistence) => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-worker-refusal');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'process original CSV' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'dynamic-ip-azure-agent-run' });
+    const { adapter, runId } = makeFakeRunner();
+    const failure = { code: 'WORKER_HTTP_ERROR', failureClass: 'external_dependency', safeSummary: 'Worker HTTP 400: taskId required', retryable: false };
+    const artifacts = vi.fn(async () => { throw new Error('preflight has no artifact endpoint'); });
+    const submit = vi.fn(adapter.submit);
+    const failing = { ...adapter, submit, artifacts,
+      status: async () => ({ state: 'failed', connectionLost: false }),
+      events: async () => ({ runId, events: [], cursor: 0, hasMore: false }),
+      result: async () => ({ ...await adapter.result(), outcome: 'failed', exitReason: 'worker_http_error', failure, persistence, outputRefs: [] }),
+    };
+    const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, goal: 'process original CSV' };
+    expect(await conversationPlan(ctx, store, params, { adapter: failing as unknown as RunnerApiAdapter })).toMatchObject({ ok: false, reason: 'runner_failed' });
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('failed');
+    expect(task.stage).toBe('finished');
+    expect(JSON.parse(task.result_json!)).toMatchObject({ reason: 'WORKER_HTTP_ERROR', exitReason: 'worker_http_error', failure, persistence, outcome: 'failed', runId });
+    expect(artifacts).not.toHaveBeenCalled();
+    expect(await store.listArtifacts(taskId)).toHaveLength(0);
+    const finished = await store.requireRun(attempt.id);
+    expect(finished.status).toBe('failed');
+    expect(finished.error_class).toBe('WORKER_HTTP_ERROR');
+    await Promise.all([store.finishRun(attempt.id, 'failed'), store.finishRun(attempt.id, 'failed')]);
+    expect(await store.requireRun(attempt.id)).toEqual(finished);
+    expect((await store.history(taskId)).filter((event) => event.kind === 'run_finished')).toHaveLength(1);
+    expect(await conversationPlan(ctx, store, params, { adapter: failing as unknown as RunnerApiAdapter })).toMatchObject({ ok: false, reason: 'already_terminal' });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+    expect((await store.requireTask(taskId)).result_json).toBe(task.result_json);
+  });
+
+  it.each([{ elapsedMs: 700_000, ok: true }, { elapsedMs: 841_000, ok: false }])('bounds result polling by host runtime plus startup budget: %j', async ({ elapsedMs, ok }) => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-host-budget');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'wait for cold start' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter } = makeFakeRunner();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const submit = vi.fn(async (input: { userTaskId: string; idempotencyKey: string; runSpec: { limits: { timeoutMs: number } } }) => {
+      expect(input.runSpec.limits.timeoutMs).toBe(240_000);
+      return adapter.submit(input);
+    });
+    let polls = 0;
+    const status = async () => {
+      if (++polls === 1) {
+        now += elapsedMs;
+        return { state: 'running', connectionLost: false };
+      }
+      return adapter.status();
+    };
+    try {
+      const budgetCtx: StepCtx = { ...ctx, step: async (name, fn, options) => {
+        if (name === 'await-runner') expect(options?.timeoutSec).toBe(900);
+        return ctx.step(name, fn, options);
+      } };
+      const outcome = await conversationPlan(budgetCtx, store,
+        { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerPollSec: 1, runnerTimeoutSec: 120 },
+        { adapter: { ...adapter, submit, status } as unknown as RunnerApiAdapter,
+          runSpecPolicy: runSpecPolicyOf({ RUN_SPEC_TIMEOUT_MS: '240000', RUN_SPEC_STARTUP_TIMEOUT_MS: '600000' }) });
+      expect(outcome.ok).toBe(true);
+      if (!ok) expect((await store.history(taskId)).some(event => event.payload_json.includes('runner_timeout'))).toBe(true);
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(await store.listRuns(taskId)).toHaveLength(1);
+      expect((await store.requireTask(taskId)).generation).toBe(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('passes the explicit result-wait timeout to Cloudflare without changing retry ownership', async () => {
+    const doStep = vi.fn(async (_name: string, options: unknown, callback: () => Promise<unknown>) => {
+      expect(options).toEqual({ retries: { limit: 2, delay: '1 seconds', backoff: 'constant' }, timeout: '900 seconds' });
+      return callback();
+    });
+    const step = cfStepCtx({ do: doStep } as unknown as WorkflowStep);
+    expect(await step.step('await-runner', async () => 'done', { limit: 2, delaySec: 1, timeoutSec: 900 })).toBe('done');
+    expect(doStep).toHaveBeenCalledTimes(1);
+  });
+
   it('adapter получает runSpec с хостовым cwd/env и клиентским prompt/refs', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-run-spec');
@@ -208,7 +371,10 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
       id: taskId,
       profileId: 'profile-from-task-row',
       goal: 'сделай работу',
-      userValue: { artifactRefs: ['artifact://input.md'] },
+      userValue: {
+        artifactRefs: ['artifact://input.md', 'ingress-media-1'],
+        inputArtifacts: [{ ref: 'ingress-media-1', version: 'v1', ownerProfileId: 'profile-from-task-row' }],
+      },
     });
     const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
     const { adapter } = makeFakeRunner({ stdout: ['готово'] });
@@ -239,7 +405,10 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
     expect(spec['ownerGeneration']).toBe(1);
     expect(spec['traceId']).toBe(attempt.id);
     // Клиентское: полное сообщение и разрешённые вложения.
-    expect(spec['input']).toEqual({ inlinePrompt: 'сделай работу', refs: [{ ref: 'artifact://input.md' }] });
+    expect(spec['input']).toEqual({ inlinePrompt: 'сделай работу', refs: [
+      { ref: 'artifact://input.md' },
+      { ref: 'ingress-media-1', version: 'v1' },
+    ] });
     expect((spec['runId'] as string).startsWith('run_')).toBe(true);
   });
 });

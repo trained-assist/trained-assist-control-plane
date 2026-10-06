@@ -43,6 +43,17 @@ export type RouteMode = (typeof ROUTE_MODES)[number];
 
 /** Причины перехода. Значение, не текст: по нему считаются метрики §11.9. */
 export const REASON_CODES = [
+  'COMMUNICATION_SELECTED',
+  'COMMUNICATION_FALLBACK',
+  'MCP_REVALIDATION_REQUIRED',
+  'MCP_HOST_DISABLED',
+  'MCP_DISCOVERY_UNAVAILABLE',
+  'MCP_DISCOVERY_INVALID',
+  'MCP_BINDING_UNAVAILABLE',
+  'MCP_BINDING_INVALID',
+  'MCP_EXECUTION_BINDING_MISSING',
+  'MCP_TRANSPORT_UNSUPPORTED',
+  'MCP_EXECUTION_UNAVAILABLE',
   // детерминированные пути (§11.2 шаг 1)
   'TYPED_COMMAND',
   'SERVICE_COMMAND',
@@ -193,6 +204,11 @@ export interface ConversationContext {
 }
 
 export interface PreparedInput {
+  originalInput?: unknown;
+  durableContext?: {
+    history: Array<{ id: string; author: string; text: string }>;
+    active_tasks: Array<{ id: string; goal: string; expected_answer?: string }>;
+  };
   /** Полный текст текущего запроса (не head/tail: §11.6). */
   text: string;
   context: ConversationContext;
@@ -214,6 +230,7 @@ export interface PreparedInput {
  * менять ни текст запроса, ни модель (§11.1).
  */
 export interface RoutingEnvelope {
+  generation?: number;
   principalId: string;
   profileId: string;
   userTaskId: string;

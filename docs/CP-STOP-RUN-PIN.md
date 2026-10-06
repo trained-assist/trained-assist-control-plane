@@ -1,0 +1,33 @@
+# Immutable CP stop execution pins
+
+Conversation stop snapshots retain receipt identity, the task generation at capture, and the complete sorted attempt set. Each attempt pins its CP attempt ID, canonical Runner ID (or unknown null), owner generation, and host-derived submission idempotency key. Retry uses the stored snapshot, never current activeRun discovery. Historical snapshots missing these fields remain unresolved and are not upgraded from current state.
+
+The CP-owned pinned cancellation path atomically claims one fenced task generation with a durable snapshot/task correlation. Retries reuse that claim. SQL guards check the current snapshot, receipt, profile, task generation, exact attempt membership, Runner IDs and submission-key witnesses before claim, attempt finalization, proof publication and terminal mutation. Generation, run, key or membership drift stays unresolved. Runner cancellation always uses the captured canonical run and its captured owner generation; an overlapping new attempt is never substituted. A failure or race does not write a new task result or artifact, nor claim a fresh attempt exited.
+
+Pinned stop does not call Workflow terminate by mutable task ID. Native exit evidence alone does not confirm a still-running Workflow: terminal Workflow observation is also required. Task generation fencing may prevent the old Workflow from committing, but is not evidence that it terminated. Existing unpinned explicit cancellation remains unchanged. STOP must remain OFF; these are source/offline tests, not live cancellation proof.
+
+## Remaining wire and ownership requirements
+
+- A generation-specific immutable Workflow instance/control handle is needed before automatic Workflow termination can be enabled safely. The current `Workflow.get(taskId).terminate()` cannot express that fence; this patch never uses it in the pinned path.
+- Before the first snapshot exists, CP still discovers open conversation tasks when the admission barrier closes. A trusted intent-time task/receipt inventory or cutoff contract is needed to prove those memberships belonged to the original Telegram stop intent. A persisted snapshot never expands on retry.
+- TG STOPfalse must gate mutations and pending stop alarms. This CP patch does not revoke old principals, change profile scopes, or isolate shared D1 from another authorized Worker. Direct legacy `/cancel` is outside the immutable conversation-window path.
+
+Offline tests cover cold window retry, single generation claim, old snapshots, generation/attempt/run/key/profile drift, insertion between guard read and claim, insertion before native dispatch, a new native run during old cancellation, terminal SQL race, false exit provenance, and preserving later task identity and output ownership. No deployment, live control, owner credentials, or historical task rewrite is part of the change.
+
+Local validation on the composed `e573345` baseline: typecheck PASS; 91 focused tests PASS; 524 full tests across 44 files PASS; evidence sanitization checks PASS. Workerd emitted Workflow lifecycle diagnostics during cancellation tests; the suites exited successfully. Fourteen new execution-pin regressions are synthetic/offline and do not establish live STOP readiness.
+
+## Review follow-up
+
+TaskStore `done`, `failed` or `cancelled` alone is never sufficient for pinned stop confirmation: execution-backed tasks require terminal Workflow observation, with errors or a running Workflow remaining unresolved. The narrow TaskStore-only quick-answer exception is described below. Already-finished execution status, timestamp, failure and result are immutable; successful native exit evidence can be recorded separately without turning a historical export failure into a successful attempt.
+
+Cancellation status, awaiting closure, delivery suppression and the idempotent cancellation journal entry commit in one D1 transaction. A failed transaction rolls all four back; loss of its successful ACK leaves all four committed. Cold retry can repair historical cancelled rows with missing cleanup or journal, without duplicate events or changes to other terminal task results. Persisted confirmation for a snapshot is monotonic, and a stale snapshot cannot update its replacement. A fresh failed observation still returns unresolved: the stored confirmation bit is not used to bypass current Workflow or execution-pin checks.
+
+Follow-up validation: the terminal-task/running-Workflow regression failed in all three terminal states before the fix. After the fixes, typecheck PASS; 75 focused tests PASS; 531 full tests across 44 files PASS; evidence checks PASS. New tests also preserve an export failure alongside successful native exit evidence, exercise transaction failure and committed-ACK loss, repair historical incomplete cleanup after cold restart, and interleave successful and delayed-pending polls on one snapshot.
+
+## TaskStore-only quick answers
+
+The known communication-v1 health/capabilities path commits a quick answer without creating an execution or Workflow. Its no-Workflow evidence requires a terminal `done` result, the exact saved deterministic routing selection and matching Output commit at the pinned generation, no attempts and no execution/submission witnesses. A missing Workflow is accepted only for that proven path and the exact runtime `instance.not_found` error. Arbitrary lookup failures, live Workflows, nonterminal tasks, historical executions and incomplete provenance remain unresolved.
+
+CP output must be settled: `not_required` with no CP delivery rows, or `delivered` with acknowledged rows. Pending, accepted, failed or unknown delivery states hold the stop window. Snapshot confirmation also checks delivery state in SQL, preventing an enqueue between observation and confirmation from authorizing restart. No pending output is suppressed or resent by this quick-answer path. The observation does not attest to the external Telegram owner: its durable delivery gate still owns Telegram acknowledgement/unknown semantics before input release. No provider action is performed by these checks.
+
+Validation: typecheck PASS; 71 focused tests PASS; 547 full tests across 45 files PASS; evidence checks PASS. Sixteen new offline regressions include the real workerd missing-Workflow binding for both quick capabilities, arbitrary lookup errors, running Workflow, partial routing/output provenance, historical execution, nonterminal state, CP delivery holds and the enqueue/confirmation race. Missing answer text, decision ID or capability version is not accepted as matching evidence.

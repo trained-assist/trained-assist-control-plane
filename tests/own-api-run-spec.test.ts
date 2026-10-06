@@ -12,8 +12,10 @@ import {
   untransmittedRunSpecFields,
   validateRunSpec,
   type RunSpec,
+  type RunSpecInput,
   type RunSpecPolicy,
 } from '../src/run-spec/run-spec';
+import { RunnerApiAdapter } from '../src/runner-adapter';
 import { describe, expect, it } from 'vitest';
 
 const baseInput = {
@@ -70,6 +72,34 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
+  it('passes the CP-pinned ingress manifest separately from workspace snapshot refs', () => {
+    const built = buildRunSpec({ ...baseInput, inputManifest: {
+      manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64),
+    } }, policy);
+    expect(built.spec.ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+      userTaskId: 'ut-abc123',
+      profileId: 'profile-1',
+      runId: 'run_ut-abc123_1',
+      ownerGeneration: 1,
+    });
+    expect(built.spec.input?.refs).toBeUndefined();
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('rejects an ingress manifest combined with generic refs or an unpinned task', () => {
+    const inputManifest = { manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64) };
+    expect(() => buildRunSpec({ ...baseInput, inputManifest, refs: [{ ref: 'snapshot-1', snapshotId: 'snapshot-1' }] }, policy)).toThrow(/cannot be combined/);
+    expect(() => buildRunSpec({ ...baseInput, inputManifest: { ...inputManifest, manifestRef: 'cp-input-manifest:foreign' } }, policy)).toThrow(/task-scoped/);
+  });
+
   it('snapshotId вне алфавита отклоняется: снимок — не произвольная строка', () => {
     expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '../escape' }] }, policy)).toThrow(RunSpecMappingError);
     expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '' }] }, policy)).toThrow(RunSpecMappingError);
@@ -79,11 +109,20 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(() => buildRunSpec({ ...baseInput, prompt: '   ' }, policy)).toThrow(RunSpecMappingError);
   });
 
-  it('многострочный prompt нормализуется (контракт Runner\'а не пропускает control chars)', () => {
-    const built = buildRunSpec({ ...baseInput, prompt: 'первая\nвторая\tтретья' }, policy);
-    expect(built.promptNormalized).toBe(true);
-    expect(built.spec.input?.inlinePrompt).toBe('первая вторая третья');
+  it('preserves multiline goal and full instructions without normalization', () => {
+    const prompt = '  первая\r\nвторая\tтретья  ';
+    const instructions = 'Original context:\n```\n  keep whitespace\n```\n';
+    const built = buildRunSpec({ ...baseInput, prompt, instructions }, policy);
+    expect(built.promptNormalized).toBe(false);
+    expect(toSubmitRequest(built.spec).input?.inlinePrompt).toBe(prompt);
+    expect(toSubmitRequest(built.spec).instructions).toBe(instructions.trim());
     expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('rejects oversized combined context and unsupported controls rather than truncating', () => {
+    expect(() => buildRunSpec({ ...baseInput, instructions: 'x'.repeat(100_000) }, policy)).toThrow(RunSpecMappingError);
+    expect(() => buildRunSpec({ ...baseInput, prompt: 'before\x00after' }, policy)).toThrow(RunSpecMappingError);
+    expect(() => buildRunSpec({ ...baseInput, instructions: 'before\x7fafter' }, policy)).toThrow(RunSpecMappingError);
   });
 
   it('runId стабилен для той же задачи и поколения — идемпотентность на стороне хоста', () => {
@@ -105,6 +144,7 @@ describe('run-spec: хостовая политика из bindings', () => {
       repository: null,
       resultDestinationRef: null,
       maxOutputBytes: null,
+      inputRefs: [],
     });
   });
 
@@ -139,6 +179,47 @@ describe('run-spec: хостовая политика из bindings', () => {
   it('envAllowlist принимает только имена переменных, не значения', () => {
     expect(() => runSpecPolicyOf({ RUN_SPEC_ENV_ALLOWLIST: 'A=1' })).toThrow(RunSpecMappingError);
     expect(runSpecPolicyOf({ RUN_SPEC_ENV_ALLOWLIST: 'A, B_C' }).envAllowlist).toEqual(['A', 'B_C']);
+  });
+
+  it('uses explicit host repository, input refs and runtime limits with no project inference', () => {
+    const hostPolicy = runSpecPolicyOf({
+      RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'trained-assist/ai-agent-runner' }),
+      RUN_SPEC_INPUT_REFS: JSON.stringify([{ ref: 'artifact://host-input.md', version: 'v1' }]),
+      RUN_SPEC_TIMEOUT_MS: '240000',
+      RUN_SPEC_ENV_ALLOWLIST: 'LANG',
+    });
+    const body = toSubmitRequest(buildRunSpec({ ...baseInput, engineName: 'dynamic-ip-azure-agent-run', refs: [{ ref: 'artifact://user-input.md' }] }, hostPolicy).spec);
+    expect(body.repository).toEqual({ fullName: 'trained-assist/ai-agent-runner' });
+    expect(body.input?.refs).toEqual([{ ref: 'artifact://host-input.md', version: 'v1' }, { ref: 'artifact://user-input.md' }]);
+    expect(body.limits.timeoutMs).toBe(240_000);
+    expect(body.envAllowlist).toEqual(['LANG']);
+    expect(toSubmitRequest(buildRunSpec(baseInput, policy).spec).repository).toBeUndefined();
+    expect(() => buildRunSpec(baseInput, runSpecPolicyOf({ RUN_SPEC_INPUT_REFS: '{}' }))).toThrow(RunSpecMappingError);
+    expect(() => runSpecPolicyOf({ RUN_SPEC_TIMEOUT_MS: '0' })).toThrow(RunSpecMappingError);
+    expect(() => runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '-1' })).toThrow(RunSpecMappingError);
+    expect(() => runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '3600001' })).toThrow(RunSpecMappingError);
+    expect(runSpecPolicyOf({ RUN_SPEC_STARTUP_TIMEOUT_MS: '600000' }).startupTimeoutMs).toBe(600_000);
+  });
+
+  it('projects explicit host output and log byte limits without changing legacy defaults', () => {
+    const hostPolicy = runSpecPolicyOf({ RUN_SPEC_MAX_OUTPUT_BYTES: '1048576', RUN_SPEC_MAX_LOG_BYTES: '1048576' });
+    const body = toSubmitRequest(buildRunSpec(baseInput, hostPolicy).spec);
+    expect(body.limits.maxOutputBytes).toBe(1_048_576);
+    expect(body.limits.maxLogBytes).toBe(1_048_576);
+    expect(toSubmitRequest(buildRunSpec(baseInput, policy).spec).limits.maxLogBytes).toBeUndefined();
+    for (const invalid of ['0', '-1', '1.5', 'invalid', '9007199254740992']) {
+      expect(() => runSpecPolicyOf({ RUN_SPEC_MAX_LOG_BYTES: invalid })).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('only the explicitly selected integration host profile supplies a repository default', () => {
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).repository).toEqual({ fullName: 'trained-assist/ai-agent-runner' });
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).timeoutMs).toBe(300_000);
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1' }).startupTimeoutMs).toBe(600_000);
+    expect(buildRunSpec(baseInput, runSpecPolicyOf({})).spec.limits.timeoutMs).toBe(baseInput.timeoutMs);
+    expect(runSpecPolicyOf({ ROUTER_SELECTOR: 'communication_v1' }).repository).toBeNull();
+    expect(runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'integration-v1', RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'explicit/override' }) }).repository).toEqual({ fullName: 'explicit/override' });
+    expect(() => runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'invented' })).toThrow(RunSpecMappingError);
   });
 
   it('относительный путь выхода и небезопасный repository отклоняются локально', () => {
@@ -207,6 +288,24 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     expect(body['input']).toEqual({ inlinePrompt: 'собери отчёт', refs: [{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }] });
   });
 
+  it('передаёт только immutable ingress pin в POST /v1/runs', () => {
+    const built = buildRunSpec(baseInput, policy);
+    built.spec.ingressManifest = {
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+      userTaskId: built.spec.userTaskId,
+      profileId: built.spec.profileId,
+      runId: built.spec.runId,
+      ownerGeneration: built.spec.ownerGeneration,
+    };
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
+  });
+
   it('поля, которые Runner выводит сам, перечислены явно', () => {
     const built = buildRunSpec(baseInput, defaultRunSpecPolicy());
     // Без объявленного MCP его в списке нет — поле честно отсутствует.
@@ -215,7 +314,7 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     );
   });
 
-  it('MCP объявляется в mapping, но в submit не переносится — факт виден', () => {
+  it('MCP переносится в submit, а не выбрасывается: факт виден и в теле, и в списке непереданных', () => {
     const built = buildRunSpec(
       baseInput,
       runSpecPolicyOf({
@@ -223,8 +322,170 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
       }),
     );
     expect(built.spec.mcp?.servers).toHaveLength(1);
-    expect('mcp' in toSubmitRequest(built.spec)).toBe(false);
-    expect(untransmittedRunSpecFields(built.spec)).toContain('mcp');
+    expect(toSubmitRequest(built.spec).mcp).toEqual(built.spec.mcp);
+    expect(untransmittedRunSpecFields(built.spec)).not.toContain('mcp');
+  });
+});
+
+describe('run-spec: удалённый MCP (transport remote)', () => {
+  const remotePolicy = (server: Record<string, unknown>) =>
+    runSpecPolicyOf({ RUN_SPEC_MCP: JSON.stringify({ servers: [server] }) });
+
+  const remoteServer = (overrides: Record<string, unknown> = {}) => ({
+    serverId: 'google-documents',
+    transport: 'remote',
+    url: 'https://documents.example.com/mcp',
+    bindingRef: 'google-documents-v1',
+    allowedTools: ['gdrive_create_spreadsheet', 'gdrive_read_sheet', 'gdrive_write_sheet'],
+    toolTimeoutMs: 60_000,
+    ...overrides,
+  });
+
+  it('хостовая политика RUN_SPEC_MCP собирает remote-сервер и проходит локальную проверку контракта', () => {
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+
+    expect(built.version).toBe('run-spec-v4');
+    expect(built.spec.mcp).toEqual({ servers: [remoteServer()] });
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+    expect(built.spec.credentialBindings).toBeUndefined();
+  });
+
+  it('в submit уходит ровно объявленное: transport, url, bindingRef, allowedTools — и никаких секретов', () => {
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+    const body = toSubmitRequest(built.spec);
+
+    expect(body.mcp).toEqual(built.spec.mcp);
+    const wire = JSON.stringify(body.mcp).toLowerCase();
+    for (const forbidden of ['headers', 'authorization', 'token', 'secret', 'password', 'envallowlist', 'command', 'args', 'runauth']) {
+      expect(wire).not.toContain(forbidden);
+    }
+    expect(untransmittedRunSpecFields(built.spec)).not.toContain('mcp');
+  });
+
+  it('клиентский mcp во входе отклоняется: MCP — хостовая политика', () => {
+    const injected = {
+      ...baseInput,
+      mcp: { servers: [{ serverId: 'x', transport: 'remote', url: 'https://a.example.com/mcp', allowedTools: ['t'] }] },
+    } as unknown as RunSpecInput;
+    expect(() => buildRunSpec(injected, policy)).toThrow(RunSpecMappingError);
+  });
+
+  it('смешанный список stdio + remote сохраняется целиком в RunSpec и в теле submit', () => {
+    const mixed = runSpecPolicyOf({
+      RUN_SPEC_MCP: JSON.stringify({
+        servers: [
+          { serverId: 'fs', transport: 'stdio', command: 'node', args: ['server.mjs'], envAllowlist: ['HOME'], allowedTools: ['read_file'] },
+          { serverId: 'jira', transport: 'remote', url: 'https://mcp.example.com/jira', bindingRef: 'mcp-jira', allowedTools: ['create_issue'] },
+        ],
+      }),
+    });
+    const built = buildRunSpec(baseInput, mixed);
+
+    expect(built.spec.mcp?.servers.map((s) => s.serverId)).toEqual(['fs', 'jira']);
+    expect(toSubmitRequest(built.spec).mcp?.servers.map((s) => s.transport)).toEqual(['stdio', 'remote']);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('URL с учётными данными, query, fragment, управляющими символами или не-absolute отклоняется', () => {
+    for (const url of [
+      'https://user:pass@mcp.example.com/jira',
+      'https://mcp.example.com/jira?token=abc',
+      'https://mcp.example.com/jira#frag',
+      '/mcp',
+      'mcp.example.com/jira',
+      'ftp://mcp.example.com',
+      'http://mcp.example.com/mcp',
+      `https://mcp.example.com/${'a'.repeat(2000)}`,
+      'https://mcp.example.com/ja\x00ra',
+    ]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ url })))).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('заголовки/токены/секреты и stdio-поля в remote-сервере отклоняются как неизвестные', () => {
+    for (const extra of [
+      { headers: { authorization: 'Bearer x' } },
+      { auth: 'Bearer x' },
+      { token: 'x' },
+      { secrets: ['x'] },
+      { runAuth: { scope: 'jira' } },
+      { command: 'node' },
+      { args: ['server.mjs'] },
+      { envAllowlist: ['TOKEN'] },
+      { readinessTimeoutMs: 20_000 },
+    ]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer(extra)))).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('неизвестный transport и небезопасный bindingRef отклоняются', () => {
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ transport: 'http' })))).toThrow(RunSpecMappingError);
+    for (const bindingRef of [undefined, '', '   ', 'ref\x00x', 'r'.repeat(301)]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ bindingRef })))).toThrow(RunSpecMappingError);
+    }
+  });
+
+  it('tool timeout follows the bounded Runner contract', () => {
+    for (const toolTimeoutMs of [0, -1, 1.5, 120_001]) {
+      expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs })))).toThrow(RunSpecMappingError);
+    }
+    expect(buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs: 120_000 }))).spec.mcp).toBeDefined();
+  });
+
+  it('повторяющийся serverId и общий инструмент у stdio и remote отклоняются', () => {
+    const dupServer = runSpecPolicyOf({
+      RUN_SPEC_MCP: JSON.stringify({
+        servers: [
+          { serverId: 'jira', transport: 'remote', url: 'https://a.example.com/mcp', bindingRef: 'mcp-jira', allowedTools: ['search'] },
+          { serverId: 'jira', transport: 'remote', url: 'https://b.example.com/mcp', bindingRef: 'mcp-other', allowedTools: ['other'] },
+        ],
+      }),
+    });
+    expect(() => buildRunSpec(baseInput, dupServer)).toThrow(/duplicate server id/);
+
+    const crossTransportTool = runSpecPolicyOf({
+      RUN_SPEC_MCP: JSON.stringify({
+        servers: [
+          { serverId: 'fs', transport: 'stdio', command: 'node', allowedTools: ['search'] },
+          { serverId: 'jira', transport: 'remote', url: 'https://a.example.com/mcp', bindingRef: 'mcp-jira', allowedTools: ['search'] },
+        ],
+      }),
+    });
+    expect(() => buildRunSpec(baseInput, crossTransportTool)).toThrow(/already declared/);
+  });
+
+  it('rejects extra MCP envelope fields instead of serializing hidden auth metadata', () => {
+    const hostPolicy = runSpecPolicyOf({ RUN_SPEC_MCP: JSON.stringify({ servers: [remoteServer()], headers: { authorization: 'fixture-only' } }) });
+    expect(() => buildRunSpec(baseInput, hostPolicy)).toThrow(/unsupported field for remote metadata/);
+  });
+
+  it('allows only a bounded explicit tool declaration without treating it as enforcement', () => {
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: [] })))).toThrow(/at least one tool/);
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: ['read', 'read'] })))).toThrow(/already declared/);
+    expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: Array.from({ length: 51 }, (_, index) => `tool_${index}`) })))).toThrow(/at most 50/);
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs: undefined })));
+    expect(toSubmitRequest(built.spec).mcp?.servers[0]).toEqual(remoteServer({ toolTimeoutMs: undefined }));
+  });
+
+  it('adapter.submit с runSpec отправляет ровно проекцию: mcp в теле, служебные поля и секреты — нет', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ requestId: 'req-1', userTaskId: 'ut-abc123', runId: 'run-1', deduplicated: false }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', fetchImpl);
+
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+    const receipt = await adapter.submit({ userTaskId: 'ut-abc123', idempotencyKey: 'k1', runSpec: built.spec });
+
+    expect(receipt.runId).toBe('run-1');
+    expect(bodies[0]!['mcp']).toEqual(toSubmitRequest(built.spec).mcp);
+    expect(bodies[0]!['contractVersion']).toBeUndefined();
+    expect(bodies[0]!['cwd']).toBeUndefined();
+    expect(JSON.stringify(bodies[0])).not.toContain('Bearer');
   });
 });
 
@@ -240,7 +501,7 @@ describe('run-spec: собранный RunSpec проходит локальну
     expect(mutate((s) => { s.cwd = '../../etc'; }).ok).toBe(false);
     expect(mutate((s) => { s.envAllowlist = ['A=1']; }).ok).toBe(false);
     expect(mutate((s) => { s.outputs = [{ path: '/abs' }]; }).ok).toBe(false);
-    expect(mutate((s) => { s.input = { inlinePrompt: 'a\nb' }; }).ok).toBe(false);
+    expect(mutate((s) => { s.input = { inlinePrompt: 'a\x00b' }; }).ok).toBe(false);
     expect(mutate((s) => { s.engine = { name: '', adapterVersion: '1' }; }).ok).toBe(false);
     expect(mutate((s) => { s.limits = { timeoutMs: 0 }; }).ok).toBe(false);
     expect(mutate((s) => { s.repository = { fullName: 'x' }; }).ok).toBe(false);

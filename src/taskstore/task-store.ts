@@ -24,6 +24,9 @@ import {
   TaskStoreError,
 } from './errors';
 import { kindForPurpose } from '../awaiting/purpose';
+import { stableAttemptKey } from '../runner-adapter/runner-api-adapter';
+import { validateCredentialReadyEvent, validateCredentialRequirement } from '../awaiting/credential-ready';
+import type { CredentialCompletionRow, CredentialReadyEvent, CredentialRequirement } from '../awaiting/credential-ready';
 import {
   DEFAULT_PENDING_INPUT_DEADLINE_MS,
   DEFAULT_START_DEADLINE_MS,
@@ -37,7 +40,11 @@ import {
   type AwaitingKind,
   type AwaitingPurpose,
   type ConversationRow,
+  type CpStopTarget,
+  type CpStopTargetResolution,
+  type CpStopWindowRow,
   type EventSource,
+  type NativeStopEvidence,
   type PendingInputRow,
   type WatchdogHealthRow,
   type StuckInputAlertRow,
@@ -54,6 +61,24 @@ import {
 } from './types';
 
 const NON_TERMINAL_SQL = `status NOT IN (${TERMINAL_STATUS_SQL})`;
+const CP_STOP_GUARD_SQL = `generation = ? AND profile_id = ? AND request_id = ?
+  AND EXISTS (SELECT 1 FROM task_events WHERE user_task_id = durable_tasks.id AND kind = 'task_accepted' AND event_id = ?)
+  AND EXISTS (SELECT 1 FROM cp_stop_windows, json_each(cp_stop_windows.targets_json) AS target
+    WHERE cp_stop_windows.profile_id = durable_tasks.profile_id
+      AND cp_stop_windows.conversation_id = durable_tasks.conversation_id
+      AND cp_stop_windows.snapshot_id = ? AND json(target.value) = json(?))
+  AND (SELECT count(*) FROM executions WHERE task_id = durable_tasks.id) = json_array_length(?)
+  AND NOT EXISTS (SELECT 1 FROM executions WHERE task_id = durable_tasks.id
+    AND NOT EXISTS (SELECT 1 FROM json_each(?) AS attempt
+      WHERE executions.id = json_extract(attempt.value, '$.attemptId')
+        AND executions.generation = json_extract(attempt.value, '$.ownerGeneration')
+        AND executions.session_id IS json_extract(attempt.value, '$.runId')))
+  AND NOT EXISTS (SELECT 1 FROM task_events, json_each(?) AS attempt
+    WHERE task_events.user_task_id = durable_tasks.id AND task_events.kind = 'progress' AND task_events.source = 'executor'
+      AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.event') = 'runner_submit_started'
+      AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+      AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$.idempotencyKey')
+        IS NOT json_extract(attempt.value, '$.idempotencyKey'))`;
 
 export interface AdmitTaskInput {
   /** userTaskId (§5.1) — id строки durable_tasks. */
@@ -75,6 +100,7 @@ export interface AdmitTaskInput {
   /** Поля квитанции/envelope, которые пишутся в payload события task_accepted. */
   envelope?: Record<string, unknown> | null;
   userValue?: unknown;
+  executionPolicy?: unknown;
   /** Заголовок диалога для conversations при создании разговора. */
   conversationTitle?: string | null;
   /**
@@ -141,6 +167,19 @@ export interface AnswerAwaitingInput {
   step?: string | null;
   source?: EventSource;
 }
+
+export interface OpenCpStopWindowInput {
+  profileId: string;
+  conversationId: string;
+  windowId: string;
+  admissionRequestIds: string[];
+  targets: CpStopTarget[];
+  restart: boolean;
+}
+
+export type OpenCpStopWindowResult =
+  | { ok: true; window: CpStopWindowRow; created: boolean }
+  | { ok: false; reason: 'snapshot_conflict' };
 
 interface StatePatch {
   status?: TaskStatus;
@@ -209,8 +248,8 @@ export class TaskStore {
           `INSERT INTO durable_tasks(
              id, profile_id, project_id, goal, status, stage,
              conversation_id, audience_id, destination_id, request_id, origin_session_id, user_value,
-             generation, created_at, updated_at, revision, start_deadline_at)
-           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0,?)
+             generation, created_at, updated_at, revision, start_deadline_at, execution_policy_json)
+           VALUES(?,?,?,?,'active','queued',?,?,?,?,?,?,1,?,?,0,?,?)
            ON CONFLICT(id) DO NOTHING`,
         )
         .bind(
@@ -229,6 +268,7 @@ export class TaskStore {
           // Принято = «ещё не начато»: дедлайн старта обязателен уже на приёме
           // (arch#132 R1/R2). Сбрасывается в NULL в startRun().
           now + (input.startDeadlineMs ?? DEFAULT_START_DEADLINE_MS),
+          input.executionPolicy === undefined ? null : JSON.stringify(input.executionPolicy),
         ),
     );
 
@@ -366,6 +406,25 @@ export class TaskStore {
     return res.results;
   }
 
+  async routingSelection(taskId: string, generation: number): Promise<unknown | null> {
+    const row = await this.db.prepare('SELECT payload_json FROM task_events WHERE event_id = ?')
+      .bind(`routing:${taskId}:${generation}`).first<{ payload_json: string }>();
+    return row ? JSON.parse(row.payload_json) : null;
+  }
+
+  async saveRoutingSelection(taskId: string, generation: number, selection: unknown): Promise<unknown> {
+    await this.db.prepare(
+      `INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+       SELECT ?, id, 'routing.selected', generation, 'router', ?, ? FROM durable_tasks
+       WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+    ).bind(`routing:${taskId}:${generation}`, JSON.stringify(selection), Date.now(), taskId, generation).run();
+    const saved = await this.routingSelection(taskId, generation);
+    const task = await this.requireTask(taskId);
+    if (task.generation !== generation) throw new FencedError(taskId, generation, task.generation);
+    if (saved !== null) return saved;
+    throw new TerminalStateError(taskId, task.status);
+  }
+
   /**
    * Нетерминальные задачи ПРОФИЛЯ: снимок «своих» данных для быстрых ответов
    * (`/status`, «что сейчас в работе»). Чужие задачи не выдаются никогда
@@ -401,13 +460,31 @@ export class TaskStore {
    */
   async startRun(
     taskId: string,
-    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number } = { generation: 1 },
+    opts: { generation: number; engine?: string | null; sessionId?: string | null; leaseSec?: number; idempotent?: boolean } = { generation: 1 },
   ): Promise<RunAttemptRow> {
     const task = await this.requireTask(taskId);
     if (isTerminalStatus(task.status)) {
       throw new TaskStoreError(`cannot start run on terminal task ${taskId} (${task.status})`, taskId);
     }
     const now = Date.now();
+    if (opts.idempotent) {
+      const runId = `routing-run:${taskId}:${opts.generation}`;
+      await this.db.batch([
+        this.db.prepare(
+          `INSERT OR IGNORE INTO executions(id, task_id, engine, status, generation, started_at, last_heartbeat_at)
+           SELECT ?, id, ?, 'running', generation, ?, ? FROM durable_tasks WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+        ).bind(runId, opts.engine ?? null, now, now, taskId, opts.generation),
+        this.db.prepare(
+          `INSERT OR IGNORE INTO task_events(event_id, user_task_id, execution_id, kind, generation, source, payload_json, created_at)
+           SELECT ?, task_id, id, 'run_started', generation, 'executor', ?, ? FROM executions WHERE id = ?`,
+        ).bind(runId, JSON.stringify({ runId, engine: opts.engine ?? null }), now, runId),
+        this.db.prepare('UPDATE durable_tasks SET start_deadline_at = NULL WHERE id = ? AND generation = ? AND EXISTS (SELECT 1 FROM executions WHERE id = ?)')
+          .bind(taskId, opts.generation, runId),
+      ]);
+      const current = await this.requireTask(taskId);
+      if (current.generation !== opts.generation) throw new FencedError(taskId, opts.generation, current.generation);
+      return this.requireRun(runId);
+    }
     const runId = crypto.randomUUID();
     const leaseUntil = opts.leaseSec ? now + opts.leaseSec * 1000 : null;
     // Атомарная граница старта: попытка, событие и сброс дедлайна — ОДНА транзакция.
@@ -419,23 +496,30 @@ export class TaskStore {
     //     успешного старта.
     // D1 batch — одна транзакция: либо всё, либо ничего.
     const payload = JSON.stringify({ runId, engine: opts.engine ?? null, sessionId: opts.sessionId ?? null, leaseUntil });
-    await this.db.batch([
+    const results = await this.db.batch([
       this.db
         .prepare(
           `INSERT INTO executions(id, task_id, session_id, engine, model, status, generation, started_at, last_heartbeat_at, lease_until)
-           VALUES(?,?,?,?,?,'running',?,?,?,?)`,
+           SELECT ?, id, ?, ?, NULL, 'running', generation, ?, ?, ? FROM durable_tasks
+           WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
         )
-        .bind(runId, task.id, opts.sessionId ?? null, opts.engine ?? null, null, opts.generation, now, now, leaseUntil),
+        .bind(runId, opts.sessionId ?? null, opts.engine ?? null, now, now, leaseUntil, taskId, opts.generation),
       this.db
         .prepare(
           `INSERT INTO task_events(user_task_id, execution_id, kind, generation, source, payload_json, created_at)
-           VALUES(?,?,'run_started',?,'executor',?,?)`,
+           SELECT task_id, id, 'run_started', generation, 'executor', ?, ? FROM executions WHERE id = ?`,
         )
-        .bind(task.id, runId, opts.generation, payload, now),
+        .bind(payload, now, runId),
       this.db
-        .prepare(`UPDATE durable_tasks SET start_deadline_at = NULL, updated_at = ? WHERE id = ? AND start_deadline_at IS NOT NULL`)
-        .bind(now, task.id),
+        .prepare(`UPDATE durable_tasks SET start_deadline_at = NULL, updated_at = ?
+          WHERE id = ? AND start_deadline_at IS NOT NULL AND EXISTS (SELECT 1 FROM executions WHERE id = ?)`)
+        .bind(now, taskId, runId),
     ]);
+    if (results[0]!.meta.changes !== 1) {
+      const current = await this.requireTask(taskId);
+      if (current.generation !== opts.generation) throw new FencedError(taskId, opts.generation, current.generation);
+      throw new TaskStoreError(`cannot start run on terminal task ${taskId} (${current.status})`, taskId);
+    }
     return this.requireRun(runId);
   }
 
@@ -781,7 +865,7 @@ export class TaskStore {
       this.db
         .prepare(
           `UPDATE executions SET status = ?, finished_at = ?, error_class = ?, error_text = ?, result_json = ?
-           WHERE id = ?`,
+           WHERE id = ? AND status IN ('running', 'unknown', 'waiting')`,
         )
         .bind(
           outcome,
@@ -791,20 +875,17 @@ export class TaskStore {
           opts.result === undefined ? null : JSON.stringify(opts.result),
           runId,
         ),
+      this.db.prepare(
+        `INSERT INTO task_events(user_task_id, kind, generation, source, payload_json, created_at)
+         SELECT task_id, 'run_finished', generation, 'executor', ?, ? FROM executions WHERE id = ? AND changes() = 1`,
+      ).bind(JSON.stringify({ runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null }), now, runId),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const run = await this.getRun(runId);
+      if (run?.status === outcome) return run;
       throw new TaskStoreError(`finish rejected for run ${runId} (status=${run?.status ?? 'missing'})`);
     }
-    const run = await this.requireRun(runId);
-    await this.logEvent({
-      taskId: run.task_id,
-      kind: 'run_finished',
-      generation: run.generation,
-      source: 'executor',
-      payload: { runId, outcome, errorClass: opts.errorClass ?? null, reason: opts.errorText ?? null },
-    });
-    return run;
+    return this.requireRun(runId);
   }
 
   /**
@@ -1174,12 +1255,24 @@ export class TaskStore {
           input.runId ?? null,
           now,
         ),
+      this.db.prepare(
+        `UPDATE task_artifacts SET size_bytes = COALESCE(size_bytes, ?), checksum = COALESCE(checksum, ?)
+         WHERE user_task_id = ? AND artifact_ref = ? AND run_id IS ?
+           AND (size_bytes IS NULL OR ? IS NULL OR size_bytes = ?)
+           AND (checksum IS NULL OR ? IS NULL OR checksum = ?)`,
+      ).bind(input.sizeBytes ?? null, input.checksum ?? null, input.taskId, input.artifactRef, input.runId ?? null,
+        input.sizeBytes ?? null, input.sizeBytes ?? null, input.checksum ?? null, input.checksum ?? null),
     ]);
     const artifact = (await this.db
       .prepare(`SELECT * FROM task_artifacts WHERE user_task_id = ? AND artifact_ref = ?`)
       .bind(input.taskId, input.artifactRef)
       .first<ArtifactRow>()) ?? null;
     if (!artifact) throw new TaskStoreError(`artifact record failed: ${input.artifactRef}`, input.taskId);
+    if (artifact.run_id !== (input.runId ?? null)
+      || (input.sizeBytes != null && artifact.size_bytes !== input.sizeBytes)
+      || (input.checksum != null && artifact.checksum !== input.checksum)) {
+      throw new TaskStoreError('artifact identity or metadata conflict', input.taskId);
+    }
     if (results[0]!.meta.changes === 1) {
       await this.logEvent({
         taskId: input.taskId,
@@ -1299,6 +1392,47 @@ export class TaskStore {
     return res.results;
   }
 
+  /** Persist only the minimal, identity-checked native exit proof. */
+  async recordNativeStopEvidence(taskId: string, proofs: NativeStopEvidence[]): Promise<void> {
+    const task = await this.requireTask(taskId);
+    const runs = await this.listRuns(taskId);
+    const unique = new Map<string, NativeStopEvidence>();
+    for (const proof of proofs) {
+      const run = runs.find((item) => item.id === proof.attemptId);
+      if (proof.taskId !== taskId || proof.profileId !== task.profile_id || proof.exitObserved !== true
+        || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
+        || !run || run.session_id !== proof.runId || run.generation !== proof.ownerGeneration
+        || run.finished_at === null || !['success', 'failed', 'cancelled'].includes(run.status)) {
+        throw new TaskStoreError(`native stop evidence identity mismatch for task ${taskId}`, taskId);
+      }
+      unique.set(proof.attemptId, {
+        taskId, profileId: task.profile_id, attemptId: run.id, runId: proof.runId,
+        ownerGeneration: run.generation, state: proof.state, exitObserved: true,
+      });
+    }
+    if (unique.size === 0) return;
+    const existing = await this.history(taskId);
+    const known = new Set<string>();
+    for (const event of existing) {
+      if (event.source !== 'gateway' || event.kind !== 'progress') continue;
+      try {
+        const payload = JSON.parse(event.payload_json) as { event?: string; nativeStops?: NativeStopEvidence[] };
+        if (payload.event === 'native_stop.confirmed') {
+          for (const proof of payload.nativeStops ?? []) known.add(proof.attemptId);
+        }
+      } catch { /* ignore unrelated or malformed progress payloads */ }
+    }
+    const newProofs = [...unique.values()].filter((proof) => !known.has(proof.attemptId));
+    if (newProofs.length === 0) return;
+    await this.logEvent({
+      taskId,
+      kind: 'progress',
+      generation: task.generation,
+      source: 'gateway',
+      payload: { event: 'native_stop.confirmed', nativeStops: newProofs },
+    });
+  }
+
   /** Есть ли событие такого типа (идемпотентность внешних операций, например run_started). */
   async hasEvent(taskId: string, kind: TaskEventKind): Promise<boolean> {
     const row = await this.db
@@ -1306,6 +1440,24 @@ export class TaskStore {
       .bind(taskId, kind)
       .first<{ present: number }>();
     return row !== null;
+  }
+
+  /** True if the durable pre-submit witness exists for this exact CP attempt. */
+  async runnerSubmitMayHaveStarted(taskId: string, attemptId: string): Promise<boolean> {
+    const events = await this.db.prepare(
+      `SELECT payload_json FROM task_events WHERE user_task_id = ? AND kind = 'progress'
+       AND source = 'executor' ORDER BY id`,
+    ).bind(taskId).all<{ payload_json: string }>();
+    let started = false;
+    for (const event of events.results) {
+      try {
+        const payload = JSON.parse(event.payload_json) as { event?: string; attemptId?: string | null };
+        if (payload.attemptId !== attemptId) continue;
+        if (payload.event === 'runner_submit_started') started = true;
+        if (payload.event === 'runner_submit_rejected') started = false;
+      } catch { /* Ignore unrelated or malformed progress payloads. */ }
+    }
+    return started;
   }
 
   // ----------------------------------------------------------- переходы
@@ -1625,50 +1777,60 @@ export class TaskStore {
    */
   async confirmCancel(
     taskId: string,
-    opts: { source?: EventSource; reason?: string } = {},
+    opts: { source?: EventSource; reason?: string; expectedGeneration?: number; nativeStops?: NativeStopEvidence[];
+      stopPin?: { target: CpStopTarget; snapshotId: string } } = {},
   ): Promise<{ cancelled: boolean; generation?: number; status?: TaskStatus }> {
     const now = Date.now();
     const before = await this.getTask(taskId);
     if (!before) throw new TaskNotFoundError(taskId);
     const source = opts.source ?? 'gateway';
 
-    if (isTerminalStatus(before.status)) {
+    if (isTerminalStatus(before.status) && before.status !== 'cancelled') {
+      return { cancelled: false, generation: before.generation, status: before.status };
+    }
+    if (opts.expectedGeneration !== undefined && before.generation !== opts.expectedGeneration) {
       return { cancelled: false, generation: before.generation, status: before.status };
     }
 
+    const cancellationGuard = `id = ? AND status = 'cancelled' AND generation = ?
+      ${opts.stopPin ? `AND ${CP_STOP_GUARD_SQL}` : ''}`;
+    const cancellationValues = [taskId, opts.expectedGeneration ?? before.generation,
+      ...(opts.stopPin ? this.cpStopGuardValues(opts.stopPin.target, opts.stopPin.snapshotId, opts.expectedGeneration ?? before.generation) : [])];
     const results = await this.db.batch([
       this.db
         .prepare(
           `UPDATE durable_tasks SET status = 'cancelled', updated_at = ?, revision = revision + 1
-           WHERE id = ? AND ${NON_TERMINAL_SQL}`,
+           WHERE id = ? AND ${NON_TERMINAL_SQL} AND (? IS NULL OR generation = ?)
+           ${opts.stopPin ? `AND ${CP_STOP_GUARD_SQL}` : ''}`,
         )
-        .bind(now, taskId),
+        .bind(now, taskId, opts.expectedGeneration ?? before.generation, opts.expectedGeneration ?? before.generation,
+          ...(opts.stopPin ? this.cpStopGuardValues(opts.stopPin.target, opts.stopPin.snapshotId, opts.expectedGeneration ?? before.generation) : [])),
+      this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, status_before, status_after,
+          generation, source, payload_json, created_at)
+        SELECT ?, id, 'task_cancelled', ?, 'cancelled', generation, ?,
+          json_set(?, '$.deliveriesSuppressed', (SELECT count(*) FROM deliveries WHERE user_task_id = durable_tasks.id
+            AND status IN ('pending','accepted'))), ?
+        FROM durable_tasks WHERE ${cancellationGuard}
+          AND NOT EXISTS (SELECT 1 FROM task_events WHERE user_task_id = durable_tasks.id
+            AND kind = 'task_cancelled' AND task_events.generation = durable_tasks.generation)`)
+        .bind(`cancel-confirmed:${taskId}:${opts.expectedGeneration ?? before.generation}`, before.status, source,
+          JSON.stringify({ reason: opts.reason ?? null, closedAwaiting: true, stopConfirmed: true,
+            ...(opts.nativeStops ? { nativeStops: opts.nativeStops } : {}) }), now, ...cancellationValues),
       this.db
-        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'`)
-        .bind(taskId),
+        .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'
+          AND EXISTS (SELECT 1 FROM durable_tasks WHERE ${cancellationGuard})`)
+        .bind(taskId, ...cancellationValues),
+      this.db.prepare(`UPDATE deliveries SET status = 'failed', last_error = 'suppressed_by_cancel',
+          next_attempt_at = NULL, updated_at = ? WHERE user_task_id = ? AND status IN ('pending','accepted')
+          AND EXISTS (SELECT 1 FROM durable_tasks WHERE ${cancellationGuard})`)
+        .bind(now, taskId, ...cancellationValues),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const row = await this.requireTask(taskId);
       return { cancelled: false, generation: row.generation, status: row.status };
     }
 
-    // Подтверждённая остановка подавляет retry доставки этой задачи (C03).
-    const suppressed = await this.suppressPendingDeliveries(taskId);
     const after = await this.requireTask(taskId);
-    await this.logEvent({
-      taskId,
-      kind: 'task_cancelled',
-      statusBefore: before.status,
-      statusAfter: 'cancelled',
-      generation: after.generation,
-      source,
-      payload: {
-        reason: opts.reason ?? null,
-        closedAwaiting: true,
-        stopConfirmed: true,
-        deliveriesSuppressed: suppressed,
-      },
-    });
     return { cancelled: true, generation: after.generation, status: 'cancelled' };
   }
 
@@ -1832,6 +1994,14 @@ export class TaskStore {
     const generation = input.generation ?? task.generation;
     const purpose = input.purpose ?? null;
     const kind = input.kind ?? kindForPurpose(purpose);
+    if (purpose === 'credential') {
+      const requirement = (input.schema as { credential?: CredentialRequirement } | undefined)?.credential;
+      if (!requirement) throw new AnswerRejectedError(input.taskId, 'credential_binding_required');
+      validateCredentialRequirement(requirement);
+      if (input.respondentScope !== task.profile_id || input.checkpointRef) {
+        throw new AnswerRejectedError(input.taskId, 'unsupported_credential_scope');
+      }
+    }
 
     const open = await this.getOpenAwaiting(input.taskId);
     if (open) throw new AlreadyOpenAwaitingError(input.taskId, open.awaiting_input_id);
@@ -1903,6 +2073,7 @@ export class TaskStore {
     const generation = input.generation ?? (await this.requireTask(input.taskId)).generation;
     const open = await this.getOpenAwaiting(input.taskId);
     if (!open) throw new TaskStoreError(`no open awaiting input for task ${input.taskId}`, input.taskId);
+    if (open.purpose === 'credential') throw new AnswerRejectedError(open.awaiting_input_id, 'verified_credential_event_required');
 
     const close = this.db
       .prepare(
@@ -2010,6 +2181,7 @@ export class TaskStore {
   }> {
     const awaiting = await this.getAwaiting(input.awaitingInputId);
     if (!awaiting) throw new TaskStoreError(`awaiting input not found: ${input.awaitingInputId}`);
+    if (awaiting.purpose === 'credential') throw new AnswerRejectedError(input.awaitingInputId, 'verified_credential_event_required');
 
     // Повтор того же ключа: вернуть прежний результат, ничего не меняя.
     const previous = await this.db
@@ -2087,6 +2259,48 @@ export class TaskStore {
     };
   }
 
+  async completeCredentialAwaiting(input: CredentialReadyEvent): Promise<{ record: CredentialCompletionRow; duplicate: boolean }> {
+    validateCredentialReadyEvent(input);
+    const previous = await this.db.prepare('SELECT * FROM credential_completions WHERE host_principal_id = ? AND event_id = ?')
+      .bind(input.hostPrincipalId, input.eventId).first<CredentialCompletionRow>();
+    if (previous) {
+      if (previous.awaiting_input_id !== input.awaitingInputId || previous.user_task_id !== input.userTaskId
+        || previous.profile_id !== input.profileId || previous.provider !== input.provider
+        || previous.binding_ref !== input.bindingRef || previous.provider_session_ref !== input.providerSessionRef
+        || previous.generation !== input.generation || previous.wait_version !== input.version) {
+        throw new AnswerConflictError(input.awaitingInputId, input.eventId);
+      }
+      return { record: previous, duplicate: true };
+    }
+    let inserted: boolean;
+    try {
+      const result = await this.db.prepare(`INSERT INTO credential_completions(
+        host_principal_id, event_id, awaiting_input_id, user_task_id, profile_id, provider, binding_ref,
+        provider_session_ref, generation, wait_version, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(host_principal_id, event_id) DO NOTHING`)
+        .bind(input.hostPrincipalId, input.eventId, input.awaitingInputId, input.userTaskId, input.profileId,
+          input.provider, input.bindingRef, input.providerSessionRef, input.generation, input.version, Date.now()).run();
+      inserted = result.meta.changes > 0;
+    } catch {
+      throw new AnswerRejectedError(input.awaitingInputId, 'credential_completion_rejected');
+    }
+    const stored = await this.db.prepare('SELECT * FROM credential_completions WHERE host_principal_id = ? AND event_id = ?')
+      .bind(input.hostPrincipalId, input.eventId).first<CredentialCompletionRow>();
+    if (!stored) throw new TaskStoreError('credential completion was not persisted', input.userTaskId);
+    if (!inserted) return this.completeCredentialAwaiting(input);
+    return { record: stored, duplicate: false };
+  }
+
+  async pendingCredentialContinuations(): Promise<CredentialCompletionRow[]> {
+    return (await this.db.prepare("SELECT * FROM credential_completions WHERE continuation_status = 'pending' ORDER BY created_at LIMIT 100")
+      .all<CredentialCompletionRow>()).results;
+  }
+
+  async markCredentialContinuation(record: CredentialCompletionRow, status: 'woken' | 'stale'): Promise<void> {
+    await this.db.prepare("UPDATE credential_completions SET continuation_status = ?, dispatched_at = ? WHERE host_principal_id = ? AND event_id = ? AND continuation_status = 'pending'")
+      .bind(status, Date.now(), record.host_principal_id, record.event_id).run();
+  }
+
   async getAwaiting(awaitingInputId: string): Promise<AwaitingInputRow | null> {
     return this.db
       .prepare(`SELECT * FROM awaiting_inputs WHERE awaiting_input_id = ?`)
@@ -2159,11 +2373,436 @@ export class TaskStore {
     return res.results;
   }
 
+  /**
+   * Resolve the caller's complete admission barrier plus every still-open task
+   * in this generic conversation to its exact durable acceptance receipt.
+   * No ID is reconstructed from conversation contents or provider metadata.
+   */
+  async resolveCpStopTargets(input: {
+    profileId: string;
+    conversationId: string;
+    admissionRequestIds: string[];
+  }): Promise<CpStopTargetResolution> {
+    const targetByTask = new Map<string, CpStopTarget>();
+    const receiptReason = async (task: TaskRow): Promise<CpStopTargetResolution | CpStopTarget> => {
+      if (task.profile_id !== input.profileId || task.conversation_id !== input.conversationId || !task.request_id) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      if (task.request_id.startsWith('tgcp-') && !/^tgcp-[0-9a-f]{64}$/.test(task.request_id)) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      const receipts = await this.db.prepare(
+        `SELECT event_id, user_task_id, payload_json FROM task_events
+         WHERE user_task_id = ? AND kind = 'task_accepted' ORDER BY id LIMIT 2`,
+      ).bind(task.id).all<{ event_id: string | null; user_task_id: string; payload_json: string }>();
+      if (receipts.results.length !== 1 || !receipts.results[0]!.event_id
+        || receipts.results[0]!.user_task_id !== task.id) {
+        return { ok: false, reason: 'receipt_missing' };
+      }
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(receipts.results[0]!.payload_json) as Record<string, unknown>; }
+      catch { return { ok: false, reason: 'identity_mismatch' }; }
+      if (payload.requestId !== task.request_id || payload.profileId !== task.profile_id) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      const routing = await this.db.prepare(`SELECT event_id FROM task_events
+        WHERE event_id = ? AND user_task_id = ? AND kind = 'routing.selected' AND source = 'router' AND generation = ?`)
+        .bind(`routing:${task.id}:${task.generation}`, task.id, task.generation).first<{ event_id: string }>();
+      return {
+        requestId: task.request_id,
+        userTaskId: task.id,
+        profileId: task.profile_id,
+        receiptId: receipts.results[0]!.event_id,
+        taskGeneration: task.generation,
+        ...(routing ? { quickAnswerRoutingEventId: routing.event_id } : {}),
+        attempts: await Promise.all((await this.listRuns(task.id)).sort((first, second) => first.id.localeCompare(second.id))
+          .map(async run => ({ attemptId: run.id, ownerGeneration: run.generation, runId: run.session_id,
+            idempotencyKey: await stableAttemptKey(task.id, run.generation) }))),
+      };
+    };
+
+    const openTasks = await this.db.prepare(
+      `SELECT * FROM durable_tasks WHERE profile_id = ? AND conversation_id = ?
+       AND ${NON_TERMINAL_SQL} ORDER BY created_at, id`,
+    ).bind(input.profileId, input.conversationId).all<TaskRow>();
+    for (const task of openTasks.results) {
+      const resolved = await receiptReason(task);
+      if ('ok' in resolved) return resolved;
+      targetByTask.set(task.id, resolved);
+    }
+
+    for (const requestId of input.admissionRequestIds) {
+      if (requestId.startsWith('tgcp-') && !/^tgcp-[0-9a-f]{64}$/.test(requestId)) {
+        return { ok: false, reason: 'identity_mismatch' };
+      }
+      const matches = await this.db.prepare(
+        `SELECT * FROM durable_tasks WHERE profile_id = ? AND request_id = ? ORDER BY id LIMIT 2`,
+      ).bind(input.profileId, requestId).all<TaskRow>();
+      if (matches.results.length > 1) return { ok: false, reason: 'identity_mismatch' };
+      const task = matches.results[0];
+      if (!task) {
+        const receipt = await this.db.prepare(
+          `SELECT event_id FROM task_events WHERE kind = 'task_accepted'
+           AND json_extract(payload_json, '$.profileId') = ?
+           AND json_extract(payload_json, '$.requestId') = ? LIMIT 1`,
+        ).bind(input.profileId, requestId).first<{ event_id: string | null }>();
+        return { ok: false, reason: receipt ? 'receipt_missing' : 'admission_unknown' };
+      }
+      const resolved = await receiptReason(task);
+      if ('ok' in resolved) return resolved;
+      targetByTask.set(task.id, resolved);
+    }
+
+    const admissionIds = new Set(input.admissionRequestIds);
+    const targetIds = new Set([...targetByTask.values()].map(target => target.requestId));
+    if (admissionIds.size !== input.admissionRequestIds.length || targetIds.size !== targetByTask.size
+      || admissionIds.size !== targetIds.size
+      || [...admissionIds].some(requestId => !targetIds.has(requestId))) {
+      return { ok: false, reason: 'identity_mismatch' };
+    }
+
+    return {
+      ok: true,
+      targets: [...targetByTask.values()].sort((a, b) => a.requestId.localeCompare(b.requestId)),
+    };
+  }
+
+  async cpStopWindow(profileId: string, conversationId: string): Promise<CpStopWindowRow | null> {
+    return this.db.prepare(`SELECT * FROM cp_stop_windows WHERE profile_id = ? AND conversation_id = ?`)
+      .bind(profileId, conversationId).first<CpStopWindowRow>();
+  }
+
+  private cpStopGuardValues(target: CpStopTarget, snapshotId: string, generation: number) {
+    const attempts = JSON.stringify(target.attempts);
+    return [generation, target.profileId, target.requestId, target.receiptId, snapshotId,
+      JSON.stringify(target), attempts, attempts, attempts];
+  }
+
+  async cpStopTargetMatches(target: CpStopTarget, snapshotId: string, generation: number): Promise<boolean> {
+    if (target.attempts.some(attempt => !Number.isSafeInteger(attempt.ownerGeneration) || attempt.ownerGeneration < 1)) return false;
+    for (const attempt of target.attempts) {
+      if (attempt.idempotencyKey !== await stableAttemptKey(target.userTaskId, attempt.ownerGeneration)) return false;
+    }
+    for (const event of await this.history(target.userTaskId)) {
+      if (event.kind !== 'progress' || event.source !== 'executor') continue;
+      let payload: { event?: string; attemptId?: string; idempotencyKey?: string };
+      try { payload = JSON.parse(event.payload_json); } catch { continue; }
+      if (payload.event !== 'runner_submit_started') continue;
+      const attempt = target.attempts.find(value => value.attemptId === payload.attemptId);
+      if (attempt && payload.idempotencyKey !== attempt.idempotencyKey) return false;
+    }
+    return !!await this.db.prepare(`SELECT 1 AS present FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL}`)
+      .bind(target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, generation)).first();
+  }
+
+  async claimCpStopTarget(target: CpStopTarget, snapshotId: string): Promise<number | null> {
+    const eventId = `cp-stop-claim:${snapshotId}:${target.userTaskId}`;
+    const existing = await this.db.prepare(`SELECT generation, payload_json FROM task_events WHERE event_id = ?`)
+      .bind(eventId).first<{ generation: number; payload_json: string }>();
+    if (existing) {
+      return existing.generation === target.taskGeneration + 1 && existing.payload_json === JSON.stringify(target)
+        && await this.cpStopTargetMatches(target, snapshotId, existing.generation) ? existing.generation : null;
+    }
+    if (!await this.cpStopTargetMatches(target, snapshotId, target.taskGeneration)) return null;
+    const task = await this.requireTask(target.userTaskId);
+    if (isTerminalStatus(task.status)) return target.taskGeneration;
+    await this.db.batch([
+      this.db.prepare(`UPDATE durable_tasks SET generation = generation + 1, updated_at = ?, revision = revision + 1
+        WHERE id = ? AND ${NON_TERMINAL_SQL} AND ${CP_STOP_GUARD_SQL}
+          AND NOT EXISTS (SELECT 1 FROM task_events WHERE event_id = ?)`)
+        .bind(Date.now(), target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, target.taskGeneration), eventId),
+      this.db.prepare(`INSERT INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+        SELECT ?, id, 'cancel_requested', generation, 'gateway', ?, ? FROM durable_tasks
+        WHERE id = ? AND changes() = 1`)
+        .bind(eventId, JSON.stringify(target), Date.now(), target.userTaskId),
+    ]);
+    const claimed = await this.db.prepare(`SELECT generation, payload_json FROM task_events WHERE event_id = ?`)
+      .bind(eventId).first<{ generation: number; payload_json: string }>();
+    return claimed?.payload_json === JSON.stringify(target)
+      && await this.cpStopTargetMatches(target, snapshotId, claimed.generation) ? claimed.generation : null;
+  }
+
+  async finishCpStopAttempt(target: CpStopTarget, snapshotId: string, generation: number,
+    attemptId: string, outcome: 'success' | 'failed' | 'cancelled'): Promise<boolean> {
+    const attempt = target.attempts.find(value => value.attemptId === attemptId);
+    if (!attempt) return false;
+    const updated = await this.db.prepare(`UPDATE executions SET status = ?, finished_at = ?
+      WHERE id = ? AND task_id = ? AND generation = ? AND session_id IS ? AND finished_at IS NULL
+        AND EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL})`)
+      .bind(outcome, Date.now(), attempt.attemptId, target.userTaskId, attempt.ownerGeneration, attempt.runId,
+        target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, generation)).run();
+    if (updated.meta.changes === 1) return true;
+    return !!await this.db.prepare(`SELECT 1 AS present FROM executions
+      WHERE id = ? AND task_id = ? AND generation = ? AND session_id IS ?
+        AND finished_at IS NOT NULL AND status IN ('success','failed','cancelled')
+        AND EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL})`)
+      .bind(attempt.attemptId, target.userTaskId, attempt.ownerGeneration, attempt.runId,
+        target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, generation)).first();
+  }
+
+  async recordCpStopEvidence(target: CpStopTarget, snapshotId: string, generation: number,
+    proof: NativeStopEvidence): Promise<boolean> {
+    const attempt = target.attempts.find(value => value.attemptId === proof.attemptId);
+    if (!attempt || proof.taskId !== target.userTaskId || proof.profileId !== target.profileId
+      || proof.runId !== attempt.runId || proof.ownerGeneration !== attempt.ownerGeneration
+      || proof.exitObserved !== true || !['succeeded', 'failed', 'cancelled'].includes(proof.state)) return false;
+    const eventId = `cp-stop-proof:${snapshotId}:${proof.attemptId}`;
+    await this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+      SELECT ?, id, 'progress', generation, 'gateway', ?, ? FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL}
+        AND EXISTS (SELECT 1 FROM executions WHERE id = ? AND finished_at IS NOT NULL AND status IN ('success','failed','cancelled'))`)
+      .bind(eventId, JSON.stringify({ event: 'native_stop.confirmed', nativeStops: [proof] }), Date.now(), target.userTaskId,
+        ...this.cpStopGuardValues(target, snapshotId, generation), proof.attemptId).run();
+    return await this.cpStopTargetMatches(target, snapshotId, generation)
+      && !!await this.db.prepare('SELECT 1 AS present FROM task_events WHERE event_id = ? AND generation = ?')
+        .bind(eventId, generation).first();
+  }
+
+  async recordCpStopNoRunWorkflow(target: CpStopTarget, snapshotId: string, generation: number,
+    workflowStatus: string): Promise<boolean> {
+    if (target.attempts.length !== 0 || !['terminated', 'complete', 'errored'].includes(workflowStatus)) return false;
+    const eventId = `cp-stop-no-run:${snapshotId}:${target.userTaskId}`;
+    await this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+      SELECT ?, id, 'progress', generation, 'gateway', ?, ? FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL}`)
+      .bind(eventId, JSON.stringify({ event: 'workflow_no_run.confirmed', snapshotId, workflowStatus }), Date.now(),
+        target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, generation)).run();
+    return !!await this.db.prepare(`SELECT 1 FROM task_events WHERE event_id = ? AND user_task_id = ? AND generation = ?`)
+      .bind(eventId, target.userTaskId, generation).first();
+  }
+
+  /** Atomic idempotent current-window claim; a new identity may replace only a confirmed window. */
+  async openCpStopWindow(input: OpenCpStopWindowInput): Promise<OpenCpStopWindowResult> {
+    const admissionIdsJson = JSON.stringify([...input.admissionRequestIds].sort());
+    const targetsJson = JSON.stringify(input.targets);
+    const current = await this.cpStopWindow(input.profileId, input.conversationId);
+    if (current?.window_id === input.windowId) {
+      if (current.admission_request_ids_json !== admissionIdsJson || current.targets_json !== targetsJson) {
+        return { ok: false, reason: 'snapshot_conflict' };
+      }
+      return { ok: true, window: current, created: false };
+    }
+    if (current && !input.restart) return { ok: false, reason: 'snapshot_conflict' };
+    if (current && input.restart && current.stop_confirmed !== 1) return { ok: false, reason: 'snapshot_conflict' };
+    if (!current && input.restart) return { ok: false, reason: 'snapshot_conflict' };
+
+    const now = Date.now();
+    const snapshotId = `stop_${crypto.randomUUID()}`;
+    const result = await this.db.prepare(
+      `INSERT INTO cp_stop_windows(profile_id, conversation_id, window_id, snapshot_id,
+         admission_request_ids_json, targets_json, stop_confirmed, reason, created_at, updated_at)
+       VALUES(?,?,?,?,?,?,0,'native_stop_pending',?,?)
+       ON CONFLICT(profile_id, conversation_id) DO UPDATE SET
+         window_id = excluded.window_id, snapshot_id = excluded.snapshot_id,
+         admission_request_ids_json = excluded.admission_request_ids_json,
+         targets_json = excluded.targets_json, stop_confirmed = 0,
+         reason = 'native_stop_pending', created_at = excluded.created_at, updated_at = excluded.updated_at
+       WHERE cp_stop_windows.stop_confirmed = 1 AND ? = 1`,
+    ).bind(input.profileId, input.conversationId, input.windowId, snapshotId, admissionIdsJson,
+      targetsJson, now, now, input.restart ? 1 : 0).run();
+    const window = await this.cpStopWindow(input.profileId, input.conversationId);
+    // Another identical request may have won the unique-key race. Return its
+    // durable snapshot when the complete admission and target set matches.
+    if (window?.window_id === input.windowId
+      && window.admission_request_ids_json === admissionIdsJson
+      && window.targets_json === targetsJson) {
+      return { ok: true, window, created: window.snapshot_id === snapshotId };
+    }
+    if (result.meta.changes !== 1 || !window || window.window_id !== input.windowId || window.snapshot_id !== snapshotId) {
+      return { ok: false, reason: 'snapshot_conflict' };
+    }
+    return { ok: true, window, created: true };
+  }
+
+  async updateCpStopWindow(input: {
+    profileId: string;
+    conversationId: string;
+    snapshotId: string;
+    stopConfirmed: boolean;
+    reason: string | null;
+    expectedTargetsJson?: string;
+  }): Promise<CpStopWindowRow | null> {
+    if (input.stopConfirmed) {
+      try {
+        const parsed: unknown = JSON.parse(input.expectedTargetsJson ?? 'null');
+        if (!Array.isArray(parsed) || parsed.some(target => !target || typeof target !== 'object' || !Array.isArray(target.attempts))) return null;
+      } catch { return null; }
+    }
+    const updated = await this.db.prepare(
+      `WITH
+       snapshot AS MATERIALIZED (
+         SELECT *, CASE WHEN json_valid(targets_json) THEN targets_json ELSE '[]' END AS safe_targets
+         FROM cp_stop_windows WHERE profile_id = ? AND conversation_id = ? AND snapshot_id = ?
+       ),
+       targets AS MATERIALIZED (
+         SELECT CASE WHEN item.type = 'object' THEN item.value ELSE '{}' END AS value,
+           snapshot.profile_id AS window_profile, snapshot.conversation_id AS window_conversation, snapshot.snapshot_id AS window_snapshot
+         FROM snapshot, json_each(snapshot.safe_targets) AS item
+       ),
+       admissions AS MATERIALIZED (
+         SELECT item.value, item.type FROM snapshot,
+           json_each(CASE WHEN json_valid(snapshot.admission_request_ids_json)
+             THEN snapshot.admission_request_ids_json ELSE '[]' END) AS item
+       ),
+       snapshot_integrity AS MATERIALIZED (
+         SELECT snapshot.snapshot_id FROM snapshot
+         WHERE json_valid(snapshot.admission_request_ids_json)
+           AND json_type(CASE WHEN json_valid(snapshot.admission_request_ids_json)
+             THEN snapshot.admission_request_ids_json ELSE '{}' END) = 'array'
+           AND (SELECT count(*) FROM targets) = (SELECT count(*) FROM admissions)
+           AND (SELECT count(DISTINCT value) FROM admissions) = (SELECT count(*) FROM admissions)
+           AND NOT EXISTS (SELECT 1 FROM admissions WHERE type != 'text' OR length(trim(value)) = 0
+             OR (SELECT count(*) FROM targets WHERE json_extract(targets.value, '$.requestId') = admissions.value) != 1)
+       ),
+       events AS MATERIALIZED (
+         SELECT *, CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END AS payload FROM task_events
+         WHERE user_task_id IN (SELECT json_extract(value, '$.userTaskId') FROM targets)
+       ),
+       pinned AS MATERIALIZED (
+         SELECT task.*, target.value, target.window_snapshot,
+           CASE WHEN json_valid(task.result_json) THEN task.result_json ELSE '{}' END AS result,
+           json_extract(target.value, '$.attempts') AS attempts
+         FROM targets AS target JOIN durable_tasks AS task ON task.id = json_extract(target.value, '$.userTaskId')
+         WHERE task.profile_id = target.window_profile AND task.profile_id = json_extract(target.value, '$.profileId')
+           AND task.conversation_id = target.window_conversation AND task.request_id = json_extract(target.value, '$.requestId')
+           AND json_type(target.value, '$.taskGeneration') = 'integer' AND json_extract(target.value, '$.taskGeneration') > 0
+           AND json_type(target.value, '$.attempts') = 'array' AND task.status IN ('done','failed','cancelled')
+           AND EXISTS (SELECT 1 FROM events AS receipt WHERE receipt.user_task_id = task.id
+             AND receipt.kind = 'task_accepted' AND receipt.event_id = json_extract(target.value, '$.receiptId')
+             AND json_extract(receipt.payload, '$.profileId') = task.profile_id
+             AND json_extract(receipt.payload, '$.requestId') = task.request_id)
+           AND (task.generation = json_extract(target.value, '$.taskGeneration')
+             OR (task.generation = json_extract(target.value, '$.taskGeneration') + 1
+               AND EXISTS (SELECT 1 FROM events AS claim WHERE claim.user_task_id = task.id
+                 AND claim.event_id = 'cp-stop-claim:' || target.window_snapshot || ':' || task.id
+                 AND claim.kind = 'cancel_requested' AND claim.source = 'gateway' AND claim.generation = task.generation
+                 AND claim.payload_json = target.value)))
+       ),
+       attempts_valid AS MATERIALIZED (
+         SELECT * FROM pinned AS task
+         WHERE (SELECT count(*) FROM executions WHERE task_id = task.id) = json_array_length(task.attempts)
+           AND (SELECT count(DISTINCT json_extract(value, '$.attemptId')) FROM json_each(task.attempts)) = json_array_length(task.attempts)
+           AND NOT EXISTS (SELECT 1 FROM json_each(task.attempts) AS attempt
+             WHERE attempt.type != 'object'
+               OR json_type(attempt.value, '$.ownerGeneration') IS NOT 'integer'
+               OR json_extract(attempt.value, '$.ownerGeneration') < 1
+               OR json_type(attempt.value, '$.idempotencyKey') IS NOT 'text'
+               OR json_type(attempt.value, '$.runId') IS NULL
+               OR (json_type(attempt.value, '$.runId') = 'null' AND EXISTS (
+                 SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
+                   AND json_extract(submission.payload, '$.event') = 'runner_submit_started'
+                   AND json_extract(submission.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+                   AND NOT EXISTS (SELECT 1 FROM events AS rejection WHERE rejection.user_task_id = task.id
+                     AND rejection.kind = 'progress' AND rejection.source = 'executor'
+                     AND rejection.generation = json_extract(attempt.value, '$.ownerGeneration')
+                     AND json_extract(rejection.payload, '$.event') = 'runner_submit_rejected'
+                     AND json_extract(rejection.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+                     AND json_extract(rejection.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey'))))
+               OR NOT EXISTS (SELECT 1 FROM executions AS execution
+                 WHERE execution.task_id = task.id AND execution.id = json_extract(attempt.value, '$.attemptId')
+                   AND execution.generation = json_extract(attempt.value, '$.ownerGeneration')
+                   AND execution.session_id IS json_extract(attempt.value, '$.runId')
+                   AND execution.finished_at IS NOT NULL AND execution.status IN ('success','failed','cancelled'))
+               OR (json_type(attempt.value, '$.runId') IS NOT 'null' AND NOT EXISTS (SELECT 1 FROM events AS proof,
+                 json_each(CASE WHEN json_type(proof.payload, '$.nativeStops') = 'array'
+                   THEN json_extract(proof.payload, '$.nativeStops') ELSE '[]' END) AS observed
+                 WHERE proof.user_task_id = task.id AND proof.kind = 'progress' AND proof.source = 'gateway'
+                   AND proof.event_id = 'cp-stop-proof:' || task.window_snapshot || ':' || json_extract(attempt.value, '$.attemptId')
+                   AND proof.generation = task.generation AND json_extract(proof.payload, '$.event') = 'native_stop.confirmed'
+                   AND observed.type = 'object' AND json_extract(observed.value, '$.taskId') = task.id
+                   AND json_extract(observed.value, '$.profileId') = task.profile_id
+                   AND json_extract(observed.value, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+                   AND json_extract(observed.value, '$.runId') IS json_extract(attempt.value, '$.runId')
+                   AND json_extract(observed.value, '$.ownerGeneration') = json_extract(attempt.value, '$.ownerGeneration')
+                   AND json_type(observed.value, '$.exitObserved') = 'true'
+                   AND json_extract(observed.value, '$.state') IN ('succeeded','failed','cancelled'))))
+           AND NOT EXISTS (SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
+             AND submission.kind = 'progress' AND submission.source = 'executor'
+             AND json_extract(submission.payload, '$.event') = 'runner_submit_started'
+             AND NOT EXISTS (SELECT 1 FROM events AS rejection WHERE rejection.user_task_id = task.id
+               AND rejection.kind = 'progress' AND rejection.source = 'executor'
+               AND rejection.generation = submission.generation
+               AND json_extract(rejection.payload, '$.event') = 'runner_submit_rejected'
+               AND json_extract(rejection.payload, '$.attemptId') = json_extract(submission.payload, '$.attemptId')
+               AND json_extract(rejection.payload, '$.idempotencyKey') = json_extract(submission.payload, '$.idempotencyKey'))
+             AND NOT EXISTS (SELECT 1 FROM json_each(task.attempts) AS attempt
+               WHERE json_extract(submission.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+                 AND submission.generation = json_extract(attempt.value, '$.ownerGeneration')
+                 AND json_extract(submission.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey')))
+       ),
+       settled AS MATERIALIZED (
+         SELECT * FROM attempts_valid AS task WHERE json_array_length(task.attempts) = 0
+           AND ((task.delivery_state = 'not_required' AND NOT EXISTS (SELECT 1 FROM deliveries WHERE user_task_id = task.id))
+             OR (task.delivery_state = 'delivered' AND EXISTS (SELECT 1 FROM deliveries WHERE user_task_id = task.id)
+               AND NOT EXISTS (SELECT 1 FROM deliveries WHERE user_task_id = task.id
+                 AND (status != 'delivered' OR provider_message_id IS NULL OR provider_message_id = ''))))
+       ),
+       quick_result AS MATERIALIZED (
+         SELECT * FROM settled AS task WHERE task.status = 'done' AND task.generation = json_extract(task.value, '$.taskGeneration')
+           AND json_extract(task.result, '$.ok', '$.mode', '$.version', '$.quickAnswer.version') = '[true,"quick_answer","communication-v1",1]'
+           AND json_extract(task.result, '$.quickAnswer.id') IN ('system_health','catalog.brief')
+           AND json_type(task.result, '$.answer') = 'text' AND length(trim(json_extract(task.result, '$.answer'))) > 0
+           AND NOT EXISTS (SELECT 1 FROM events AS history WHERE history.user_task_id = task.id
+             AND (history.execution_id IS NOT NULL OR history.kind = 'run_started' OR NOT json_valid(history.payload_json)
+               OR json_extract(history.payload, '$.event') = 'runner_submit_started'))
+       ),
+       quick_routing AS MATERIALIZED (
+         SELECT task.*, routing.payload AS routing_payload FROM quick_result AS task
+         JOIN events AS routing ON routing.user_task_id = task.id
+         WHERE routing.event_id = json_extract(task.value, '$.quickAnswerRoutingEventId')
+           AND routing.event_id = 'routing:' || task.id || ':' || task.generation
+           AND routing.kind = 'routing.selected' AND routing.source = 'router' AND routing.generation = task.generation
+           AND routing.execution_id IS NULL AND json_valid(routing.payload_json)
+           AND json_extract(routing.payload, '$.decision.route', '$.decision.needsExecutor', '$.decision.outcome',
+             '$.execution.agentDispatchAttempts', '$.execution.recipeCalls', '$.decision.capabilityVersion') = '["deterministic",false,"reply",0,0,1]'
+           AND json_type(routing.payload, '$.workOrder') = 'null' AND json_type(routing.payload, '$.continuation') = 'null'
+           AND json_type(routing.payload, '$.decisionId') = 'text' AND length(trim(json_extract(routing.payload, '$.decisionId'))) > 0
+           AND json_extract(routing.payload, '$.reply.text') = json_extract(task.result, '$.answer')
+           AND json_extract(routing.payload, '$.decision.capabilityId') = json_extract(task.result, '$.quickAnswer.id')
+       ),
+       quick_valid AS MATERIALIZED (
+         SELECT task.value FROM quick_routing AS task JOIN events AS output ON output.user_task_id = task.id
+         WHERE output.kind = 'task_status_changed' AND output.source = 'output' AND output.status_after = 'done'
+           AND output.generation = task.generation AND output.execution_id IS NULL AND json_valid(output.payload_json)
+           AND json_extract(output.payload, '$.decisionId') = json_extract(task.routing_payload, '$.decisionId')
+           AND json_extract(output.payload, '$.capabilityId') = json_extract(task.routing_payload, '$.decision.capabilityId')
+           AND json_extract(output.payload, '$.capabilityVersion') = 1
+       ),
+       no_run_valid AS MATERIALIZED (
+         SELECT task.value FROM settled AS task JOIN events AS witness ON witness.user_task_id = task.id
+         WHERE witness.event_id = 'cp-stop-no-run:' || task.window_snapshot || ':' || task.id
+           AND witness.source = 'gateway' AND witness.kind = 'progress' AND witness.generation = task.generation
+           AND json_extract(witness.payload, '$.event') = 'workflow_no_run.confirmed'
+           AND json_extract(witness.payload, '$.snapshotId') = task.window_snapshot
+           AND json_extract(witness.payload, '$.workflowStatus') IN ('terminated','complete','errored')
+           AND NOT EXISTS (SELECT 1 FROM events AS history WHERE history.user_task_id = task.id
+             AND (history.execution_id IS NOT NULL OR history.kind = 'run_started' OR NOT json_valid(history.payload_json)
+               OR json_extract(history.payload, '$.event') = 'runner_submit_started'))
+           AND json_type(task.value, '$.quickAnswerRoutingEventId') IS NULL
+           AND NOT EXISTS (SELECT 1 FROM events WHERE user_task_id = task.id AND kind = 'routing.selected')
+       ),
+       valid_targets AS MATERIALIZED (
+         SELECT value FROM attempts_valid WHERE json_array_length(attempts) > 0
+         UNION SELECT value FROM quick_valid UNION SELECT value FROM no_run_valid
+       )
+       UPDATE cp_stop_windows SET stop_confirmed = MAX(stop_confirmed, ?),
+         reason = CASE WHEN stop_confirmed = 1 OR ? = 1 THEN NULL ELSE ? END, updated_at = ?
+       WHERE profile_id = ? AND conversation_id = ? AND snapshot_id = ?
+         AND (? = 0 OR (targets_json = ? AND json_valid(targets_json)
+           AND json_type(CASE WHEN json_valid(targets_json) THEN targets_json ELSE '{}' END) = 'array'
+           AND EXISTS (SELECT 1 FROM snapshot_integrity WHERE snapshot_integrity.snapshot_id = cp_stop_windows.snapshot_id)
+           AND NOT EXISTS (SELECT 1 FROM targets WHERE NOT EXISTS (SELECT 1 FROM valid_targets WHERE valid_targets.value = targets.value))))`,
+    ).bind(input.profileId, input.conversationId, input.snapshotId,
+      input.stopConfirmed ? 1 : 0, input.stopConfirmed ? 1 : 0, input.reason, Date.now(), input.profileId,
+      input.conversationId, input.snapshotId, input.stopConfirmed ? 1 : 0, input.expectedTargetsJson ?? null).run();
+    if (updated.meta.changes !== 1) return null;
+    const current = await this.cpStopWindow(input.profileId, input.conversationId);
+    return current?.snapshot_id === input.snapshotId ? current : null;
+  }
+
   // ------------------------------------------------------------- отчёты
 
   /** Приёмочный запрос §6.1: статус + история + сигналы + ожидание одним SQL. */
   static readonly STATUS_SQL = `
-    SELECT t.id, t.status, t.stage, t.generation, t.revision, t.result_json, t.conversation_id,
+    SELECT t.id, t.profile_id, t.status, t.stage, t.generation, t.revision, t.result_json, t.conversation_id,
            t.awaiting_input_id, t.delivery_state, t.updated_at,
       (SELECT json_group_array(json_object('id', e.id, 'kind', e.kind, 'step', e.task_item_id,
                                             'before', e.status_before, 'after', e.status_after,
@@ -2179,6 +2818,7 @@ export class TaskStore {
 
   async statusRow(taskId: string): Promise<{
     id: string;
+    profile_id: string;
     status: TaskStatus;
     stage: TaskStage | null;
     generation: number;
@@ -2194,6 +2834,7 @@ export class TaskStore {
   } | null> {
     const row = await this.db.prepare(TaskStore.STATUS_SQL).bind(taskId).first<{
       id: string;
+      profile_id: string;
       status: TaskStatus;
       stage: TaskStage | null;
       generation: number;
@@ -2211,6 +2852,7 @@ export class TaskStore {
     const parse = (v: string | null, fallback: unknown) => (v == null ? fallback : JSON.parse(v));
     return {
       id: row.id,
+      profile_id: row.profile_id,
       status: row.status,
       stage: row.stage,
       generation: row.generation,

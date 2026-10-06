@@ -25,7 +25,7 @@ import { logStructured } from '../logging/structured-log';
 import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v1';
+export const RUN_SPEC_VERSION = 'run-spec-v4';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -54,7 +54,7 @@ export interface OutputSpec {
   mime?: string;
 }
 
-export interface McpServerSpec {
+export interface StdioMcpServerSpec {
   serverId: string;
   transport: 'stdio';
   command: string;
@@ -62,9 +62,27 @@ export interface McpServerSpec {
   envAllowlist?: string[];
   bindingRef?: string;
   allowedTools: string[];
+  catalogueVersion?: string;
+  policyVersion?: string;
   readinessTimeoutMs?: number;
   toolTimeoutMs?: number;
 }
+
+export interface RemoteMcpServerSpec {
+  serverId: string;
+  transport: 'remote';
+  url: string;
+  bindingRef: string;
+  /** Trusted Registry execution scope; CP never accepts it from task/model data. */
+  scope?: string;
+  allowedTools: string[];
+  catalogueVersion?: string;
+  policyVersion?: string;
+  registryDigest?: string;
+  toolTimeoutMs?: number;
+}
+
+export type McpServerSpec = StdioMcpServerSpec | RemoteMcpServerSpec;
 
 export interface McpSpec {
   servers: McpServerSpec[];
@@ -80,6 +98,21 @@ export interface CredentialBinding {
 export interface RepositorySpec {
   fullName: string;
   token?: string;
+}
+
+export interface InputManifestPin {
+  manifestRef: string;
+  manifestVersion: string;
+}
+
+export interface IngressManifestRef {
+  contractVersion: 1;
+  manifestRef: string;
+  manifestVersion: string;
+  userTaskId: string;
+  profileId: string;
+  runId: string;
+  ownerGeneration: number;
 }
 
 export interface ResultPolicy {
@@ -109,6 +142,7 @@ export interface RunSpec {
   input?: { refs?: InputRef[]; inlinePrompt?: string };
   /** Bounded task-level launch brief; Runner appends it to the accepted prompt. */
   instructions?: string;
+  ingressManifest?: IngressManifestRef;
   outputs?: OutputSpec[];
   mcp?: McpSpec;
   credentialBindings?: CredentialBinding[];
@@ -141,6 +175,7 @@ export interface SubmitRequest {
   conversationId?: string;
   engine: EngineSpec;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  ingressManifest?: { contractVersion: 1; manifestRef: string; manifestVersion: string };
   envAllowlist: string[];
   limits: RunLimits;
   deadline?: string;
@@ -149,6 +184,7 @@ export interface SubmitRequest {
   budget?: BudgetSpec;
   result?: ResultPolicy;
   outputs?: OutputSpec[];
+  mcp?: McpSpec;
   traceId?: string;
   instructions?: string;
   repository?: RepositorySpec;
@@ -157,10 +193,10 @@ export interface SubmitRequest {
 /**
  * Проекция RunSpec → тело `POST /v1/runs`.
  *
- * `mcp` объявляется в mapping'е (хостовая политика, версионирована), но
- * контракт submit его не переносит: отправка была бы отклонена как
- * «unknown field». Поэтому MCP честно НЕ передаётся, а факт виден в логе
- * (`run_spec.mcp_not_transmitted`) — молчаливое выбрасывание хуже.
+ * `mcp` переносится дословно: объявление MCP-серверов — хостовая политика, и
+ * Runner разрешает opaque bindingRef в scoped runAuth; allowedTools — декларация,
+ * а не enforcement. Значений секретов в remote metadata нет. Поля,
+ * которые Runner выводит сам, перечислены в `untransmittedRunSpecFields`.
  */
 export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   const body: SubmitRequest = {
@@ -171,11 +207,17 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.userTaskId) body.userTaskId = spec.userTaskId;
   if (spec.conversationId) body.conversationId = spec.conversationId;
   if (spec.input) body.input = spec.input;
+  if (spec.instructions) body.instructions = spec.instructions;
+  if (spec.ingressManifest) body.ingressManifest = {
+    contractVersion: spec.ingressManifest.contractVersion,
+    manifestRef: spec.ingressManifest.manifestRef,
+    manifestVersion: spec.ingressManifest.manifestVersion,
+  };
   if (spec.outputs) body.outputs = spec.outputs;
   if (spec.repository) body.repository = spec.repository;
   if (spec.result) body.result = spec.result;
+  if (spec.mcp) body.mcp = spec.mcp;
   if (spec.traceId) body.traceId = spec.traceId;
-  if (spec.instructions) body.instructions = spec.instructions;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
 }
@@ -183,7 +225,6 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
 /** Поля RunSpec, которые контракт submit не переносит (для лога и отчёта). */
 export function untransmittedRunSpecFields(spec: RunSpec): string[] {
   const fields: string[] = [];
-  if (spec.mcp) fields.push('mcp');
   for (const key of ['contractVersion', 'jobId', 'runId', 'operationId', 'profileId', 'ownerGeneration', 'cwd'] as const) {
     fields.push(key);
   }
@@ -205,6 +246,7 @@ export interface RunSpecInput {
   prompt: string;
   /** Разрешённые вложения: `artifactRefs` из envelope приёма. */
   refs: InputRef[];
+  inputManifest?: InputManifestPin | null;
   instructions: string | null;
   /** Внутренний runId попытки control plane — корреляция (traceId). */
   attemptRunId: string | null;
@@ -216,6 +258,9 @@ export interface RunSpecInput {
  * читается из bindings окружения воркера (секреты — только SM/GitHub Secrets).
  */
 export interface RunSpecPolicy {
+  inputRefs?: InputRef[];
+  timeoutMs?: number;
+  startupTimeoutMs?: number;
   cwd: string;
   envAllowlist: string[];
   outputs: OutputSpec[];
@@ -223,6 +268,7 @@ export interface RunSpecPolicy {
   repository: RepositorySpec | null;
   resultDestinationRef: string | null;
   maxOutputBytes: number | null;
+  maxLogBytes?: number | null;
 }
 
 export interface BuiltRunSpec {
@@ -255,7 +301,23 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const REPOSITORY_FULL_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
+const PROMPT_CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+const MAX_MCP_URL_CHARS = 2000;
+const MAX_MCP_BINDING_REF_CHARS = 300;
+const MAX_MCP_TOOL_TIMEOUT_MS = 120_000;
+const REMOTE_MCP_SERVER_KEYS = new Set([
+  'serverId',
+  'transport',
+  'url',
+  'bindingRef',
+  'scope',
+  'allowedTools',
+  'toolTimeoutMs',
+  'catalogueVersion',
+  'policyVersion',
+  'registryDigest',
+]);
 
 function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
   if (!raw) return fallback;
@@ -289,6 +351,9 @@ export function defaultRunSpecPolicy(): RunSpecPolicy {
 }
 
 export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpecPolicy {
+  if (env.RUN_SPEC_POLICY_PROFILE && env.RUN_SPEC_POLICY_PROFILE !== 'integration-v1') {
+    throw new RunSpecMappingError('RUN_SPEC_POLICY_PROFILE: unsupported host policy', 'RUN_SPEC_POLICY_PROFILE');
+  }
   const cwd = env.RUN_SPEC_CWD?.trim() || DEFAULT_CWD;
   if (!cwd.startsWith('/')) throw new RunSpecMappingError('RUN_SPEC_CWD: expected an absolute path', 'RUN_SPEC_CWD');
 
@@ -302,26 +367,41 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
 
   const outputs = readJson<OutputSpec[]>(env.RUN_SPEC_OUTPUTS, [], 'RUN_SPEC_OUTPUTS');
   const mcp = readJson<McpSpec | null>(env.RUN_SPEC_MCP, null, 'RUN_SPEC_MCP');
-  const repository = readJson<RepositorySpec | null>(env.RUN_SPEC_REPOSITORY, null, 'RUN_SPEC_REPOSITORY');
+  const repository = readJson<RepositorySpec | null>(env.RUN_SPEC_REPOSITORY,
+    env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { fullName: 'trained-assist/ai-agent-runner' } : null,
+    'RUN_SPEC_REPOSITORY');
 
   const timeoutMs = Number(env.RUN_SPEC_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new RunSpecMappingError(`RUN_SPEC_TIMEOUT_MS: expected 1..${MAX_TIMEOUT_MS}`, 'RUN_SPEC_TIMEOUT_MS');
   }
 
+  const startupTimeoutMs = Number(env.RUN_SPEC_STARTUP_TIMEOUT_MS ?? (env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? 600_000 : 0));
+  if (!Number.isInteger(startupTimeoutMs) || startupTimeoutMs < 0 || startupTimeoutMs > MAX_TIMEOUT_MS) {
+    throw new RunSpecMappingError(`RUN_SPEC_STARTUP_TIMEOUT_MS: expected 0..${MAX_TIMEOUT_MS}`, 'RUN_SPEC_STARTUP_TIMEOUT_MS');
+  }
+
   const maxOutputBytes = env.RUN_SPEC_MAX_OUTPUT_BYTES ? Number(env.RUN_SPEC_MAX_OUTPUT_BYTES) : null;
   if (maxOutputBytes !== null && (!Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0)) {
     throw new RunSpecMappingError('RUN_SPEC_MAX_OUTPUT_BYTES: expected a positive integer', 'RUN_SPEC_MAX_OUTPUT_BYTES');
   }
+  const maxLogBytes = env.RUN_SPEC_MAX_LOG_BYTES ? Number(env.RUN_SPEC_MAX_LOG_BYTES) : null;
+  if (maxLogBytes !== null && (!Number.isSafeInteger(maxLogBytes) || maxLogBytes <= 0)) {
+    throw new RunSpecMappingError('RUN_SPEC_MAX_LOG_BYTES: expected a positive safe integer', 'RUN_SPEC_MAX_LOG_BYTES');
+  }
 
   return {
     cwd,
+    inputRefs: readJson<InputRef[]>(env.RUN_SPEC_INPUT_REFS, [], 'RUN_SPEC_INPUT_REFS'),
+    ...(env.RUN_SPEC_TIMEOUT_MS || env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { timeoutMs } : {}),
+    ...(env.RUN_SPEC_STARTUP_TIMEOUT_MS || env.RUN_SPEC_POLICY_PROFILE === 'integration-v1' ? { startupTimeoutMs } : {}),
     envAllowlist,
     outputs,
     mcp,
     repository,
     resultDestinationRef: env.RUN_SPEC_RESULT_DESTINATION_REF?.trim() || null,
     maxOutputBytes,
+    ...(maxLogBytes !== null ? { maxLogBytes } : {}),
   };
 }
 
@@ -335,10 +415,13 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
  * входной тип.
  */
 export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltRunSpec {
-  const errors: string[] = [];
   const fail = (field: string, message: string): never => {
     throw new RunSpecMappingError(message, field);
   };
+
+  if ('mcp' in input) {
+    fail('mcp', 'mcp: host-owned field must not come from the client input');
+  }
 
   if (!SAFE_ID.test(input.userTaskId)) fail('userTaskId', 'userTaskId: expected a safe id');
   if (input.profileId.length === 0 || input.profileId.length > 200) fail('profileId', 'profileId: expected 1..200 chars');
@@ -350,15 +433,20 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   const conversationId = input.conversationId ?? `task:${input.userTaskId}`;
   if (!Number.isInteger(input.ownerGeneration) || input.ownerGeneration < 0) fail('ownerGeneration', 'ownerGeneration: expected a non-negative integer');
   if (input.engineName.length === 0 || input.engineName.length > 100) fail('engineName', 'engineName: expected 1..100 chars');
-  const trimmedPrompt = input.prompt.trim();
-  if (trimmedPrompt.length === 0) fail('prompt', 'prompt: must not be empty');
-  if (trimmedPrompt.length > 100_000) fail('prompt', 'prompt: longer than 100000');
+  if (input.prompt.trim().length === 0) fail('prompt', 'prompt: must not be empty');
+  const inlinePrompt = input.prompt;
+  if (inlinePrompt.length > 100_000) fail('prompt', 'prompt: longer than 100000');
+  if (PROMPT_CONTROL_CHARS.test(inlinePrompt)) fail('prompt', 'prompt: unsupported control characters');
+  const instructions = input.instructions?.trim() || undefined;
+  if (instructions && instructions.length > 10_000) fail('instructions', 'instructions: longer than Runner limit 10000');
+  if (instructions && PROMPT_CONTROL_CHARS.test(instructions)) fail('instructions', 'instructions: unsupported control characters');
   if (!Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) fail('timeoutMs', 'timeoutMs: expected a positive integer');
 
   // Разрешённые вложения: только строковые ref'ы, без версионирования со стороны
   // клиента — версию вправе назначить только хост (snapshot binding).
   const refs: InputRef[] = [];
-  for (const [index, ref] of input.refs.entries()) {
+  if (policy.inputRefs !== undefined && !Array.isArray(policy.inputRefs)) fail('inputRefs', 'host inputRefs: expected an array');
+  for (const [index, ref] of [...(policy.inputRefs ?? []), ...input.refs].entries()) {
     if (typeof ref?.ref !== 'string' || ref.ref.length === 0 || ref.ref.length > 500) {
       fail(`refs[${index}]`, `refs[${index}].ref: expected 1..500 chars`);
     }
@@ -377,20 +465,16 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     refs.push(out);
   }
 
-  // Контракт Runner'а не пропускает управляющие символы в inlinePrompt
-  // (checkString: CONTROL_CHARS). Сообщение приходит от пользователя и может
-  // быть многострочным — нормализуем явно и фиксируем факт в результате.
-  const promptNormalized = CONTROL_CHARS.test(trimmedPrompt);
-  const inlinePrompt = promptNormalized
-    ? trimmedPrompt.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/[ \t]+/g, ' ').trim()
-    : trimmedPrompt;
-  const instructions = input.instructions?.trim() || undefined;
-  if (instructions && instructions.length > 10_000) fail('instructions', 'instructions: longer than Runner limit 10000');
-  if (instructions && CONTROL_CHARS.test(instructions)) fail('instructions', 'instructions: control characters are not allowed');
+  const promptNormalized = false;
 
   const runId = `run_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}_${input.ownerGeneration}`;
   const jobId = `job_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}`;
   const operationId = `op_${input.attemptRunId ?? runId}`;
+  if (input.inputManifest) {
+    if (refs.length > 0) fail('inputManifest', 'ingress manifest cannot be combined with other input refs');
+    if (input.inputManifest.manifestRef !== `cp-input-manifest:${input.userTaskId}`) fail('inputManifest.manifestRef', 'expected the task-scoped Control Plane manifest ref');
+    if (!/^[0-9a-f]{64}$/.test(input.inputManifest.manifestVersion)) fail('inputManifest.manifestVersion', 'expected lowercase sha256');
+  }
 
   const spec: RunSpec = {
     contractVersion: RUN_SPEC_CONTRACT_VERSION,
@@ -405,14 +489,24 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     cwd: policy.cwd,
     envAllowlist: [...policy.envAllowlist],
     limits: {
-      timeoutMs: input.timeoutMs,
+      timeoutMs: policy.timeoutMs ?? input.timeoutMs,
       ...(policy.maxOutputBytes ? { maxOutputBytes: policy.maxOutputBytes } : {}),
+      ...(policy.maxLogBytes ? { maxLogBytes: policy.maxLogBytes } : {}),
     },
     input: {
       ...(inlinePrompt ? { inlinePrompt } : {}),
       ...(refs.length ? { refs } : {}),
     },
     ...(instructions ? { instructions } : {}),
+    ...(input.inputManifest ? { ingressManifest: {
+      contractVersion: 1,
+      manifestRef: input.inputManifest.manifestRef,
+      manifestVersion: input.inputManifest.manifestVersion,
+      userTaskId: input.userTaskId,
+      profileId: input.profileId,
+      runId,
+      ownerGeneration: input.ownerGeneration,
+    } } : {}),
     ...(policy.outputs.length ? { outputs: policy.outputs } : {}),
     ...(policy.mcp ? { mcp: policy.mcp } : {}),
     ...(policy.repository ? { repository: policy.repository } : {}),
@@ -424,6 +518,35 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if (!validation.ok) fail('spec', `built RunSpec is rejected by the Runner contract: ${validation.errors.join('; ')}`);
 
   return { spec, version: RUN_SPEC_VERSION, promptNormalized, runId, jobId, operationId };
+}
+
+function isSafeBindingRef(value: unknown): boolean {
+  return (
+    typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= MAX_MCP_BINDING_REF_CHARS
+    && !CONTROL_CHARS.test(value)
+  );
+}
+
+function remoteMcpUrlErrors(url: unknown, path: string): string[] {
+  if (typeof url !== 'string' || url.length === 0 || url.length > MAX_MCP_URL_CHARS) {
+    return [`${path}: expected an absolute HTTPS URL of 1..${MAX_MCP_URL_CHARS} chars`];
+  }
+  if (CONTROL_CHARS.test(url)) return [`${path}: unsupported control characters`];
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return [`${path}: expected an absolute HTTPS URL`];
+  }
+  const errors: string[] = [];
+  if (parsed.protocol !== 'https:') errors.push(`${path}: expected HTTPS`);
+  if (parsed.hostname.length === 0) errors.push(`${path}: expected a nonempty hostname`);
+  if (parsed.username.length > 0 || parsed.password.length > 0) errors.push(`${path}: must not carry credentials`);
+  if (parsed.search.length > 0) errors.push(`${path}: must not carry a query`);
+  if (parsed.hash.length > 0) errors.push(`${path}: must not carry a fragment`);
+  return errors;
 }
 
 // ── Локальная проверка по контракту Runner'а ───────────────────────────────
@@ -484,7 +607,7 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
       if (input.inlinePrompt !== undefined) {
         if (typeof input.inlinePrompt !== 'string' || input.inlinePrompt.length === 0) errors.push('spec.input.inlinePrompt: expected a non-empty string');
         else if (input.inlinePrompt.length > 100_000) errors.push('spec.input.inlinePrompt: longer than 100000');
-        else if (CONTROL_CHARS.test(input.inlinePrompt)) errors.push('spec.input.inlinePrompt: control characters are not allowed');
+        else if (PROMPT_CONTROL_CHARS.test(input.inlinePrompt)) errors.push('spec.input.inlinePrompt: unsupported control characters');
       }
       if (input.refs !== undefined) {
         if (!Array.isArray(input.refs)) errors.push('spec.input.refs: expected an array');
@@ -502,10 +625,22 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
     }
   }
 
+  if (spec.ingressManifest !== undefined) {
+    const manifest = spec.ingressManifest;
+    if (manifest.contractVersion !== 1) errors.push('spec.ingressManifest.contractVersion: expected 1');
+    if (manifest.manifestRef !== `cp-input-manifest:${spec.userTaskId}`) errors.push('spec.ingressManifest.manifestRef: expected task-scoped manifest ref');
+    if (!/^[0-9a-f]{64}$/.test(manifest.manifestVersion)) errors.push('spec.ingressManifest.manifestVersion: expected lowercase sha256');
+    if (manifest.userTaskId !== spec.userTaskId) errors.push('spec.ingressManifest.userTaskId: must match spec.userTaskId');
+    if (manifest.profileId !== spec.profileId) errors.push('spec.ingressManifest.profileId: must match spec.profileId');
+    if (manifest.runId !== spec.runId) errors.push('spec.ingressManifest.runId: must match spec.runId');
+    if (manifest.ownerGeneration !== spec.ownerGeneration) errors.push('spec.ingressManifest.ownerGeneration: must match spec.ownerGeneration');
+    if ((spec.input?.refs?.length ?? 0) > 0) errors.push('spec.input.refs: cannot be combined with spec.ingressManifest');
+  }
+
   if (spec.instructions !== undefined) {
     if (typeof spec.instructions !== 'string' || spec.instructions.length === 0) errors.push('spec.instructions: expected a non-empty string');
     else if (spec.instructions.length > 10_000) errors.push('spec.instructions: longer than 10000');
-    else if (CONTROL_CHARS.test(spec.instructions)) errors.push('spec.instructions: control characters are not allowed');
+    else if (PROMPT_CONTROL_CHARS.test(spec.instructions)) errors.push('spec.instructions: unsupported control characters');
   }
 
   if (spec.outputs !== undefined) {
@@ -541,6 +676,12 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
       errors.push('spec.mcp.servers: expected a non-empty array');
     } else {
       const toolOwner = new Map<string, string>();
+      const serverIds = new Set<string>();
+      if (spec.mcp.servers.some((server) => server?.transport === 'remote')) {
+        for (const key of Object.keys(spec.mcp)) {
+          if (key !== 'servers') errors.push('spec.mcp: unsupported field for remote metadata');
+        }
+      }
       spec.mcp.servers.forEach((server, i) => {
         const path = `spec.mcp.servers[${i}]`;
         if (typeof server !== 'object' || server === null) {
@@ -548,8 +689,9 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
           return;
         }
         if (!SAFE_ID.test(server.serverId)) errors.push(`${path}.serverId: expected a safe id`);
-        if (server.transport !== 'stdio') errors.push(`${path}.transport: expected "stdio"`);
-        if (typeof server.command !== 'string' || server.command.length === 0 || server.command.length > 512) errors.push(`${path}.command: expected 1..512 chars`);
+        else if (serverIds.has(server.serverId)) errors.push(`${path}.serverId: duplicate server id "${server.serverId}"`);
+        else serverIds.add(server.serverId);
+
         if (!Array.isArray(server.allowedTools) || server.allowedTools.length === 0) {
           errors.push(`${path}.allowedTools: at least one tool is required`);
         } else {
@@ -563,6 +705,34 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
             else toolOwner.set(tool, server.serverId);
           });
         }
+
+        if (server.transport === 'remote') {
+          if (server.scope !== undefined && (typeof server.scope !== 'string' || !SAFE_ID.test(server.scope))) errors.push(`${path}.scope: expected a safe scope identifier`);
+          if (server.catalogueVersion !== undefined && (typeof server.catalogueVersion !== 'string' || !SAFE_ID.test(server.catalogueVersion))) errors.push(`${path}.catalogueVersion: expected a safe version identifier`);
+          if (server.policyVersion !== undefined && (typeof server.policyVersion !== 'string' || !SAFE_ID.test(server.policyVersion))) errors.push(`${path}.policyVersion: expected a safe version identifier`);
+          if (server.registryDigest !== undefined && (typeof server.registryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(server.registryDigest))) errors.push(`${path}.registryDigest: expected a lowercase SHA-256 hex digest`);
+          if (!isSafeBindingRef(server.bindingRef)) {
+            errors.push(`${path}.bindingRef: expected 1..${MAX_MCP_BINDING_REF_CHARS} chars without control characters`);
+          }
+          if (Array.isArray(server.allowedTools) && server.allowedTools.length > 50) {
+            errors.push(`${path}.allowedTools: at most 50 tools are allowed`);
+          }
+          if (server.toolTimeoutMs !== undefined && (!Number.isInteger(server.toolTimeoutMs) || server.toolTimeoutMs <= 0 || server.toolTimeoutMs > MAX_MCP_TOOL_TIMEOUT_MS)) {
+            errors.push(`${path}.toolTimeoutMs: expected an integer in [1, ${MAX_MCP_TOOL_TIMEOUT_MS}]`);
+          }
+          for (const key of Object.keys(server)) {
+            if (!REMOTE_MCP_SERVER_KEYS.has(key)) {
+              errors.push(`${path}.${key}: unsupported field for transport "remote"`);
+            }
+          }
+          errors.push(...remoteMcpUrlErrors(server.url, `${path}.url`));
+          return;
+        }
+        if (server.transport !== 'stdio') {
+          errors.push(`${path}.transport: expected "stdio" or "remote"`);
+          return;
+        }
+        if (typeof server.command !== 'string' || server.command.length === 0 || server.command.length > 512) errors.push(`${path}.command: expected 1..512 chars`);
         if (server.envAllowlist !== undefined) {
           if (!Array.isArray(server.envAllowlist)) errors.push(`${path}.envAllowlist: expected an array`);
           else server.envAllowlist.forEach((name, j) => {
@@ -632,11 +802,11 @@ export function logRunSpecBuilt(fields: {
   refs: number;
   outputs: number;
   mcpServers: number;
-  /** true, если MCP объявлен, но контракт submit его не переносит. */
+  /** Всегда false: `mcp` переносится в тело submit вместе с остальным RunSpec. */
   mcpNotTransmitted?: boolean;
   /** Поля RunSpec, которые Runner выводит сам и в submit не передаются. */
   untransmitted?: string[];
-  /** Без текстового содержимого: манифест launch brief из first-stage Router. */
+  /** Safe launch manifest only; no user prompt or brief text. */
   executionContext?: ExecutionContextManifest | null;
   reason?: string;
 }): void {
