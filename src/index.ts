@@ -74,6 +74,8 @@ export interface Env {
   ROUTER_SELECTOR?: string;
   COMMUNICATION_API_URL?: string;
   COMMUNICATION_SERVICE?: Fetcher;
+  /** Test-only direct Worker binding to the isolated Registry MCP host. */
+  REGISTRY_MCP_HOST_SERVICE?: Fetcher;
   COMMUNICATION_TOKEN?: string;
   COMMUNICATION_TIMEOUT_MS?: string;
   COMMUNICATION_WRITER_TIMEOUT_MS?: string;
@@ -384,8 +386,9 @@ async function handleRouteRoute(
   const ordinaryV1 = v1 && !typedSignal;
   if (ordinaryV1) await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
   const durableContext = ordinaryV1 ? await durableConversationContext(store, task) : undefined;
-  const hostMcp = ordinaryV1 ? registryFixtureHostMcp({ taskId: task.id, generation: task.generation,
-    profileId: task.profile_id, principalId: principal.principalId }, env.MCP_TEST_AUTH_TOKEN, runtime.policy.mcp) : undefined;
+  const hostMcp = ordinaryV1 && env.REGISTRY_MCP_HOST_SERVICE ? registryFixtureHostMcp({ taskId: task.id, generation: task.generation,
+    profileId: task.profile_id, principalId: principal.principalId }, env.MCP_TEST_AUTH_TOKEN, runtime.policy.mcp,
+    env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
   const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
   const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
 
