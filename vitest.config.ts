@@ -8,7 +8,10 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: './wrangler.jsonc' },
-        miniflare: { bindings: { MIGRATIONS: migrations } },
+        miniflare: {
+          bindings: { MIGRATIONS: migrations },
+          serviceBindings: { INGRESS_BUFFER: async () => Response.json({ error: 'buffer fixture unavailable' }, { status: 503 }) },
+        },
       }),
     ],
     test: {

@@ -17,10 +17,10 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
-import { awaitRunnerResult, type TaskArtifactManifest } from '../runner-adapter/await-runner-result';
-import type { EngineText } from '../runner-adapter/engine-text';
+import { inputManifestForTask } from '../intake/input-artifact-manifest';
+import { awaitRunnerResult, type AwaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
-import { RunnerUnavailableError } from '../runner-adapter/errors';
+import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
 import type { ManagedGtdContext } from '../gtd/types';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
@@ -30,6 +30,8 @@ import {
   logRunSpecBuilt,
   untransmittedRunSpecFields,
   type RunSpecPolicy,
+  type McpSpec,
+  RunSpecMappingError,
 } from '../run-spec/run-spec';
 
 /** Маркер версии логики шагов: payload шагов фиксируют, каким кодом они шли (#92). */
@@ -77,6 +79,8 @@ export interface PlanParams {
   crashRunOnce?: boolean;
   goal?: string | null;
   instructions?: string | null;
+  /** Host-built, policy-pinned MCP descriptor; never accepted from user/model input. */
+  mcpDescriptor?: McpSpec | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
@@ -122,12 +126,23 @@ const answerText = (raw: unknown): string | null => {
 function attachmentRefsOf(userValue: string | null): { ref: string; version?: string; snapshotId?: string }[] {
   if (!userValue) return [];
   try {
-    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; snapshotIds?: unknown };
+    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; inputArtifacts?: unknown; snapshotIds?: unknown };
     const refs = Array.isArray(parsed?.artifactRefs) ? parsed.artifactRefs : [];
     const snapshotIds = Array.isArray(parsed?.snapshotIds) ? parsed.snapshotIds : [];
+    const inputArtifacts = Array.isArray(parsed?.inputArtifacts) ? parsed.inputArtifacts : [];
+    const typedRefs = new Set(inputArtifacts.flatMap((value) => value && typeof value === 'object'
+      && typeof (value as { ref?: unknown }).ref === 'string' ? [(value as { ref: string }).ref] : []));
     const out: { ref: string; version?: string; snapshotId?: string }[] = refs
       .filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
+      .filter((ref) => !typedRefs.has(ref))
       .map((ref) => ({ ref }));
+    for (const value of inputArtifacts) {
+      if (!value || typeof value !== 'object') continue;
+      const artifact = value as { ref?: unknown; version?: unknown };
+      if (typeof artifact.ref === 'string' && artifact.ref.length > 0) {
+        out.push({ ref: artifact.ref, ...(typeof artifact.version === 'string' ? { version: artifact.version } : {}) });
+      }
+    }
     for (const id of snapshotIds) {
       if (typeof id === 'string' && id.length > 0) out.push({ ref: id, snapshotId: id });
     }
@@ -305,8 +320,9 @@ export interface EngineRun {
   runId: string;
   ownerGeneration: number;
   /** Происхождение текста: из каких событий он собран (см. `engine-text.ts`). */
-  textSource: EngineText['source'] | null;
-  textVersion: EngineText['version'] | null;
+  textSource: RunnerAnswer['source'];
+  textVersion: RunnerAnswer['version'];
+  answerSource: RunnerAnswer['answerSource'];
 }
 
 /**
@@ -335,6 +351,7 @@ async function finalizeRun(
     ...(engine
       ? {
           mode: 'engine' as const,
+          answerSource: engine.answerSource ?? engine.textSource,
           runId: engine.runId,
           ownerGeneration: engine.ownerGeneration,
           attempt: 1,
@@ -343,6 +360,7 @@ async function finalizeRun(
             text: engine.text,
             source: engine.textSource,
             version: engine.textVersion,
+            answerSource: engine.answerSource,
           },
           persistence: engine.persistence,
           exitReason: engine.exitReason,
@@ -398,12 +416,32 @@ export async function conversationPlan(
   //  - ожидание открыто   -> продолжаем ждать ответа;
   //  - ответ уже durable  -> сразу к результату (ответ пережил смерть движка).
   const resumeAwaitingId = p.awaitingInputId ?? (current?.status === 'awaiting_input' ? (await store.getOpenAwaiting(taskId))?.awaiting_input_id ?? null : null);
+  let credentialContinued = false;
   if (resumeAwaitingId) {
     const row = await store.getAwaiting(resumeAwaitingId);
-    if (row?.status === 'answered' && row.answer_json !== null) {
+    if (row?.purpose === 'credential') {
+      if (row.user_task_id !== taskId || row.generation !== generation || row.checkpoint_ref
+        || (await store.listRuns(taskId)).some(run => run.session_id || run.status === 'unknown' || run.status === 'interrupted')) {
+        return { ok: false, reason: 'credential_checkpoint_resume_unavailable' };
+      }
+      if (row.status === 'open') {
+        const waited = await waitForAnswer({ store, ctx, taskId, awaitingInputId: resumeAwaitingId,
+          eventType: 'credential_ready', pollSec: p.waitPollSec ?? 60,
+          timeoutSec: p.waitTimeoutSec ?? 24 * 3600, step: 'credential-wait' });
+        if (waited.answer === null) return handleWaitTimeout(store, p);
+      }
+      const answered = await store.getAwaiting(resumeAwaitingId);
+      if (answered?.status !== 'answered' || !answered.answer_json
+        || JSON.parse(answered.answer_json).status !== 'ready') {
+        return { ok: false, reason: 'verified_credential_event_required' };
+      }
+      if (!adapter) return { ok: false, reason: 'credential_execution_unavailable' };
+      credentialContinued = true;
+    }
+    if (!credentialContinued && row?.status === 'answered' && row.answer_json !== null) {
       return finalizeRun(ctx, store, p, null, JSON.parse(row.answer_json));
     }
-    if (row?.status === 'open') {
+    if (!credentialContinued && row?.status === 'open') {
       const waited = await waitForAnswer({
         store,
         ctx,
@@ -470,12 +508,20 @@ export async function conversationPlan(
   // статус задачи не меняется), а повтор с тем же ключом возвращает тот же
   // Run, а не второй.
   let runnerRunId: string | null = null;
+  let runnerDeclaredOutputs: string[] | undefined;
+  let runnerResultTimeoutSec = p.runnerTimeoutSec ?? 120;
   if (adapter) {
+    const baseRunSpecPolicy = deps.runSpecPolicy ?? defaultRunSpecPolicy();
+    const taskProfileId = current?.profile_id ?? p.profileId;
+    if (p.mcpDescriptor && taskProfileId !== 'integration-telegram-ux-v1') {
+      throw new RunSpecMappingError('MCP descriptor is limited to the Telegram UX test profile', 'mcp');
+    }
+    const runSpecPolicy = p.mcpDescriptor ? { ...baseRunSpecPolicy, mcp: p.mcpDescriptor } : baseRunSpecPolicy;
     const attemptKey = await stableAttemptKey(taskId, generation);
+    const inputManifest = current ? await inputManifestForTask(current) : null;
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
-    const taskProfileId = current?.profile_id ?? p.profileId;
     const runSpec = buildRunSpec(
       {
         userTaskId: taskId,
@@ -484,13 +530,28 @@ export async function conversationPlan(
         ownerGeneration: generation,
         engineName: p.runnerEngine ?? 'opencode',
         prompt: p.goal ?? current?.goal ?? '',
-        refs: attachmentRefsOf(current?.user_value ?? null),
+        refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
+        inputManifest: inputManifest ? {
+          manifestRef: inputManifest.manifestRef,
+          manifestVersion: inputManifest.manifestVersion,
+        } : null,
         instructions: p.instructions ?? null,
         attemptRunId: p.runId ?? null,
         timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
       },
-      deps.runSpecPolicy ?? defaultRunSpecPolicy(),
+      runSpecPolicy,
     );
+    // Durable witness before the external side effect. If cancellation sees this
+    // marker without an attached Runner runId, submission outcome is ambiguous.
+    await store.logEvent({
+      taskId,
+      kind: 'progress',
+      generation,
+      executionId: p.runId ?? null,
+      source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: p.runId ?? null, idempotencyKey: attemptKey },
+    });
+    runnerResultTimeoutSec = (runSpec.spec.limits.timeoutMs + (runSpecPolicy.startupTimeoutMs ?? 0)) / 1000;
     logRunSpecBuilt({
       profileId: taskProfileId,
       userTaskId: taskId,
@@ -501,25 +562,45 @@ export async function conversationPlan(
       outputs: runSpec.spec.outputs?.length ?? 0,
       mcpServers: runSpec.spec.mcp?.servers.length ?? 0,
       // Контракт submit не переносит часть полей RunSpec — факт виден, а не молчалив.
-      mcpNotTransmitted: runSpec.spec.mcp ? true : false,
+      mcpNotTransmitted: false,
       untransmitted: untransmittedRunSpecFields(runSpec.spec),
     });
     const receipt = await ctx.step(
       'submit-runner',
       async () => {
         try {
-          return await adapter.submit({
+          const submitted = await adapter.submit({
             userTaskId: taskId,
             idempotencyKey: attemptKey,
             runSpec: runSpec.spec,
           });
+          return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [] };
         } catch (e) {
-          // Любой отказ Runner на этапе submit — неизвестный исход попытки, а не
-          // «failed»: задача не теряется, авто-rerun нет, повтор с тем же ключом
-          // безопасен. Раньше сюда попадал только RunnerUnavailableError, и
-          // отказ контракта (403/400) оставлял попытку в running навсегда.
-          const errorClass = e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
+          // A definitive 4xx rejection means Runner did not admit this request;
+          // transport/5xx failures remain unknown because dispatch may have won.
+          const definitivelyRejected = e instanceof RunnerConflictError || e instanceof RunnerNotFoundError
+            || e instanceof RunnerStaleGenerationError;
+          const errorClass = definitivelyRejected ? 'runner_rejected'
+            : e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
           if (p.runId) {
+            if (definitivelyRejected) {
+              await store.finishRun(p.runId, 'failed', { errorClass, errorText: String((e as Error)?.message ?? e) }).catch(() => null);
+              await store.logEvent({
+                taskId,
+                kind: 'progress',
+                generation,
+                executionId: p.runId,
+                source: 'executor',
+                payload: { event: 'runner_submit_rejected', attemptId: p.runId, idempotencyKey: attemptKey },
+              });
+              const task = await store.requireTask(taskId);
+              if (!isTerminalStatus(task.status)) {
+                await store.commit(taskId, generation, { status: 'failed', stage: 'finished',
+                  executionId: p.runId, step: 'runner_submit', result: { ok: false, reason: 'runner_rejected' },
+                  payload: { errorClass } });
+              }
+              return { submitRejected: true as const };
+            }
             await store.markConnectionLost(p.runId, String((e as Error)?.message ?? e), errorClass).catch(() => null);
           }
           await store.logEvent({
@@ -534,7 +615,11 @@ export async function conversationPlan(
       },
       { limit: 8, delaySec: 3 },
     );
+    if ('submitRejected' in receipt && receipt.submitRejected) {
+      return { ok: false, reason: 'runner_rejected' };
+    }
     runnerRunId = receipt.runId;
+    runnerDeclaredOutputs = receipt.declaredOutputPaths;
     // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
     if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId);
     await store.logEvent({
@@ -552,10 +637,10 @@ export async function conversationPlan(
         // Что реально ушло в Runner: манифест выходов и ссылки. Без этого
         // «объявленные выходы не экспортируются» не отличить от «не объявлены».
         runSpec: {
-          outputs: runSpec.spec.outputs?.map((o) => o.path) ?? [],
+          outputs: runnerDeclaredOutputs ?? null,
           refs: runSpec.spec.input?.refs?.length ?? 0,
           promptNormalized: runSpec.promptNormalized,
-          mcpNotTransmitted: runSpec.spec.mcp ? true : false,
+          mcpNotTransmitted: false,
         },
       },
     });
@@ -581,7 +666,7 @@ export async function conversationPlan(
   // (`awaitingPurpose` задан в params, а не угадан планом). Обычный one-shot
   // запуск не требует ответа «да»: результат даёт движок. Нового цикла агента
   // здесь нет — тот же шаг `mark-awaiting`, просто не безусловный.
-  const awaitingInputId: string | null = p.awaitingPurpose
+  const awaitingInputId: string | null = p.awaitingPurpose && !credentialContinued
     ? await ctx.step('mark-awaiting', async () => {
         try {
           const opened = await store.openAwaiting({
@@ -624,27 +709,46 @@ export async function conversationPlan(
   // артефакты. connection_lost — неизвестный исход, не failed, без авто-rerun.
   let engine: EngineRun | null = null;
   if (adapter && runnerRunId) {
-    const outcome = await ctx.step('await-runner', () =>
-      awaitRunnerResult(adapter, store, {
-        runId: runnerRunId,
-        taskId,
-        generation,
-        pollSec: p.runnerPollSec ?? 1,
-        timeoutSec: p.runnerTimeoutSec ?? 120,
-      }),
-    );
+    let observation = 0;
+    let outcome: AwaitRunnerResult;
+    for (;;) {
+      outcome = await ctx.step(observation === 0 ? 'await-runner' : `await-runner-reconcile-${observation}`, () =>
+        awaitRunnerResult(adapter, store, {
+          runId: runnerRunId,
+          taskId,
+          generation,
+          engineName: p.runnerEngine ?? 'opencode',
+          declaredOutputPaths: runnerDeclaredOutputs,
+          pollSec: p.runnerPollSec ?? 1,
+          timeoutSec: runnerResultTimeoutSec,
+        }),
+        { limit: 2, delaySec: 1, timeoutSec: Math.ceil(runnerResultTimeoutSec) + 60 },
+      );
+      if (outcome.ok || !['connection_lost', 'runner_unavailable', 'runner_timeout'].includes(outcome.reason)) break;
+      const reason = outcome.reason;
+      await ctx.step(`runner-observation-unknown-${observation}`, () => store.logEvent({
+        taskId, generation, kind: 'error', source: 'executor', executionId: runnerRunId,
+        payload: { class: reason, outcome: 'unknown', runId: runnerRunId, ownerGeneration: generation,
+          reconciliation: 'same_accepted_run', observation },
+      }));
+      await ctx.sleep(`runner-reconcile-backoff-${observation}`, Math.min(60, 15 * 2 ** Math.min(observation, 2)));
+      observation += 1;
+    }
     if (!outcome.ok) {
-      if (outcome.reason === 'connection_lost') return { ok: false, reason: 'connection_lost' };
-      if (outcome.reason === 'runner_unavailable') return { ok: false, reason: 'runner_unavailable' };
       return { ok: false, reason: outcome.reason };
     }
     const runnerResult = outcome.result;
+    const native = p.runnerEngine === 'dynamic-ip-azure-agent-run';
+    const cachedStatus = native && !outcome.answer ? await adapter.status(runnerRunId) : null;
+    const cachedNativeText = typeof cachedStatus?.answer === 'string' && cachedStatus.answer.trim().length > 0 ? cachedStatus.answer : null;
+    const text = outcome.answer ? outcome.answer.text : native ? cachedNativeText : outcome.engineText?.text ?? runnerResult.text ?? null;
     engine = {
       ok: runnerResult.outcome === 'succeeded',
       // Конечный текст движка (stdout), а не ответ человека.
-      text: outcome.engineText ? outcome.engineText.text : runnerResult.text ?? null,
-      textSource: outcome.engineText?.source ?? null,
-      textVersion: outcome.engineText?.version ?? null,
+      text,
+      textSource: outcome.answer?.source ?? (native ? cachedNativeText === null ? null : 'runner_status_answer' : outcome.engineText?.source ?? null),
+      textVersion: outcome.answer?.version ?? (native ? cachedNativeText === null ? null : 'runner-answer-v1' : outcome.engineText?.version ?? null),
+      answerSource: outcome.answer?.answerSource ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
       exitReason: runnerResult.exitReason,

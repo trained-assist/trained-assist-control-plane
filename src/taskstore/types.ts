@@ -90,12 +90,50 @@ export const TASK_EVENT_KINDS = [
   'error',
   /** Продолжение, выданное Output (P17): ключ идемпотентности — decisionId. */
   'continuation.created',
+  'routing.selected',
 ] as const;
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number];
 
 /** Модуль-источник события (§5.2). */
 export const EVENT_SOURCES = ['input', 'router', 'executor', 'output', 'gateway', 'cron', 'watcher'] as const;
 export type EventSource = (typeof EVENT_SOURCES)[number];
+
+export interface NativeStopEvidence {
+  taskId: string;
+  profileId: string;
+  attemptId: string;
+  runId: string;
+  ownerGeneration: number;
+  state: 'succeeded' | 'failed' | 'cancelled';
+  exitObserved: true;
+}
+
+export interface CpStopTarget {
+  requestId: string;
+  userTaskId: string;
+  profileId: string;
+  receiptId: string;
+  taskGeneration: number;
+  quickAnswerRoutingEventId?: string;
+  attempts: { attemptId: string; ownerGeneration: number; runId: string | null; idempotencyKey: string }[];
+}
+
+export interface CpStopWindowRow {
+  profile_id: string;
+  conversation_id: string;
+  window_id: string;
+  snapshot_id: string;
+  admission_request_ids_json: string;
+  targets_json: string;
+  stop_confirmed: number;
+  reason: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export type CpStopTargetResolution =
+  | { ok: true; targets: CpStopTarget[] }
+  | { ok: false; reason: 'admission_unknown' | 'receipt_missing' | 'identity_mismatch' };
 
 /** Канал-источник сигнала (§5.3). */
 export const SIGNAL_SOURCES = ['telegram', 'web', 'api', 'cron', 'system'] as const;
