@@ -43,6 +43,8 @@ The buffer returns HTTP 200 only after confirming object existence, immutable ve
 
 The buffer accepts only the shared `INGRESS_BUFFER_TOKEN`, configured as a secret independently on the buffer Worker, CP sandbox, and Telegram sandbox. CP sends this credential over the private service binding for verification and content reads; it is never included in an intake envelope, RunSpec, or logs. Missing binding, missing token, unavailable buffer, missing object, or mismatched metadata prevents task admission; there is no text-only partial fallback. The verifier is an admission check, not the Runner byte transport. Runner materialization remains a separate required integration before media execution can be enabled.
 
+For the Telegram integration sandbox, `wrangler.integration-v1.jsonc` binds `INGRESS_BUFFER` to `trained-assist-ingress-buffer-sandbox`. Provision the same secret on that deployed Worker with `wrangler secret put INGRESS_BUFFER_TOKEN --config wrangler.integration-v1.jsonc`; do not use the production/default config as a substitute for the integration target.
+
 ## Runner read API
 
 Runner uses the same signed principal authentication as other CP clients. Its principal needs `tasks:read` for the task profile. Credentials stay in Runner deployment bindings and are never put in RunSpec. The CP exposes a task-pinned manifest:
