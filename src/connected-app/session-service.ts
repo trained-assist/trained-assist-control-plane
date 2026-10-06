@@ -61,6 +61,7 @@ function redirectOf(raw: string | undefined, audience: Audience): string | null 
   } catch { return null; }
 }
 type Session = { principal_id: string; profile_id: string; enabled: number; generation: number };
+type Membership = { scopes_json: string; enabled: number };
 type Token = { session_id: string; generation: number; audience: string; scopes_json: string; issued_at: number;
   expires_at: number; revoked_at: number | null };
 type Code = { session_id: string; generation: number; audience: string; scopes_json: string; redirect_uri: string;
@@ -70,6 +71,15 @@ async function s256(verifier: string): Promise<string> {
   let raw = '';
   for (const byte of bytes) raw += String.fromCharCode(byte);
   return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function membershipScopes(db: D1Database, principalId: string, profileId: string,
+  audience: Audience): Promise<string[]> {
+  const row = await db.prepare(`SELECT scopes_json, enabled FROM connected_app_memberships
+    WHERE principal_id = ? AND profile_id = ? AND audience = ?`)
+    .bind(principalId, profileId, audience).first<Membership>();
+  if (!row || row.enabled !== 1) return [];
+  try { return scopesOf(JSON.parse(row.scopes_json), audience) ?? []; } catch { return []; }
 }
 
 /** Host-side and app-service API only. No browser credential is minted here. */
@@ -111,8 +121,10 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     if (!config.issuer || !/^https:\/\//.test(config.issuer)) return respond({ error: 'issuer not configured' }, 503);
     const verified = await resolvePlatformSession(req);
     if (!verified || !ID.test(verified.principalId) || !ID.test(verified.profileId) || !ID.test(verified.sessionId)) return unauthorized();
-    const allowed = scopesOf(verified.grants[handoffAudience], handoffAudience);
-    if (!allowed || !requested.every(scope => allowed.includes(scope))) return respond({ error: 'forbidden' }, 403);
+    const verifiedScopes = scopesOf(verified.grants[handoffAudience], handoffAudience);
+    const memberScopes = await membershipScopes(db, verified.principalId, verified.profileId, handoffAudience);
+    const allowed = verifiedScopes?.filter(scope => memberScopes.includes(scope)) ?? [];
+    if (!allowed.length || !requested.every(scope => allowed.includes(scope))) return respond({ error: 'forbidden' }, 403);
     const previous = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
       .bind(verified.sessionId).first<Session>();
     if (previous && previous.principal_id !== verified.principalId) return respond({ error: 'session owner conflict' }, 409);
@@ -176,8 +188,9 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
       .bind(row.session_id, handoffAudience).first<{ scopes_json: string }>();
     const scopes = JSON.parse(row.scopes_json) as string[];
     const allowed = grant ? JSON.parse(grant.scopes_json) as string[] : [];
+    const memberScopes = session ? await membershipScopes(db, session.principal_id, session.profile_id, handoffAudience) : [];
     if (!session || session.enabled !== 1 || session.generation !== row.generation ||
-        !scopes.every(scope => allowed.includes(scope))) return respond({ error: 'session changed' }, 403);
+        !scopes.every(scope => allowed.includes(scope) && memberScopes.includes(scope))) return respond({ error: 'session changed' }, 403);
     if (!config.issuer || !/^https:\/\//.test(config.issuer)) return respond({ error: 'issuer not configured' }, 503);
     const bearer = token();
     await db.prepare(`INSERT INTO connected_app_tokens(token_hash,session_id,generation,audience,scopes_json,issued_at,expires_at,revoked_at)
@@ -197,9 +210,10 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
       .bind(row.session_id, audience).first<{ scopes_json: string }>();
     const tokenScopes = JSON.parse(row.scopes_json) as string[];
     const currentScopes = grant ? JSON.parse(grant.scopes_json) as string[] : [];
+    const memberScopes = session ? await membershipScopes(db, session.principal_id, session.profile_id, audience) : [];
     if (!session || session.enabled !== 1 || session.generation !== row.generation ||
         !ID.test(session.principal_id) || !ID.test(session.profile_id) ||
-        !tokenScopes.length || !tokenScopes.every(scope => currentScopes.includes(scope))) return respond(inactive());
+        !tokenScopes.length || !tokenScopes.every(scope => currentScopes.includes(scope) && memberScopes.includes(scope))) return respond(inactive());
     return respond({ active: true, iss: config.issuer, aud: audience, sub: session.principal_id,
       profileId: session.profile_id, sessionId: row.session_id, nbf: row.issued_at, exp: row.expires_at,
       scopes: tokenScopes });
@@ -215,6 +229,12 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     const previous = await db.prepare('SELECT principal_id FROM connected_app_sessions WHERE session_id = ?')
       .bind(sessionId).first<{ principal_id: string }>();
     if (previous && previous.principal_id !== principalId) return respond({ error: 'session owner conflict' }, 409);
+    if (enabled) {
+      for (const [aud, scopes] of entries) {
+        const memberScopes = await membershipScopes(db, principalId, profileId, aud as Audience);
+        if (!(scopes as string[]).every(scope => memberScopes.includes(scope))) return respond({ error: 'forbidden' }, 403);
+      }
+    }
     // Every host update advances generation, immediately invalidating earlier tokens.
     await db.batch([
       db.prepare(`INSERT INTO connected_app_sessions(session_id, principal_id, profile_id, enabled, generation, updated_at)
@@ -238,7 +258,8 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
       .bind(sessionId, audience).first<{ scopes_json: string }>();
     const allowed = grant ? JSON.parse(grant.scopes_json) as string[] : [];
-    if (!session || session.enabled !== 1 || !scopes.every(scope => allowed.includes(scope))) return respond({ error: 'forbidden' }, 403);
+    const memberScopes = session ? await membershipScopes(db, session.principal_id, session.profile_id, audience) : [];
+    if (!session || session.enabled !== 1 || !scopes.every(scope => allowed.includes(scope) && memberScopes.includes(scope))) return respond({ error: 'forbidden' }, 403);
     const bearer = token();
     await db.prepare(`INSERT INTO connected_app_tokens(token_hash,session_id,generation,audience,scopes_json,issued_at,expires_at,revoked_at)
       VALUES(?,?,?,?,?,?,?,NULL)`).bind(await hash(bearer), sessionId, session.generation, audience,

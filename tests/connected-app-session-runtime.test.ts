@@ -19,9 +19,18 @@ const request = (route: string, body: object, key: string, enabled = true) => wo
     body: JSON.stringify(body),
   }), { ...bindings, CONNECTED_APP_IDENTITY_ENABLED: enabled ? 'true' : undefined },
 );
-const select = (sessionId: string, profileId: string, scopes = ['recruiting.responses.read'], enabled = true) =>
-  request('select', { sessionId, principalId: 'user_demo_001', profileId, enabled,
+async function membership(profileId: string, scopes: string[]) {
+  await env.DB.prepare(`INSERT INTO connected_app_memberships
+    (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)
+    ON CONFLICT(principal_id,profile_id,audience) DO UPDATE SET
+    scopes_json=excluded.scopes_json,enabled=1,updated_at=excluded.updated_at`)
+    .bind('user_demo_001', profileId, 'recruiting-web', JSON.stringify(scopes)).run();
+}
+const select = async (sessionId: string, profileId: string, scopes = ['recruiting.responses.read'], enabled = true) => {
+  if (enabled) await membership(profileId, scopes);
+  return request('select', { sessionId, principalId: 'user_demo_001', profileId, enabled,
     grants: { 'recruiting-web': scopes } }, hostKey);
+};
 const issue = (sessionId: string, scopes = ['recruiting.responses.read']) =>
   request('issue', { sessionId, audience: 'recruiting-web', scopes }, hostKey);
 const introspect = (token: string, audience = 'recruiting-web', key = recruitingKey) =>
@@ -108,5 +117,22 @@ describe('connected app identity opt-in D1 runtime', () => {
     await env.DB.prepare('UPDATE connected_app_tokens SET expires_at = 1 WHERE token_hash = ?')
       .bind(row?.token_hash).run();
     expect(await (await introspect(bearer)).json()).toEqual({ active: false });
+  });
+
+  it('rejects host selection without reviewed membership and revokes on membership loss', async () => {
+    const sessionId = 'session_membership_guard';
+    const denied = await request('select', { sessionId, principalId: 'user_demo_001',
+      profileId: 'profile_unreviewed', enabled: true,
+      grants: { 'recruiting-web': ['recruiting.responses.read'] } }, hostKey);
+    expect(denied.status).toBe(403);
+    expect(await env.DB.prepare('SELECT session_id FROM connected_app_sessions WHERE session_id = ?')
+      .bind(sessionId).first()).toBeNull();
+    await select(sessionId, 'profile_reviewed');
+    const bearer = (await (await issue(sessionId)).json() as { token: string }).token;
+    await env.DB.prepare(`UPDATE connected_app_memberships SET enabled = 0
+      WHERE principal_id = ? AND profile_id = ? AND audience = ?`)
+      .bind('user_demo_001', 'profile_reviewed', 'recruiting-web').run();
+    expect(await (await introspect(bearer)).json()).toEqual({ active: false });
+    expect((await issue(sessionId)).status).toBe(403);
   });
 });

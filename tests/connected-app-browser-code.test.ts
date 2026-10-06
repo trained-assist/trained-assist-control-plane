@@ -24,6 +24,13 @@ const resolver = (sessionId: string, profileId = 'profile_demo_001'): PlatformSe
   principalId: 'user_demo_001', profileId, sessionId,
   grants: { 'recruiting-web': ['recruiting.responses.read'] },
 });
+async function membership(profileId: string, scopes = ['recruiting.responses.read']) {
+  await env.DB.prepare(`INSERT INTO connected_app_memberships
+    (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)
+    ON CONFLICT(principal_id,profile_id,audience) DO UPDATE SET
+    scopes_json=excluded.scopes_json,enabled=1,updated_at=excluded.updated_at`)
+    .bind('user_demo_001', profileId, 'recruiting-web', JSON.stringify(scopes)).run();
+}
 async function authorize(sessionId: string, options: { audience?: string; redirectUri?: string; scopes?: string;
   challenge?: string; state?: string; resolve?: PlatformSessionResolver | null; injectedProfile?: string } = {}) {
   const url = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
@@ -35,6 +42,7 @@ async function authorize(sessionId: string, options: { audience?: string; redire
   url.searchParams.set('code_challenge', options.challenge ?? await challenge());
   url.searchParams.set('code_challenge_method', 'S256');
   if (options.injectedProfile) url.searchParams.set('profileId', options.injectedProfile);
+  await membership('profile_demo_001');
   return connectedAppRequest(new Request(url, { method: 'GET' }), env.DB, config, {},
     options.resolve === undefined ? resolver(sessionId) : options.resolve);
 }
@@ -69,6 +77,7 @@ async function introspect(token: string) {
     CONNECTED_APP_ISSUER: issuer });
 }
 async function hostSelect(sessionId: string, profileId: string, enabled: boolean) {
+  if (enabled) await membership(profileId);
   return connectedAppRequest(new Request(`${issuer}/v1/connected-app-sessions/select`, {
     method: 'POST', headers: { authorization: `Bearer ${hostKey}` },
   }), env.DB, config, { sessionId, principalId: 'user_demo_001', profileId, enabled,
@@ -155,6 +164,24 @@ describe('Connected App browser authorization code with PKCE S256', () => {
     const codeHash = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
     await env.DB.prepare('UPDATE connected_app_browser_codes SET expires_at = 1 WHERE code_hash = ?')
       .bind(codeHash).run();
+    expect((await exchange(code)).status).toBe(403);
+  });
+
+  it('rejects browser authorization without independent membership and invalidates code after revocation', async () => {
+    const missing = await authorize(id('membership_missing'), {
+      resolve: resolver(id('membership_missing'), 'profile_unreviewed'),
+    });
+    expect(missing.status).toBe(403);
+    const otherUser = await authorize(id('other_user'), { resolve: async () => ({
+      principalId: 'user_other', profileId: 'profile_demo_001', sessionId: id('other_user'),
+      grants: { 'recruiting-web': ['recruiting.responses.read'] },
+    }) });
+    expect(otherUser.status).toBe(403);
+    const sessionId = id('membership_revoked');
+    const code = codeFrom(await authorize(sessionId));
+    await env.DB.prepare(`UPDATE connected_app_memberships SET enabled = 0
+      WHERE principal_id = ? AND profile_id = ? AND audience = ?`)
+      .bind('user_demo_001', 'profile_demo_001', 'recruiting-web').run();
     expect((await exchange(code)).status).toBe(403);
   });
 });
