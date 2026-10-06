@@ -19,7 +19,7 @@ import { registryMcpTest160Descriptor as runnerDescriptorFixture } from './fixtu
 
 afterEach(() => vi.unstubAllGlobals());
 
-async function fixture(count = 66, profileId = 'integration-telegram-ux-v1') {
+async function fixture(count = 66, profileId = 'integration-telegram-ux-v1', userValue?: Record<string, unknown>) {
   const store = new TaskStore(env.DB);
   const taskId = `host-mcp-${crypto.randomUUID()}`;
   const principalId = 'host-mcp-fixture-principal';
@@ -50,7 +50,7 @@ async function fixture(count = 66, profileId = 'integration-telegram-ux-v1') {
   const state = { scope: { ...scope }, policyVersion, mcp };
   const hostMcp: HostMcpRoutingDeps = { enabled: true, catalogue, readExecutionState: async () => structuredClone(state) };
   const text = 'Use the approved document method and preserve this complete original request';
-  await store.admitTask({ id: taskId, profileId, goal: text, userValue: { inputItems: [{ text }] } });
+  await store.admitTask({ id: taskId, profileId, goal: text, userValue: userValue ?? { inputItems: [{ text }] } });
   const catalog = communicationV1Catalog();
   const input: RoutingInput = {
     envelope: { userTaskId: taskId, profileId, principalId, generation: 1, conversationId: null, requestId: taskId,
@@ -214,6 +214,21 @@ describe('inactive host MCP routing composition', () => {
       expect(submit).not.toHaveBeenCalled();
     },
   );
+
+  it('honors GTD continuation ownership before MCP revalidation', async () => {
+    const current = await fixture(66, 'integration-telegram-ux-v1', { gtdId: 'gtd-owned-task' });
+    const routed = await routeRequest(current.input, { communicationV1: {
+      select: async () => ({ user_goal: '', decision: current.selectedName }),
+      health: current.health, hostMcp: current.hostMcp,
+    } });
+    current.rpc.mockClear();
+    const submit = vi.fn();
+    const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
+      await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
+    expect(outcome).toMatchObject({ issued: false, refusal: 'gtd_owns_continuation' });
+    expect(current.rpc).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
 
   it('disabled injection does not discover or expose host catalogue metadata', async () => {
     const current = await fixture();
