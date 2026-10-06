@@ -1,14 +1,16 @@
 # Test MCP discovery contract for Telegram UX v1
 
-Status: the isolated Host Worker is deployed and configured. A live Host
-discovery request and a separately generated Runner-resolver-signed fixture
-invocation returned the expected tool/marker. The latter verifies Host proof
-validation and the resolver's signing output; it does not prove that an active
-Runner service launched an agent or that the agent called the tool. The CP
-test Worker now runs version `757b595d-de95-4a19-a6de-5414ef84541d` with this
-test-only wiring. An authorized task has not yet exercised CP discovery through
-the deployed Worker. The active Runner service and a real Telegram agent session
-are still unverified. The only profile in scope is
+Status (06.10.2026): the isolated Host Worker is deployed and configured. A live
+Host discovery request and a separately generated Runner-resolver-signed fixture
+invocation returned the expected tool/marker. The active `agent-runner-api`
+service is now deployed from Runner PR #154's merged revision on the dedicated
+test runtime; health is `ok`, it is idle, and the restricted
+`integration-telegram-ux-v1` principal/key record plus test-only MCP resolver,
+expiry and signing key are configured. The CP test Worker secrets are provisioned
+and PR #67 contains the trusted profile wiring, but its deployed Worker has not
+yet run an authorized task through CP discovery. Therefore no real Runner
+admission, signed invocation from the active service, agent tool call, or Telegram
+session has been demonstrated. The only profile in scope is
 `integration-telegram-ux-v1`; the only capability exposed to the agent is
 `registry.fixture_read`.
 
@@ -97,18 +99,18 @@ keep their own reason codes and are not relabeled as drift.
 
 ### Runtime ownership: do not infer a GCP VM
 
-The Runner execution path is provided by AI Runner Agents. This integration has
-no dedicated GCP VM dependency; configure Runner's test MCP bearer and signing
-key through the trusted configuration path for the actual Runner Agents runtime.
-CP discovery happens before Runner submit and does not require a Runner VM.
+The Runner execution path is provided by AI Runner Agents. The test API currently
+runs as `agent-runner-api` on the dedicated Contabo VM2 runtime; its deployment
+and process environment are separate from GCP. GCP Secret Manager holds only the
+bootstrap SSH credential used to administer that VM, not the MCP/API runtime
+credentials. CP discovery happens before Runner submit and does not depend on a
+Runner VM, while actual admission/invocation uses the active Runner API above.
 
-A previous check treated a terminated VM found under the local `gcloud`
-configuration as the Runner deployment. That was an incorrect inference:
-`gcloud config get-value project` reports ambient CLI context, not the service's
-deployment target or owner. The VM was legacy and had no verified relationship
-to AI Runner Agents. Do not start or provision it for this integration. Use the
-Runner Agents deployment/configuration as the source of truth for invocation
-credentials and runtime readiness.
+A previous check guessed a Runner deployment from ambient local `gcloud`
+context. That is not sufficient evidence about the service's deployment target.
+For this test, the verified target is the running `agent-runner-api` systemd
+service on Contabo VM2, reached through the recorded SSH bootstrap credential;
+use the service unit, health endpoint and mode-0600 runtime files as evidence.
 
 ## Offline boundary
 
@@ -119,5 +121,6 @@ CP-side `tools/call`; they do not prove CP-to-Host discovery through the
 deployed Worker, active Runner service, or a real agent tool call. The Host test
 lease and matching secret/key material are provisioned in test-only trusted
 stores. This PR created no secrets; the CP test Worker was deployed separately.
-Remaining acceptance is an authorized task through the deployed CP, invocation
-through the active Runner service, and a real Telegram agent session.
+Remaining acceptance is an authorized test task through the deployed CP,
+admission and proof-bound Host invocation through the active Runner service, then
+a real Telegram agent session if required by the user-facing acceptance.
