@@ -205,10 +205,18 @@ async function finalize(
 
   const noExportRequired = Array.isArray(opts.declaredOutputPaths) && opts.declaredOutputPaths.length === 0
     && result.persistence === 'not_required' && artifactRefs.length === 0;
-  if (result.persistence !== 'persisted' && !noExportRequired) {
+  if (result.persistence === 'failed' || (result.persistence === 'pending' && !noExportRequired)) {
     // Экспорт не подтверждён: результат не теряется молча, но и успехом не считается.
-    await commitFailure('export_not_persisted', 'failed');
-    return { ok: false, reason: 'export_not_persisted' };
+    // Pending is a separate resumable phase. Preserve the engine result and let the
+    // workflow publish its text while it reconciles persistence on the same run.
+    await store.logEvent({ taskId: opts.taskId, generation: opts.generation, source: 'executor', kind: 'step_done',
+      payload: { class: result.persistence === 'pending' ? 'run_persistence_pending' : 'run_persistence_failed',
+        runId: opts.runId, persistence: result.persistence, persistenceReason: result.persistenceReason ?? null,
+        cleanup: result.cleanup, reconciliationRequired: result.persistence === 'pending' } });
+    if (result.persistence === 'failed') {
+      await commitFailure('export_not_persisted', 'failed');
+      return { ok: false, reason: 'export_not_persisted' };
+    }
   }
 
   // Конечный текст движка — из потока событий, а не из поля результата: в
