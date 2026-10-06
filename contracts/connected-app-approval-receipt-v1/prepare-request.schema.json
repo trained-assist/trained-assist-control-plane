@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.trained-assist.invalid/connected-app-approval-receipt-v1/prepare-request.schema.json",
+  "title": "Connected App approval prepare request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["appToken", "audience", "command", "sourceRevision", "operation"],
+  "properties": {
+    "appToken": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "audience": { "const": "crm-web" },
+    "command": { "const": "crm.deals.create" },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "operation": { "type": "object" }
+  }
+}

@@ -187,6 +187,11 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
     const authorization = req.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
     if (!key || !secureEqual(authorization, key)) return inactive();
     if (req.method !== 'POST' || !audience || !policy) return json(400, { error: 'invalid request' });
+    const allowedFields = path.endsWith('/prepare')
+      ? ['appToken', 'audience', 'command', 'sourceRevision', 'operation']
+      : ['appToken', 'audience', 'command', 'sourceRevision', 'operation', 'intentId', 'consumerRequestId'];
+    if (Object.keys(body).some(field => !allowedFields.includes(field)))
+      return json(400, { error: 'invalid request' });
     const activeResult = await activeAppToken(db, body.appToken, audience, policy.scope, now, agentAuthority);
     if (activeResult.status === 'unavailable') return unavailable();
     if (activeResult.status !== 'active') return json(403, { error: 'active operation scope required' });

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.trained-assist.invalid/connected-app-approval-receipt-v1/consume-request.schema.json",
+  "title": "Connected App approval consume request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["appToken", "audience", "command", "sourceRevision", "operation", "intentId", "consumerRequestId"],
+  "properties": {
+    "appToken": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "audience": { "const": "crm-web" },
+    "command": { "const": "crm.deals.create" },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "operation": { "type": "object" },
+    "intentId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "consumerRequestId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" }
+  }
+}

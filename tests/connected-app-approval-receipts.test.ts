@@ -99,6 +99,10 @@ describe('CP one-use Connected App human approval receipts through real Worker a
     expect((await approval('prepare', { audience: 'crm-web', command, sourceRevision, operation }, 'wrong')).status).toBe(401);
     const readOnly = await provision(['crm.catalog.read']);
     expect((await approval('prepare', { appToken: readOnly, audience: 'crm-web', command, sourceRevision, operation })).status).toBe(403);
+
+    const writer = await provision();
+    expect((await approval('prepare', { appToken: writer, audience: 'crm-web', command, sourceRevision,
+      operation, uncontractedField: true })).status).toBe(400);
   });
 
   it('requires a same-profile human confirmation, exact origin and one-use nonce; GET never approves', async () => {

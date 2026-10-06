@@ -1,0 +1,41 @@
+{
+  "contract": "trained-assist.connected-app-approval-receipt",
+  "version": 1,
+  "status": "opt-in",
+  "owner": "trained-assist-control-plane",
+  "basePath": "/v1/connected-app-approvals",
+  "authentication": {
+    "prepareAndConsume": "Bearer audience-specific confidential app service key",
+    "humanReview": "Agent profile session resolved by Control Plane authority"
+  },
+  "limits": {
+    "intentTtlSeconds": 600,
+    "receiptRetentionSeconds": 7776000,
+    "maxOperationBytes": 16384
+  },
+  "clients": {
+    "crm-web": {
+      "clientId": "crm-web",
+      "commands": {
+        "crm.deals.create": {
+          "audience": "crm-web",
+          "requiredScope": "crm.deals.create"
+        }
+      }
+    }
+  },
+  "routes": {
+    "prepare": { "method": "POST", "path": "/prepare", "successStatus": 201 },
+    "consume": { "method": "POST", "path": "/consume", "successStatuses": [201, 200] },
+    "review": { "method": "GET", "path": "/review?intent={intentId}" },
+    "confirm": { "method": "POST", "path": "/confirm", "contentType": "application/x-www-form-urlencoded" }
+  },
+  "semantics": {
+    "prepareCreatesApprovalIntent": true,
+    "getReviewApproves": false,
+    "consumeIsSingleUse": true,
+    "sameConsumerRequestIdRecoversOriginalReceipt": true,
+    "externalProviderExactlyOnce": false,
+    "allApiResponsesCacheControl": "no-store"
+  }
+}

@@ -29,6 +29,8 @@ jobs:
         run: npm test
       # Проверки санитизации evidence (P16) идут отдельным node-скриптом:
       # файловые операции в workerd-пуле vitest запрещены.
+      - name: Connected App approval contract self-check
+        run: node tools/connected-app-approval-contract-check.mjs
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
       - name: Read-only credential boundary verifier

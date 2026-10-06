@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.trained-assist.invalid/connected-app-approval-receipt-v1/prepare-response.schema.json",
+  "title": "Connected App approval prepare response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "intentId", "approvalUrl", "expiresAt"],
+  "properties": {
+    "version": { "const": 1 },
+    "intentId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "approvalUrl": { "type": "string", "format": "uri", "pattern": "^https://[^?#]+/v1/connected-app-approvals/review\\?intent=[a-f0-9]{64}$" },
+    "expiresAt": { "type": "integer", "minimum": 0 }
+  }
+}

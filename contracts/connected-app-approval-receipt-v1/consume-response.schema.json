@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.trained-assist.invalid/connected-app-approval-receipt-v1/consume-response.schema.json",
+  "title": "Connected App approval consume response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "receipt"],
+  "properties": {
+    "version": { "const": 1 },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "audience", "clientId", "command", "requestHash", "sourceRevision", "principalId", "profileId", "approvedAt", "consumedAt", "operation"],
+      "properties": {
+        "receiptId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "audience": { "const": "crm-web" },
+        "clientId": { "const": "crm-web" },
+        "command": { "const": "crm.deals.create" },
+        "requestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "principalId": { "type": "string", "minLength": 1 },
+        "profileId": { "type": "string", "minLength": 1 },
+        "approvedAt": { "type": "integer", "minimum": 0 },
+        "consumedAt": { "type": "integer", "minimum": 0 },
+        "operation": { "type": "object" }
+      }
+    }
+  }
+}
