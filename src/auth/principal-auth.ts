@@ -37,9 +37,15 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 export function principalAuthOf(env: Record<string, string | undefined>): PrincipalAuth {
   const secret = env.PRINCIPAL_SECRET?.trim();
   const telegramUxSecret = env.PRINCIPAL_SECRET_TELEGRAM_UX?.trim();
+  const integrationV1Secret = env.PRINCIPAL_SECRET_INTEGRATION_V1?.trim();
+  const codexSmokeSecret = env.PRINCIPAL_SECRET_CODEX_SMOKE?.trim();
   return {
     secret: secret ? secret : null,
-    ...(telegramUxSecret ? { secretOverrides: { 'integration-telegram-ux-v1': telegramUxSecret } } : {}),
+    ...(telegramUxSecret || integrationV1Secret || codexSmokeSecret ? { secretOverrides: {
+      ...(telegramUxSecret ? { 'integration-telegram-ux-v1': telegramUxSecret } : {}),
+      ...(integrationV1Secret ? { 'integration-v1': integrationV1Secret } : {}),
+      ...(codexSmokeSecret ? { 'sde-codex-smoke-v1': codexSmokeSecret } : {}),
+    } } : {}),
   };
 }
 

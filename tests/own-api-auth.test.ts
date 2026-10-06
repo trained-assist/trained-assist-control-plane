@@ -53,6 +53,28 @@ describe('principal-auth: подпись вместо доверия загол�
     expect(await verifyPrincipal(req('sandbox-user', otherSig), scoped)).toBe('sandbox-user');
   });
 
+  it('выбирает отдельный ключ для integration-v1 principal, не меняя общий ключ', async () => {
+    const scoped = principalAuthOf({
+      PRINCIPAL_SECRET: SECRET,
+      PRINCIPAL_SECRET_INTEGRATION_V1: 'dedicated-integration-v1-secret',
+    });
+    const testSig = await signPrincipal('integration-v1', 'dedicated-integration-v1-secret');
+    const sharedSig = await signPrincipal('integration-v1', SECRET);
+    const otherSig = await signPrincipal('sandbox-user', SECRET);
+
+    expect(await verifyPrincipal(req('integration-v1', testSig), scoped)).toBe('integration-v1');
+    expect(await verifyPrincipal(req('integration-v1', sharedSig), scoped)).toBeNull();
+    expect(await verifyPrincipal(req('sandbox-user', otherSig), scoped)).toBe('sandbox-user');
+  });
+
+  it('выбирает отдельный ключ только для Codex sandbox smoke principal', async () => {
+    const scoped = principalAuthOf({ PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_CODEX_SMOKE: 'dedicated-codex-smoke-secret' });
+    const testSig = await signPrincipal('sde-codex-smoke-v1', 'dedicated-codex-smoke-secret');
+    const sharedSig = await signPrincipal('sde-codex-smoke-v1', SECRET);
+    expect(await verifyPrincipal(req('sde-codex-smoke-v1', testSig), scoped)).toBe('sde-codex-smoke-v1');
+    expect(await verifyPrincipal(req('sde-codex-smoke-v1', sharedSig), scoped)).toBeNull();
+  });
+
   it('отсутствующая и неhex-подпись отклоняются', async () => {
     expect(await verifyPrincipal(req('sandbox-user', null), auth)).toBeNull();
     expect(await verifyPrincipal(req('sandbox-user', 'not-hex'), auth)).toBeNull();

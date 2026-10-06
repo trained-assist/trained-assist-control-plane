@@ -139,6 +139,10 @@ export interface Env {
   PRINCIPAL_SECRET?: string;
   /** Dedicated HMAC credential for the isolated Telegram UX test principal. */
   PRINCIPAL_SECRET_TELEGRAM_UX?: string;
+  /** Dedicated HMAC credential for the isolated integration-v1 sandbox principal. */
+  PRINCIPAL_SECRET_INTEGRATION_V1?: string;
+  /** Dedicated HMAC credential for the test-only Telegram UX sandbox smoke principal. */
+  PRINCIPAL_SECRET_CODEX_SMOKE?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -1145,9 +1149,10 @@ const store = new TaskStore(env.DB);
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
-      if (url.pathname === '/health') {
+      if (url.pathname === '/healthz' || url.pathname === '/health') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
-        return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString() });
+        return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
+          ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
       }
       if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
@@ -1191,6 +1196,7 @@ const store = new TaskStore(env.DB);
           service: 'trained-assist-control-plane',
           endpoints: [
             '/intake',
+            '/healthz',
             '/receipt',
             '/route',
             '/start',

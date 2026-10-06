@@ -97,6 +97,14 @@ describe('Control Plane diagnostics routes', () => {
     expect(await response.json()).toMatchObject({ service: 'trained-assist-control-plane', status: 'healthy' });
   });
 
+  it('exposes unauthenticated /healthz as liveness only', async () => {
+    const response = await worker.fetch(new Request('https://cp.test/healthz'), bindings);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ service: 'trained-assist-control-plane', status: 'healthy', check: 'liveness' });
+    expect(body).not.toHaveProperty('ready');
+  });
+
   it('requires diagnostics auth and returns only trusted configured catalogue entries', async () => {
     const denied = await worker.fetch(new Request('https://cp.test/internal/health/catalogue'), bindings);
     expect(denied.status).toBe(401);
