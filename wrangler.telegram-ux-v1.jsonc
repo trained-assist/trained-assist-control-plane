@@ -7,7 +7,8 @@
   "observability": { "enabled": true },
   "services": [
     { "binding": "COMMUNICATION_SERVICE", "service": "trained-assist-communication-v1-sandbox" },
-    { "binding": "REGISTRY_MCP_HOST_SERVICE", "service": "trained-assist-mcp-host-test-160" }
+    { "binding": "REGISTRY_MCP_HOST_SERVICE", "service": "trained-assist-mcp-host-test-160" },
+    { "binding": "INGRESS_BUFFER", "service": "trained-assist-ingress-buffer-sandbox" }
   ],
   "d1_databases": [{ "binding": "DB", "database_name": "ta-integration-telegram-ux-v1-taskstore", "database_id": "01d17f46-63e2-46bc-947d-9eda3e0bb697", "migrations_dir": "migrations" }],
   "workflows": [{ "name": "ta-integration-telegram-ux-v1-task-workflow", "binding": "TASK_WORKFLOW", "class_name": "TaskWorkflow" }],
@@ -17,7 +18,7 @@
     "NATIVE_CANCEL_CONFIRMATION": "true",
     "ROUTER_CONTINUATION_ENABLED": "true",
     "ROUTER_AGENT_ALLOWED": "true",
-    "ROUTER_AGENT_ENGINE": "dynamic-ip-azure-agent-run",
+    "ROUTER_AGENT_ENGINE": "eu-vm-agent-run",
     "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-telegram-ux-v1\":{\"policy\":\"generic_text_v1\",\"runnerKeyBinding\":\"RUNNER_API_KEY_TELEGRAM_UX\",\"hostMcpBinding\":\"registry-mcp-test-160-read\"}}",
     "RUN_SPEC_REPOSITORY": "{\"fullName\":\"vovalikessmoothy-png/opencode-gha-runner\"}",
     "RUN_SPEC_ENV_ALLOWLIST": "LLM_LADDER_TOKEN",
