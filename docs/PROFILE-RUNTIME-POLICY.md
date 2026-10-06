@@ -27,6 +27,20 @@ service `trained-assist-cp-test-principal-hmac-v1` and account
 `integration-telegram-ux-v1`. Do not copy it into this repository or use the
 unrelated GCP `CP23_PRINCIPAL_SECRET` value.
 
+Keep the Keychain item as the sole operator source for this principal. Do not
+rotate the Cloudflare secret independently. Before deployment, run
+`npm run sandbox:preflight:telegram-ux`; this validates the exact sandbox
+Worker/D1 target and Cloudflare account without changing remote state. Deploy
+with `npm run sandbox:deploy:telegram-ux`: the command copies the Keychain value
+directly to the named sandbox Worker without placing it in arguments or logs,
+deploys only `wrangler.telegram-ux-v1.jsonc`, then runs the authenticated
+`accept_only` intake/status/events smoke. The smoke never starts Runner; it
+creates a durable sandbox receipt. A deploy is not accepted if the principal
+signature does not authenticate or the receipt/status/events readback fails.
+This procedure does not deploy Telegram Worker secrets; the gateway's
+precomputed signature must be sourced from the same principal secret and
+verified independently before Telegram live acceptance.
+
 The generic preset inherits the global repository, cwd, result policy and bounded
 runtime limits, but sets declared outputs, host input references and environment
 allowlist to empty arrays and disables policy-wide MCP. A separately validated,
