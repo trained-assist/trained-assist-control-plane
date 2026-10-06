@@ -1,6 +1,7 @@
 import { isTerminalStatus, FencedError, TerminalStateError, type TaskStore, type TaskRow } from '../taskstore';
 import type { CfWorkflowPort } from '../workflow-port';
 import type { RouteResult } from '../router/service';
+import { validateHostMcpExecution, type HostMcpRoutingDeps } from '../router/host-mcp-routing';
 
 export async function commitQuickAnswer(store: TaskStore, task: TaskRow, result: RouteResult): Promise<void> {
   if (!result.reply) return;
@@ -18,10 +19,18 @@ export async function commitQuickAnswer(store: TaskStore, task: TaskRow, result:
   }
 }
 
-export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPort, task: TaskRow, result: RouteResult, runnerEngine = 'opencode') {
+export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPort, task: TaskRow, result: RouteResult, runnerEngine = 'opencode', hostMcp?: HostMcpRoutingDeps) {
   const current = await store.requireTask(task.id);
   if (current.generation !== task.generation) throw new FencedError(task.id, task.generation, current.generation);
   if (isTerminalStatus(current.status)) return { owner: 'output', issued: false, refusal: 'task_terminal' };
+  if (result.mcpInstruction) {
+    const scope = result.mcpInstruction.scope;
+    if (scope.taskId !== current.id || scope.profileId !== current.profile_id || scope.generation !== current.generation) {
+      return { owner: 'output', issued: false, refusal: 'mcp_scope_changed' };
+    }
+    try { await validateHostMcpExecution(hostMcp, result.mcpInstruction); }
+    catch { return { owner: 'output', issued: false, refusal: 'mcp_execution_not_authorized' }; }
+  }
   const userValue = current.user_value ? JSON.parse(current.user_value) as Record<string, unknown> : {};
   if (userValue.gtdId) return { owner: 'output', issued: false, refusal: 'gtd_owns_continuation' };
   const runs = await store.listRuns(task.id);

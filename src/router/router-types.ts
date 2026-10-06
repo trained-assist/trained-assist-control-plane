@@ -221,6 +221,7 @@ export interface PreparedInput {
  * менять ни текст запроса, ни модель (§11.1).
  */
 export interface RoutingEnvelope {
+  generation?: number;
   principalId: string;
   profileId: string;
   userTaskId: string;
