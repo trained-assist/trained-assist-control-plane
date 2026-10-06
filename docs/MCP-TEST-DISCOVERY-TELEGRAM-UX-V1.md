@@ -76,6 +76,21 @@ or broaden the allowlist.
 - **CP:** discovery adapter, trusted-policy composition, Output → RunSpec
   descriptor handoff.
 
+### Runtime ownership: do not infer a GCP VM
+
+The Runner execution path is provided by AI Runner Agents. This integration has
+no dedicated GCP VM dependency; configure Runner's test MCP bearer and signing
+key through the trusted configuration path for the actual Runner Agents runtime.
+CP discovery happens before Runner submit and does not require a Runner VM.
+
+A previous check treated a terminated VM found under the local `gcloud`
+configuration as the Runner deployment. That was an incorrect inference:
+`gcloud config get-value project` reports ambient CLI context, not the service's
+deployment target or owner. The VM was legacy and had no verified relationship
+to AI Runner Agents. Do not start or provision it for this integration. Use the
+Runner Agents deployment/configuration as the source of truth for invocation
+credentials and runtime readiness.
+
 ## Offline boundary
 
 Tests inject catalogue and Runner fixtures. They prove request shape, policy
