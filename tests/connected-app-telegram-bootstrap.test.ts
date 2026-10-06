@@ -71,10 +71,10 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
         gatewaySecret: 'gateway-outbound-key-with-thirty-two-chars' };
       await sendPrivateLink(outbound, chat, bot, '5000', 'https://control.example.invalid/link');
       const actual = sent as Request | null;
-      expect(actual?.url).toBe('https://gateway.example.invalid/deliver');
+      expect(actual?.url).toBe('https://gateway.example.invalid/deliver/connected-app');
       expect(actual?.headers.get('authorization')).toBe(`Bearer ${outbound.gatewaySecret}`);
       const sentBody = await actual?.json() as Record<string, unknown>;
-      expect(sentBody).toMatchObject({ channel: 'telegram', destinationId: chat,
+      expect(sentBody).toMatchObject({ botId: bot, channel: 'telegram', destinationId: chat,
         message: { kind: 'text' } });
       expect(sentBody.deliveryId).toMatch(/^login-[a-f0-9]{64}$/);
       expect(stub.mock.calls[0]?.[1]?.redirect).toBe('manual');

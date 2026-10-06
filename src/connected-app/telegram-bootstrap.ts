@@ -95,11 +95,11 @@ export const sendPrivateLink: SendPrivateLink = async (config, chatId, botId, up
   if (!config.gatewayUrl || !config.gatewaySecret || config.gatewaySecret.length < 32) throw new Error('gateway unavailable');
   const base = new URL(config.gatewayUrl);
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error('gateway unavailable');
-  const target = new URL('deliver', `${base.href.replace(/\/$/, '')}/`);
+  const target = new URL('deliver/connected-app', `${base.href.replace(/\/$/, '')}/`);
   const deliveryId = `login-${await hash(`${botId}:${updateId}`)}`;
   const response = await fetch(target, { method: 'POST', redirect: 'manual',
     headers: { authorization: `Bearer ${config.gatewaySecret}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ deliveryId, channel: 'telegram', destinationId: chatId,
+    body: JSON.stringify({ deliveryId, botId, channel: 'telegram', destinationId: chatId,
       message: { kind: 'text', text: `Открыть веб-приложение: ${link}` } }),
     signal: AbortSignal.timeout(10_000),
   });
