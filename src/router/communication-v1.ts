@@ -78,11 +78,12 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   let failure: string | null = null;
   let calls = 0;
   let mcpInstruction: SelectedMcpInstruction | undefined;
+  let blockDispatch = false;
+  let snapshot: McpCatalogueSnapshot | undefined;
+  let scope: McpCatalogueScope | undefined;
+  const hostMcp = deps.hostMcp?.enabled ? deps.hostMcp : undefined;
   try {
     if (input.envelope.budgets.llmCallsRemaining <= 0) throw new SelectorError('budget_denied');
-    let snapshot: McpCatalogueSnapshot | undefined;
-    let scope: McpCatalogueScope | undefined;
-    const hostMcp = deps.hostMcp?.enabled ? deps.hostMcp : undefined;
     if (hostMcp) {
       scope = { taskId: input.envelope.userTaskId, profileId: input.envelope.profileId,
         principalId: input.envelope.principalId, generation: input.envelope.generation ?? 0 };
@@ -107,8 +108,16 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       dialog_context: input.prepared.durableContext ?? { history: [], active_tasks: [] },
       options: { language: 'ru' },
     });
-    if (result.decision === 'no_matching_option') throw new SelectorError('no_matching_option');
-    if (snapshot && hostMcp && scope) {
+    if (result.decision === 'no_matching_option' && snapshot && hostMcp && scope) {
+      // The catalogue grants availability to the agent; the selector does not
+      // have to choose the tool and the agent is not instructed to call it.
+      const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, 'registry.fixture_read');
+      await validateHostMcpExecution(hostMcp, instruction);
+      mcpInstruction = instruction;
+      selected = 'agent';
+    } else if (result.decision === 'no_matching_option') {
+      throw new SelectorError('no_matching_option');
+    } else if (snapshot && hostMcp && scope) {
       if (!snapshot.decisionOptions.some(option => option.id === result.decision)) throw new SelectorError('unknown_id');
       const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, result.decision);
       await validateHostMcpExecution(hostMcp, instruction);
@@ -120,6 +129,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     }
     if (input.prepared.attachments.length && selected !== 'agent') throw new SelectorError('attachment_not_covered');
   } catch (error) {
+    if (error instanceof McpCatalogueError || (error instanceof SelectorError && error.code === 'unknown_id' && Boolean(snapshot && hostMcp))) blockDispatch = true;
     selected = 'agent';
     mcpInstruction = undefined;
     failure = error instanceof SelectorError || error instanceof McpCatalogueError ? error.code : 'selector_failed';
@@ -132,19 +142,21 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   decision.providerCode = failure;
   decision.reasonCode = failure ? 'COMMUNICATION_FALLBACK' : 'COMMUNICATION_SELECTED';
   decision.degraded = failure !== null;
-  decision.degradedNotice = failure ? { text: 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
+  decision.degradedNotice = failure ? { text: blockDispatch
+    ? 'Каталог MCP или политика доступа изменились; требуется повторная проверка. Агент не запущен.'
+    : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
   let reply: RouteResult['reply'] = null;
   let continuation: RouteResult['continuation'] = null;
   let workOrder: RouteResult['workOrder'] = null;
   if (selected === 'agent') {
     decision.route = 'agent';
     decision.mode = 'ai-agent-job';
-    decision.needsExecutor = input.envelope.budgets.agentAllowed;
+    decision.needsExecutor = input.envelope.budgets.agentAllowed && !blockDispatch;
     decision.executor = decision.needsExecutor ? 'opencode' : null;
     decision.escalation = decision.needsExecutor ? 'agent' : 'none';
     decision.replyAllowed = false;
     decision.outcome = decision.needsExecutor ? 'dispatched' : 'blocked';
-    if (!decision.needsExecutor) decision.reasonCode = 'AGENT_NOT_ALLOWED_BY_POLICY';
+    if (!decision.needsExecutor) decision.reasonCode = blockDispatch ? 'MCP_REVALIDATION_REQUIRED' : 'AGENT_NOT_ALLOWED_BY_POLICY';
     else {
       workOrder = agentWorkOrder({ envelope: input.envelope, prepared: input.prepared, reasonCode: decision.reasonCode, requiresExternalAction: false, authorizationRef: input.authorization.snapshotRef, catalogCapabilityIds: visible.map((entry) => entry.id) });
       continuation = { ...workOrder, decisionId: decision.decisionId, reasonCode: decision.reasonCode, partialResultRef: null, workOrder };
@@ -193,7 +205,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   return { decision, decisionId: decision.decisionId, reply, askUser: null, workOrder, continuation, rendering,
     ...(mcpInstruction && continuation ? { mcpInstruction } : {}),
     agentInstructions: continuation ? `${agentConversationInstructions(input.prepared)}${mcpInstruction
-      ? `\n\nАвторитетная инструкция выбранного MCP-метода (не подтверждение готовности):\n${JSON.stringify(mcpInstruction)}` : ''}` : undefined,
+      ? `\n\nДоступная capability (каталог ${mcpInstruction.catalogueId}, политика ${mcpInstruction.policyVersion}): ${mcpInstruction.name}. Описание и схема ниже — проверенные сведения. Используй capability только если она нужна для исходной задачи; не вызывай её автоматически.` : ''}` : undefined,
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
     brief: { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } },
   };

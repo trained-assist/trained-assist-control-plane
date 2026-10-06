@@ -6,7 +6,7 @@ import { conversationPlan, type PlanParams } from '../src/workflow-port/conversa
 import type { StepCtx } from '../src/workflow-port/step-ctx';
 import { defaultRunSpecPolicy } from '../src/run-spec/run-spec';
 import { RunnerApiAdapter } from '../src/runner-adapter';
-import { McpCatalogueAdapter } from '../src/router/mcp-catalogue';
+import { McpCatalogueAdapter, McpCatalogueError } from '../src/router/mcp-catalogue';
 import { communicationV1Catalog } from '../src/router/communication-v1';
 import type { HostMcpRoutingDeps } from '../src/router/host-mcp-routing';
 import { deriveAuthorization } from '../src/router/authorization';
@@ -18,26 +18,27 @@ import worker from '../src/index';
 
 afterEach(() => vi.unstubAllGlobals());
 
-async function fixture(count = 66) {
+async function fixture(count = 66, profileId = 'integration-telegram-ux-v1') {
   const store = new TaskStore(env.DB);
   const taskId = `host-mcp-${crypto.randomUUID()}`;
-  const profileId = 'host-mcp-fixture-profile';
   const principalId = 'host-mcp-fixture-principal';
   const scope = { taskId, profileId, principalId, generation: 1 };
-  const names = Array.from({ length: count }, (_unused, index) => `read_owner_approved_document_${index}`);
+  const names = ['registry.fixture_read', ...Array.from({ length: Math.max(0, count - 1) }, (_unused, index) => `ungranted_method_${index}`)];
   const selectedName = names[0]!;
   const selectedDescription = 'AUTHORITATIVE_SELECTED_DESCRIPTION';
   const description = (index: number) => index === 0 ? selectedDescription : `UNSELECTED_DESCRIPTION_${index}`;
   const inputSchema = { type: 'object', properties: { document_ref: { type: 'string', description: 'HIDDEN_SCHEMA_DESCRIPTION' } }, required: ['document_ref'] };
   let policyVersion = 'registry-revision-1';
-  const rpc = vi.fn(async (message: { id: string; method: string }) => {
+  const rpc = vi.fn(async (message: { id: string; method: string; params?: unknown; runId?: unknown }) => {
     expect(message.method).toBe('tools/list');
+    expect(message).not.toHaveProperty('runId');
     return { jsonrpc: '2.0', id: message.id, result: { tools: names.map((name, index) => ({ name, description: description(index), inputSchema })) } };
   });
   const catalogue = new McpCatalogueAdapter(async requestedScope => [{ scope: { ...requestedScope },
-    serverId: 'owner-documents', bindingRef: 'owner-documents-scoped-ref', policyVersion, allowedTools: names, request: rpc }]);
-  const mcp = { servers: [{ serverId: 'owner-documents', transport: 'remote' as const,
-    url: 'https://approved-fixture.example.test/mcp', bindingRef: 'owner-documents-scoped-ref', allowedTools: [selectedName] }] };
+    discoveryAuthorization: { principalId: requestedScope.principalId, profileId: requestedScope.profileId, scope: 'mcp:discover', methods: ['tools/list'] },
+    serverId: 'fixture-registry', bindingRef: 'fixture-registry-scoped-ref', policyVersion, allowedTools: ['registry.fixture_read'], request: rpc }]);
+  const mcp = { servers: [{ serverId: 'fixture-registry', transport: 'remote' as const,
+    url: 'https://approved-fixture.example.test/mcp', bindingRef: 'fixture-registry-scoped-ref', allowedTools: [selectedName] }] };
   const state = { scope: { ...scope }, policyVersion, mcp };
   const hostMcp: HostMcpRoutingDeps = { enabled: true, catalogue, readExecutionState: async () => structuredClone(state) };
   const text = 'Use the approved document method and preserve this complete original request';
@@ -62,7 +63,7 @@ describe('inactive host MCP routing composition', () => {
   it('routes the full name-only catalogue into one same-task native run with only selected metadata', async () => {
     const current = await fixture();
     const select = vi.fn(async (request: Record<string, unknown>) => {
-      expect(request.decision_options).toEqual(current.names.map(id => ({ id })));
+      expect(request.decision_options).toEqual([{ id: 'registry.fixture_read' }]);
       const encoded = JSON.stringify(request);
       expect(encoded).not.toContain('DESCRIPTION');
       expect(encoded).not.toContain('inputSchema');
@@ -74,8 +75,9 @@ describe('inactive host MCP routing composition', () => {
       mcpInstruction: { name: current.selectedName, description: current.selectedDescription, inputSchema: current.inputSchema,
         scope: current.scope, readiness: 'not_verified' }, execution: { capabilityExecutions: 0, agentDispatchAttempts: 1 } });
     expect(routed.agentInstructions).toContain(current.input.prepared.text);
-    expect(routed.agentInstructions).toContain(current.selectedDescription);
+    expect(routed.agentInstructions).not.toContain(current.selectedDescription);
     expect(routed.agentInstructions).not.toContain('UNSELECTED_DESCRIPTION');
+    expect(routed.agentInstructions).toContain('Используй capability только если она нужна');
     const saved = await current.store.saveRoutingSelection(current.taskId, 1, routed);
     expect(saved).toEqual(routed);
     let params: PlanParams | undefined;
@@ -89,7 +91,9 @@ describe('inactive host MCP routing composition', () => {
     await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
     await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
     expect(create).toHaveBeenCalledOnce();
-    expect(params).toMatchObject({ taskId: current.taskId, profileId: current.profileId, generation: 1, instructions: routed.agentInstructions });
+    expect(params).toMatchObject({ taskId: current.taskId, profileId: current.profileId, generation: 1, instructions: routed.agentInstructions,
+      mcpDescriptor: { servers: [{ serverId: 'fixture-registry', bindingRef: 'fixture-registry-scoped-ref',
+        allowedTools: ['registry.fixture_read'], catalogueVersion: routed.mcpInstruction!.catalogueId, policyVersion: 'registry-revision-1' }] } });
     const canonicalRun = `run_${crypto.randomUUID()}`;
     const submit = vi.fn();
     const adapter = new RunnerApiAdapter('https://runner-fixture.example.test', 'fixture-key', async (url, init) => {
@@ -98,7 +102,8 @@ describe('inactive host MCP routing composition', () => {
         const body = JSON.parse(String(init?.body));
         submit(body);
         expect(body).toMatchObject({ userTaskId: current.taskId, engine: { name: 'dynamic-ip-azure-agent-run' },
-          mcp: current.state.mcp });
+        mcp: { servers: [{ ...current.state.mcp.servers[0], catalogueVersion: routed.mcpInstruction!.catalogueId,
+          policyVersion: routed.mcpInstruction!.policyVersion }] } });
         expect(body.input.inlinePrompt).toContain(routed.agentInstructions);
         return Response.json({ userTaskId: current.taskId, runId: canonicalRun, requestId: 'fixture-native-receipt', deduplicated: false });
       }
@@ -112,7 +117,7 @@ describe('inactive host MCP routing composition', () => {
     const context: StepCtx = { step: async (_name, callback) => callback({ attempt: 1 }), sleep: async () => {},
       waitFor: async () => { throw new Error('Unexpected awaiting'); } };
     expect(await conversationPlan(context, current.store, params!, { adapter,
-      runSpecPolicy: { ...defaultRunSpecPolicy(), mcp: current.state.mcp } })).toMatchObject({ ok: true, answer: 'fixture native answer' });
+      runSpecPolicy: defaultRunSpecPolicy() })).toMatchObject({ ok: true, answer: 'fixture native answer' });
     expect(submit).toHaveBeenCalledOnce();
     expect(select).toHaveBeenCalledOnce();
     expect(await current.store.listRuns(current.taskId)).toHaveLength(1);
@@ -121,7 +126,7 @@ describe('inactive host MCP routing composition', () => {
   });
 
   it.each(['unknown', 'registry', 'profile', 'generation', 'binding', 'principal'] as const)
-  ('safely falls back without MCP metadata after %s drift', async drift => {
+  ('requires explicit revalidation and no dispatch after %s drift', async drift => {
     const current = await fixture();
     const select = async () => {
       if (drift === 'registry') current.changeRegistry();
@@ -132,10 +137,11 @@ describe('inactive host MCP routing composition', () => {
       return { user_goal: 'untrusted reformulation', decision: drift === 'unknown' ? 'unknown_method' : current.selectedName };
     };
     const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });
-    expect(routed).toMatchObject({ decision: { route: 'agent', degraded: true, degradedNotice: { text: expect.any(String) } } });
+    expect(routed).toMatchObject({ decision: { route: 'agent', outcome: 'blocked', needsExecutor: false,
+      reasonCode: 'MCP_REVALIDATION_REQUIRED', degraded: true, degradedNotice: { text: expect.any(String) } } });
     expect(routed.mcpInstruction).toBeUndefined();
-    expect(routed.agentInstructions).toContain(current.input.prepared.text);
-    expect(routed.agentInstructions).not.toContain(current.selectedDescription);
+    expect(routed.continuation).toBeNull();
+    expect(routed.agentInstructions).toBeUndefined();
     expect(await current.store.listRuns(current.taskId)).toHaveLength(0);
   });
 
@@ -166,19 +172,28 @@ describe('inactive host MCP routing composition', () => {
     expect(routed.decision.degraded).toBe(false);
   });
 
+  it('rejects discovery credentials outside the profile-scoped tools/list scope', async () => {
+    const current = await fixture();
+    const adapter = new McpCatalogueAdapter(async scope => [{ scope,
+      discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/call'] as unknown as ['tools/list'] },
+      serverId: 'fixture-registry', bindingRef: 'fixture-registry-scoped-ref', policyVersion: 'p1', allowedTools: ['registry.fixture_read'],
+      request: async () => ({}) }]);
+    await expect(adapter.discover(current.scope)).rejects.toMatchObject({ code: 'discovery_authorization_invalid' });
+  });
+
   it('missing host execution binding cannot authorize selected metadata', async () => {
     const current = await fixture();
     current.state.mcp.servers = [];
     const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
       health: current.health, hostMcp: current.hostMcp } });
-    expect(routed.decision).toMatchObject({ degraded: true, providerCode: 'execution_binding_missing' });
+    expect(routed.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_REVALIDATION_REQUIRED', degraded: true, providerCode: 'execution_binding_missing' });
     expect(routed.mcpInstruction).toBeUndefined();
   });
 
   it.each([1, 256])('keeps all %i actual names without synthetic options or trimming', async count => {
     const current = await fixture(count);
     const select = vi.fn(async (request: Record<string, unknown>) => {
-      expect(request.decision_options).toEqual(current.names.map(id => ({ id })));
+      expect(request.decision_options).toEqual([{ id: 'registry.fixture_read' }]);
       return { user_goal: 'original task', decision: current.selectedName };
     });
     const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });
@@ -191,20 +206,22 @@ describe('inactive host MCP routing composition', () => {
     current.state.mcp.servers[0]!.allowedTools.push('agent');
     const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: 'original task', decision: 'agent' }),
       health: current.health, hostMcp: current.hostMcp } });
-    expect(routed.mcpInstruction).toMatchObject({ name: 'agent', bindingRef: 'owner-documents-scoped-ref' });
-  });
-
-  it('no matching method preserves authorized agent fallback without a tool handoff', async () => {
-    const current = await fixture();
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: 'original task', decision: 'no_matching_option' }),
-      health: current.health, hostMcp: current.hostMcp } });
-    expect(routed.decision).toMatchObject({ route: 'agent', degraded: true, providerCode: 'no_matching_option' });
-    expect(routed.agentInstructions).toContain(current.input.prepared.text);
+    expect(routed.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_REVALIDATION_REQUIRED' });
     expect(routed.mcpInstruction).toBeUndefined();
   });
 
-  it('the exported Worker cannot enable catalogue routing through request body or an unprovisioned flag', async () => {
+  it('no matching method starts ordinary agent work with the capability available, without requiring a call', async () => {
     const current = await fixture();
+    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: 'original task', decision: 'no_matching_option' }),
+      health: current.health, hostMcp: current.hostMcp } });
+    expect(routed.decision).toMatchObject({ route: 'agent', outcome: 'dispatched', degraded: false });
+    expect(routed.agentInstructions).toContain(current.input.prepared.text);
+    expect(routed.agentInstructions).toContain('не вызывай её автоматически');
+    expect(routed.mcpInstruction).toMatchObject({ name: 'registry.fixture_read', readiness: 'not_verified' });
+  });
+
+  it('the exported Worker cannot enable catalogue routing through request body or an unprovisioned flag', async () => {
+    const current = await fixture(1, 'ordinary-test-profile');
     await current.store.upsertPrincipal({ principalId: current.principalId, profileId: current.profileId, scopes: ['tasks:read', 'tasks:control'] });
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const rpc = JSON.parse(String(init?.body));

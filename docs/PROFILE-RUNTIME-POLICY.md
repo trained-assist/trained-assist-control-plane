@@ -21,7 +21,11 @@ input, Workflow payload or model prompt.
 
 The generic preset inherits the global repository, cwd, result policy and bounded
 runtime limits, but sets declared outputs, host input references and environment
-allowlist to empty arrays and disables MCP. An empty output manifest means no
+allowlist to empty arrays and disables policy-wide MCP. A separately validated,
+host-built descriptor may be passed for `integration-telegram-ux-v1` after the
+test-only `tools/list` discovery contract in
+[`MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md`](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
+The model cannot author that descriptor. An empty output manifest means no
 mandatory CSV: it does not authorize missing declared outputs in other profiles.
 Caller-supplied text cannot select a preset or change output requirements.
 Accepted attachment references are not silently removed; native input references

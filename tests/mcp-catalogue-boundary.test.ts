@@ -6,7 +6,7 @@ const scope: McpCatalogueScope = { taskId: 'accepted-task', generation: 1, profi
 const metadata = (name: string) => ({ name, description: `Authoritative instruction for ${name}`, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } });
 
 function binding(names: string[], serverId = 'native-domain'): HostMcpCatalogueBinding {
-  return { scope: { ...scope }, serverId, bindingRef: `binding:${serverId}`, policyVersion: 'policy-v1', allowedTools: names,
+  return { scope: { ...scope }, discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/list'] }, serverId, bindingRef: `binding:${serverId}`, policyVersion: 'policy-v1', allowedTools: names,
     request: vi.fn(async message => ({ jsonrpc: '2.0', id: message.id, result: { tools: names.map(metadata) } })),
   };
 }

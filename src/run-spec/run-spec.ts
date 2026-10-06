@@ -61,6 +61,8 @@ export interface StdioMcpServerSpec {
   envAllowlist?: string[];
   bindingRef?: string;
   allowedTools: string[];
+  catalogueVersion?: string;
+  policyVersion?: string;
   readinessTimeoutMs?: number;
   toolTimeoutMs?: number;
 }
@@ -71,6 +73,8 @@ export interface RemoteMcpServerSpec {
   url: string;
   bindingRef: string;
   allowedTools: string[];
+  catalogueVersion?: string;
+  policyVersion?: string;
   toolTimeoutMs?: number;
 }
 
@@ -279,6 +283,8 @@ const REMOTE_MCP_SERVER_KEYS = new Set([
   'bindingRef',
   'allowedTools',
   'toolTimeoutMs',
+  'catalogueVersion',
+  'policyVersion',
 ]);
 
 function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
@@ -635,6 +641,8 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
         }
 
         if (server.transport === 'remote') {
+          if (server.catalogueVersion !== undefined && (typeof server.catalogueVersion !== 'string' || !SAFE_ID.test(server.catalogueVersion))) errors.push(`${path}.catalogueVersion: expected a safe version identifier`);
+          if (server.policyVersion !== undefined && (typeof server.policyVersion !== 'string' || !SAFE_ID.test(server.policyVersion))) errors.push(`${path}.policyVersion: expected a safe version identifier`);
           if (!isSafeBindingRef(server.bindingRef)) {
             errors.push(`${path}.bindingRef: expected 1..${MAX_MCP_BINDING_REF_CHARS} chars without control characters`);
           }
