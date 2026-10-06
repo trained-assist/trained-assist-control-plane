@@ -81,6 +81,9 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       stub.mockResolvedValueOnce(Response.json({}, { status: 200 }));
       await expect(sendPrivateLink(outbound, chat, bot, '5001', 'https://control.example.invalid/link'))
         .rejects.toThrow('gateway unavailable');
+      stub.mockResolvedValueOnce(Response.json({ providerMessageId: '' }, { status: 200 }));
+      await expect(sendPrivateLink(outbound, chat, bot, '5001a', 'https://control.example.invalid/link'))
+        .rejects.toThrow('gateway unavailable');
       await expect(sendPrivateLink({ ...outbound, gatewayUrl: 'http://gateway.example.invalid' }, chat, bot, '5002', 'x'))
         .rejects.toThrow('gateway unavailable');
     } finally { vi.unstubAllGlobals(); }

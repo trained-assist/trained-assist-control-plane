@@ -105,8 +105,8 @@ export const sendPrivateLink: SendPrivateLink = async (config, chatId, botId, up
   });
   if (!response.ok || response.redirected) throw new Error('gateway unavailable');
   const result = await response.json().catch(() => null) as { providerMessageId?: unknown } | null;
-  if (!result || !(typeof result.providerMessageId === 'string' ||
-    Number.isSafeInteger(result.providerMessageId))) throw new Error('gateway unavailable');
+  if (!result || !(Number.isSafeInteger(result.providerMessageId) && Number(result.providerMessageId) > 0))
+    throw new Error('gateway unavailable');
 };
 
 /** Opt-in first-party login bootstrap. No membership or Telegram binding write route. */
