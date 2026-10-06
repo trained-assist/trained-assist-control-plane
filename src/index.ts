@@ -1145,9 +1145,10 @@ const store = new TaskStore(env.DB);
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
-      if (url.pathname === '/health') {
+      if (url.pathname === '/healthz' || url.pathname === '/health') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
-        return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString() });
+        return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
+          ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
       }
       if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
@@ -1191,6 +1192,7 @@ const store = new TaskStore(env.DB);
           service: 'trained-assist-control-plane',
           endpoints: [
             '/intake',
+            '/healthz',
             '/receipt',
             '/route',
             '/start',
