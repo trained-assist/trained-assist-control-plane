@@ -34,6 +34,7 @@ import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { connectedAppRequest } from './connected-app/session-service';
+import { connectedAppApprovalRequest } from './connected-app/approval-receipt-service';
 import { telegramBootstrapRequest, telegramPlatformSessionResolver } from './connected-app/telegram-bootstrap';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -126,6 +127,7 @@ export interface Env {
   CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED?: string;
   CONNECTED_APP_TELEGRAM_GATEWAY_KEY?: string;
   CONNECTED_APP_START_URLS?: string;
+  CONNECTED_APP_APPROVALS_ENABLED?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -1051,7 +1053,21 @@ const store = new TaskStore(env.DB);
     const auth = principalAuthOf(env as unknown as Record<string, string | undefined>);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
      const intake = new IntakeService(store, new PilotRouter({ env: env as unknown as Record<string, string | undefined> }));
-    const body: Record<string, unknown> =
+    const approvalPath = url.pathname.startsWith('/v1/connected-app-approvals/');
+    const body: Record<string, unknown> = approvalPath && req.method === 'POST' && url.pathname.endsWith('/confirm')
+      ? Object.fromEntries((await req.formData().catch(() => new FormData())).entries())
+      : approvalPath && req.method === 'POST'
+        ? await (async () => {
+          const contentLength = Number(req.headers.get('content-length') ?? 0);
+          if (contentLength > 32_768) return {};
+          const raw = await req.text().catch(() => '');
+          if (new TextEncoder().encode(raw).byteLength > 32_768) return {};
+          try {
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+          } catch { return {}; }
+        })()
+      :
       req.method === 'POST' && url.pathname === '/v1/connected-app-sessions/exchange'
         ? Object.fromEntries((await req.formData().catch(() => new FormData())).entries())
         : url.pathname.startsWith('/v1/connected-app-bootstrap/') ? {}
@@ -1076,6 +1092,14 @@ const store = new TaskStore(env.DB);
           serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
           issuer: env.CONNECTED_APP_ISSUER,
           redirectUris: env.CONNECTED_APP_REDIRECT_URIS,
+        }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
+          ? telegramPlatformSessionResolver(env.DB) : null);
+      }
+      if (approvalPath) {
+        return connectedAppApprovalRequest(req, env.DB, {
+          enabled: env.CONNECTED_APP_APPROVALS_ENABLED,
+          serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
+          issuer: env.CONNECTED_APP_ISSUER,
         }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
           ? telegramPlatformSessionResolver(env.DB) : null);
       }
