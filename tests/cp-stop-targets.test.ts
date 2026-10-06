@@ -40,7 +40,13 @@ async function admittedDoneTask(store: TaskStore, input: { id: string; profileId
     goal: 'done before stop window',
   });
   await store.commit(task.id, task.generation, { status: 'done', stage: 'finished', result: { ok: true } });
-  return task;
+  const instance = await bindings.TASK_WORKFLOW.create({ id: task.id,
+    params: { taskId: task.id, profileId: input.profileId, generation: task.generation } });
+  for (let observation = 0; observation < 100; observation++) {
+    if (['complete', 'errored', 'terminated'].includes((await instance.status()).status)) return task;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Fixture Workflow did not reach a terminal status');
 }
 
 describe('POST /cp-stop-targets', () => {
@@ -89,6 +95,25 @@ describe('POST /cp-stop-targets', () => {
     expect(first.body.snapshotId).toBe(second.body.snapshotId);
     expect(first.body.tasks).toEqual(second.body.tasks);
     expect(first.body.tasks).toMatchObject([{ userTaskId: task.id, requestId }]);
+  });
+
+  it('rejects an incomplete admission set before opening a stop window', async () => {
+    const profileId = nextId('profile');
+    const conversationId = nextId('conversation');
+    const admittedRequestId = `tgcp-${'e'.repeat(64)}`;
+    const store = new TaskStore(bindings.DB);
+    await admittedDoneTask(store, { id: nextId('task'), profileId, conversationId,
+      requestId: admittedRequestId });
+    const unlistedRequestId = `tgcp-${'f'.repeat(64)}`;
+    await store.admitTask({ id: nextId('task'), profileId, conversationId,
+      requestId: unlistedRequestId, receiptId: `receipt:${unlistedRequestId}`, goal: 'unlisted open task' });
+
+    const result = await postStop({ profileId, conversationId, windowId: nextId('window'),
+      admissionBarrierComplete: true, admissionRequestIds: [admittedRequestId] }, profileId);
+
+    expect(result.body).toMatchObject({ snapshotId: null, unresolved: true,
+      reason: 'identity_mismatch', stopConfirmed: false, tasks: [] });
+    expect(await store.cpStopWindow(profileId, conversationId)).toBeNull();
   });
 
   it('freezes exact receipt identities until explicit restart and never adds later tasks to the old window', async () => {

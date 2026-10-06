@@ -7,6 +7,7 @@ import type {
   ArtifactRow,
   AwaitingPurpose,
   DeliveryRow,
+  CpStopTarget,
   RunAttemptRow,
   SignalSource,
   TaskStore,
@@ -17,6 +18,7 @@ import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
+import type { RouteResult } from '../router/service';
 import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
@@ -354,11 +356,15 @@ export class CfWorkflowPort implements WorkflowPortApi {
    * статус cancelled ставится только после подтверждения остановки. Если
    * остановка не удалась — задача остаётся не-терминальной, виден cancel_requested.
    */
-  async cancel(taskId: string, opts: { reason?: string } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
+  async cancel(taskId: string, opts: { reason?: string; stopPin?: { target: CpStopTarget; snapshotId: string } } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
+    if (opts.stopPin) return this.cancelPinned(taskId, opts.stopPin);
     const requested = await this.store.requestCancel(taskId, { reason: opts.reason });
     if (!requested.requested) {
       const verified = await this.verifyTerminalNativeStops(taskId, opts.reason);
       const stopConfirmed = isTerminalStatus(requested.status ?? '') && verified.stopConfirmed;
+      if (requested.status === 'cancelled' && stopConfirmed) await this.store.confirmCancel(taskId, {
+        expectedGeneration: requested.generation, reason: opts.reason, nativeStops: verified.nativeStops,
+      });
       return { cancelled: requested.status === 'cancelled' && stopConfirmed, generation: requested.generation,
         status: requested.status, stopConfirmed, nativeStops: verified.nativeStops,
         ...(verified.nativeStopState ? { nativeStopState: verified.nativeStopState } : {}) };
@@ -457,6 +463,114 @@ export class CfWorkflowPort implements WorkflowPortApi {
       nativeStops: await this.nativeStopEvidence(taskId),
       ...(nativeStopState && !confirmed.cancelled ? { nativeStopState } : {}),
     };
+  }
+
+  private async cancelPinned(taskId: string, pin: { target: CpStopTarget; snapshotId: string }): Promise<CancelResult & { stopConfirmed: boolean }> {
+    const unresolved: CancelResult & { stopConfirmed: boolean } = {
+      cancelled: false, stopConfirmed: false, nativeStopState: 'unknown',
+    };
+    const { target, snapshotId } = pin;
+    if (target.userTaskId !== taskId) return unresolved;
+    const generation = await this.store.claimCpStopTarget(target, snapshotId);
+    if (generation === null) return unresolved;
+    const matches = () => this.store.cpStopTargetMatches(target, snapshotId, generation);
+    const nativeStops: NativeStopEvidence[] = [];
+    const known = await this.nativeStopEvidence(taskId);
+    for (const attempt of target.attempts) {
+      if (!await matches()) return unresolved;
+      if (!attempt.runId) {
+        const run = await this.store.requireRun(attempt.attemptId);
+        if (run.finished_at === null || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.attemptId)) return unresolved;
+        continue;
+      }
+      const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === attempt.runId
+        && value.ownerGeneration === attempt.ownerGeneration && value.profileId === target.profileId);
+      if (proof) {
+        if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, proof)) return unresolved;
+        nativeStops.push(proof);
+        continue;
+      }
+      if (!this.externalStop || !await matches()) return unresolved;
+      const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
+        runId: attempt.runId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
+      const outcome = await this.externalStop.stop(context);
+      if (!confirmedExternalStop(context, outcome) || outcome.state !== 'stopped') {
+        return { ...unresolved, nativeStopState: outcome.state === 'pending' ? 'pending' : 'unknown' };
+      }
+      if (!await matches()) return unresolved;
+      const state = outcome.result.outcome;
+      if (!await this.store.finishCpStopAttempt(target, snapshotId, generation, attempt.attemptId,
+        state === 'succeeded' ? 'success' : state)) return unresolved;
+      if (!await matches()) return unresolved;
+      const observed: NativeStopEvidence = { taskId, profileId: target.profileId,
+        attemptId: attempt.attemptId, runId: attempt.runId, ownerGeneration: attempt.ownerGeneration,
+        state, exitObserved: true };
+      if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, observed)) return unresolved;
+      nativeStops.push(observed);
+    }
+    if (!await matches()) return unresolved;
+    const quickAnswer = await this.quickAnswerStopEvidence(target, snapshotId, generation);
+    if (quickAnswer === 'delivery_pending') return unresolved;
+    try {
+      const instance = await this.wf.get(taskId);
+      const workflowStatus = (await instance.status()).status;
+      if (!['terminated', 'complete', 'errored'].includes(workflowStatus)) return unresolved;
+      if (target.attempts.length === 0 && !await this.store.recordCpStopNoRunWorkflow(target, snapshotId, generation, workflowStatus)) return unresolved;
+    } catch (error) {
+      if (quickAnswer !== 'quiescent' || !(error instanceof Error) || error.message !== 'instance.not_found') return unresolved;
+    }
+    if (quickAnswer === 'quiescent' && await this.quickAnswerStopEvidence(target, snapshotId, generation) !== 'quiescent') return unresolved;
+    if (!await matches()) return unresolved;
+    const task = await this.store.requireTask(taskId);
+    if (!await matches()) return unresolved;
+    if (task.status === 'cancelled') {
+      await this.store.confirmCancel(taskId, { expectedGeneration: generation,
+        reason: `cp_stop_window:${snapshotId}`, nativeStops, stopPin: pin });
+      if (!await matches()) return unresolved;
+    }
+    if (isTerminalStatus(task.status)) return { cancelled: task.status === 'cancelled', stopConfirmed: true,
+      generation, status: task.status, nativeStops };
+    const result = await this.store.confirmCancel(taskId, { expectedGeneration: generation,
+      reason: `cp_stop_window:${snapshotId}`, nativeStops, stopPin: pin });
+    return { ...result, cancelled: result.cancelled, stopConfirmed: result.cancelled, nativeStops };
+  }
+
+  private async quickAnswerStopEvidence(target: CpStopTarget, snapshotId: string, generation: number): Promise<'not_quick' | 'delivery_pending' | 'quiescent'> {
+    if (target.attempts.length !== 0 || generation !== target.taskGeneration
+      || target.quickAnswerRoutingEventId !== `routing:${target.userTaskId}:${generation}`
+      || !await this.store.cpStopTargetMatches(target, snapshotId, generation)) return 'not_quick';
+    const task = await this.store.requireTask(target.userTaskId);
+    if (task.status !== 'done' || !task.result_json) return 'not_quick';
+    let result: { ok?: boolean; mode?: string; version?: string; answer?: string; quickAnswer?: { id?: string; version?: number } };
+    try { result = JSON.parse(task.result_json); } catch { return 'not_quick'; }
+    const selection = await this.store.routingSelection(target.userTaskId, generation) as RouteResult | null;
+    if (!result || result.ok !== true || result.mode !== 'quick_answer' || result.version !== 'communication-v1'
+      || typeof result.answer !== 'string' || !result.answer.trim() || result.quickAnswer?.version !== 1
+      || !['system_health', 'catalog.brief'].includes(result.quickAnswer?.id ?? '')
+      || !selection || selection.decision?.route !== 'deterministic' || selection.decision.needsExecutor !== false
+      || typeof selection.decisionId !== 'string' || !selection.decisionId.trim()
+      || selection.decision.outcome !== 'reply' || selection.workOrder !== null || selection.continuation !== null
+      || selection.execution?.agentDispatchAttempts !== 0 || selection.execution.recipeCalls !== 0
+      || selection.decision.capabilityId !== result.quickAnswer?.id
+      || selection.decision.capabilityVersion !== result.quickAnswer?.version
+      || selection.reply?.text !== result.answer) return 'not_quick';
+    let outputCommit = false;
+    for (const event of await this.store.history(target.userTaskId)) {
+      let payload: { event?: string; decisionId?: string; capabilityId?: string; capabilityVersion?: number };
+      try { payload = JSON.parse(event.payload_json); } catch { return 'not_quick'; }
+      if (event.execution_id !== null || event.kind === 'run_started'
+        || payload.event === 'runner_submit_started') return 'not_quick';
+      if (event.kind === 'task_status_changed' && event.source === 'output' && event.generation === generation
+        && event.status_after === 'done' && payload.decisionId === selection.decisionId
+        && payload.capabilityId === result.quickAnswer?.id && payload.capabilityVersion === result.quickAnswer?.version) outputCommit = true;
+    }
+    if (!outputCommit) return 'not_quick';
+    const deliveries = await this.store.listDeliveries(target.userTaskId);
+    const settled = task.delivery_state === 'not_required' && deliveries.length === 0
+      || task.delivery_state === 'delivered' && deliveries.length > 0
+        && deliveries.every(delivery => delivery.status === 'delivered' && !!delivery.provider_message_id);
+    if (!await this.store.cpStopTargetMatches(target, snapshotId, generation)) return 'not_quick';
+    return settled ? 'quiescent' : 'delivery_pending';
   }
 
   async status(taskId: string): Promise<PortStatusResult> {
