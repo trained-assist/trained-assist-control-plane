@@ -58,7 +58,7 @@ import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
 import { communicationSelector, communicationWriter } from './router/communication-client';
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
-import { commitQuickAnswer, dispatchAcceptedAgent } from './output/communication-v1';
+import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
 import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
@@ -481,12 +481,19 @@ async function handleRouteRoute(
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
     : await issueContinuation(result, env, store, port, body);
 
+  if (ordinaryV1 && result.mcpRefusalCode && !result.continuation) {
+    await persistMcpTaskBlock(store, task, result.mcpRefusalCode);
+  }
+  const taskStatus = result.mcpRefusalCode ? await store.requireTask(task.id) : null;
+
   return json({
     decisionId: result.decisionId,
     policyVersion: result.decision.policyVersion,
     route: result.decision.route,
     mode: result.decision.mode,
     reasonCode: result.decision.reasonCode,
+    ...(result.mcpRefusalCode ? { mcpRefusalCode: result.mcpRefusalCode } : {}),
+    ...(taskStatus ? { taskStatus: { status: taskStatus.status, reasonCode: taskStatus.blocker_reason ?? result.mcpRefusalCode } } : {}),
     degraded: result.decision.degraded,
     degradedNotice: result.decision.degradedNotice,
     rendering: result.rendering,
