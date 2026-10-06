@@ -17,6 +17,7 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
+import { inputManifestForTask } from '../intake/input-artifact-manifest';
 import { awaitRunnerResult, type AwaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
 import { RunnerUnavailableError } from '../runner-adapter/errors';
@@ -138,8 +139,8 @@ function attachmentRefsOf(userValue: string | null): { ref: string; version?: st
     for (const value of inputArtifacts) {
       if (!value || typeof value !== 'object') continue;
       const artifact = value as { ref?: unknown; version?: unknown };
-      if (typeof artifact.ref === 'string' && typeof artifact.version === 'string') {
-        out.push({ ref: artifact.ref, version: artifact.version });
+      if (typeof artifact.ref === 'string' && artifact.ref.length > 0) {
+        out.push({ ref: artifact.ref, ...(typeof artifact.version === 'string' ? { version: artifact.version } : {}) });
       }
     }
     for (const id of snapshotIds) {
@@ -517,6 +518,7 @@ export async function conversationPlan(
     }
     const runSpecPolicy = p.mcpDescriptor ? { ...baseRunSpecPolicy, mcp: p.mcpDescriptor } : baseRunSpecPolicy;
     const attemptKey = await stableAttemptKey(taskId, generation);
+    const inputManifest = current ? await inputManifestForTask(current) : null;
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
@@ -528,7 +530,11 @@ export async function conversationPlan(
         ownerGeneration: generation,
         engineName: p.runnerEngine ?? 'opencode',
         prompt: p.goal ?? current?.goal ?? '',
-        refs: attachmentRefsOf(current?.user_value ?? null),
+        refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
+        inputManifest: inputManifest ? {
+          manifestRef: inputManifest.manifestRef,
+          manifestVersion: inputManifest.manifestVersion,
+        } : null,
         instructions: p.instructions ?? null,
         attemptRunId: p.runId ?? null,
         timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,

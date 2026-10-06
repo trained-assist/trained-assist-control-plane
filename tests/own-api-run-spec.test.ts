@@ -72,6 +72,30 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
+  it('passes the CP-pinned ingress manifest separately from workspace snapshot refs', () => {
+    const built = buildRunSpec({ ...baseInput, inputManifest: {
+      manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64),
+    } }, policy);
+    expect(built.spec.ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+      userTaskId: 'ut-abc123',
+      profileId: 'profile-1',
+      runId: 'run_ut-abc123_1',
+      ownerGeneration: 1,
+    });
+    expect(built.spec.input?.refs).toBeUndefined();
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual(built.spec.ingressManifest);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('rejects an ingress manifest combined with generic refs or an unpinned task', () => {
+    const inputManifest = { manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64) };
+    expect(() => buildRunSpec({ ...baseInput, inputManifest, refs: [{ ref: 'snapshot-1', snapshotId: 'snapshot-1' }] }, policy)).toThrow(/cannot be combined/);
+    expect(() => buildRunSpec({ ...baseInput, inputManifest: { ...inputManifest, manifestRef: 'cp-input-manifest:foreign' } }, policy)).toThrow(/task-scoped/);
+  });
+
   it('snapshotId вне алфавита отклоняется: снимок — не произвольная строка', () => {
     expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '../escape' }] }, policy)).toThrow(RunSpecMappingError);
     expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '' }] }, policy)).toThrow(RunSpecMappingError);
@@ -315,7 +339,7 @@ describe('run-spec: удалённый MCP (transport remote)', () => {
   it('хостовая политика RUN_SPEC_MCP собирает remote-сервер и проходит локальную проверку контракта', () => {
     const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
 
-    expect(built.version).toBe('run-spec-v3');
+    expect(built.version).toBe('run-spec-v4');
     expect(built.spec.mcp).toEqual({ servers: [remoteServer()] });
     expect(validateRunSpec(built.spec).ok).toBe(true);
     expect(built.spec.credentialBindings).toBeUndefined();
