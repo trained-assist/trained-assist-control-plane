@@ -19,6 +19,7 @@ import type { PlanParams } from './conversation-plan';
 import type { McpSpec } from '../run-spec/run-spec';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
+import { withWorkStyleInstructions } from '../output/communication-v1';
 import type { RouteResult } from '../router/service';
 import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
@@ -816,7 +817,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
             originalInput: task.user_value ? JSON.parse(task.user_value) : undefined,
             durableContext: await durableConversationContext(this.store, task) });
         await this.submit({ id: task.id, profileId: task.profile_id, goal: task.goal,
-          instructions, awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
+          instructions: withWorkStyleInstructions(instructions, task), awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
         await this.store.markCredentialContinuation(record, 'woken');
         return true;
       } catch {

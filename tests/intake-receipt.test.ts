@@ -100,6 +100,39 @@ describe('Intake: квитанция и идемпотентность (C01)', (
     expect(id1).not.toBe(id3);
     expect(id1).toMatch(/^ut-[0-9a-f]{20}$/);
   });
+
+  it('stores workStyle durably and treats a changed launch choice as a different intake payload', async () => {
+    const { store, intake } = await setup();
+    const requestId = nextId('req-style');
+    const accepted = await intake.admit({ principalId: 'sandbox-local' }, envelope({ requestId, workStyle: 'explore' }));
+    const task = await store.requireTask(accepted.userTaskId);
+    expect(JSON.parse(task.execution_policy_json!)).toEqual({ workStyle: 'explore', source: 'explicit' });
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({ requestId, workStyle: 'answer' })))
+      .rejects.toBeInstanceOf(EnvelopeConflictError);
+    const defaultAccepted = await intake.admit({ principalId: 'sandbox-local' }, envelope());
+    expect(JSON.parse((await store.requireTask(defaultAccepted.userTaskId)).execution_policy_json!))
+      .toEqual({ workStyle: 'auto', source: 'default' });
+  });
+
+  it('rejects unsupported workStyle before durable admission', async () => {
+    const { store, intake } = await setup();
+    const requestId = nextId('req-style-invalid');
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({ requestId, workStyle: 'deep' })))
+      .rejects.toThrow('workStyle must be explore, answer or auto');
+    expect(await store.getTask(await deriveUserTaskId('profile-1', requestId))).toBeNull();
+  });
+
+  it('preserves an adapter-supplied default source for auto while validating its consistency', async () => {
+    const { store, intake } = await setup();
+    const accepted = await intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId: nextId('req-style-default'), workStyle: 'auto', workStyleSource: 'default',
+    }));
+    expect(JSON.parse((await store.requireTask(accepted.userTaskId)).execution_policy_json!))
+      .toEqual({ workStyle: 'auto', source: 'default' });
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({
+      requestId: nextId('req-style-inconsistent'), workStyle: 'explore', workStyleSource: 'default',
+    }))).rejects.toThrow('default workStyle must be auto');
+  });
 });
 
 describe('Intake: профиль и права (AC-65)', () => {

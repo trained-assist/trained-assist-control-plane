@@ -117,6 +117,7 @@ export class IntakeService {
         pilotRoute: route.route,
         pilotReason: route.reason,
       },
+      executionPolicy: { workStyle: envelope.workStyle ?? 'auto', source: envelope.workStyleSource ?? 'default' },
     });
 
     if (!created) {
