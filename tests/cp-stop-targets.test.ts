@@ -40,7 +40,13 @@ async function admittedDoneTask(store: TaskStore, input: { id: string; profileId
     goal: 'done before stop window',
   });
   await store.commit(task.id, task.generation, { status: 'done', stage: 'finished', result: { ok: true } });
-  return task;
+  const instance = await bindings.TASK_WORKFLOW.create({ id: task.id,
+    params: { taskId: task.id, profileId: input.profileId, generation: task.generation } });
+  for (let observation = 0; observation < 100; observation++) {
+    if (['complete', 'errored', 'terminated'].includes((await instance.status()).status)) return task;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Fixture Workflow did not reach a terminal status');
 }
 
 describe('POST /cp-stop-targets', () => {

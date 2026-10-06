@@ -1750,13 +1750,17 @@ export class TaskStore {
     if (!before) throw new TaskNotFoundError(taskId);
     const source = opts.source ?? 'gateway';
 
-    if (isTerminalStatus(before.status)) {
+    if (isTerminalStatus(before.status) && before.status !== 'cancelled') {
       return { cancelled: false, generation: before.generation, status: before.status };
     }
     if (opts.expectedGeneration !== undefined && before.generation !== opts.expectedGeneration) {
       return { cancelled: false, generation: before.generation, status: before.status };
     }
 
+    const cancellationGuard = `id = ? AND status = 'cancelled' AND generation = ?
+      ${opts.stopPin ? `AND ${CP_STOP_GUARD_SQL}` : ''}`;
+    const cancellationValues = [taskId, opts.expectedGeneration ?? before.generation,
+      ...(opts.stopPin ? this.cpStopGuardValues(opts.stopPin.target, opts.stopPin.snapshotId, opts.expectedGeneration ?? before.generation) : [])];
     const results = await this.db.batch([
       this.db
         .prepare(
@@ -1764,36 +1768,34 @@ export class TaskStore {
            WHERE id = ? AND ${NON_TERMINAL_SQL} AND (? IS NULL OR generation = ?)
            ${opts.stopPin ? `AND ${CP_STOP_GUARD_SQL}` : ''}`,
         )
-        .bind(now, taskId, opts.expectedGeneration ?? null, opts.expectedGeneration ?? null,
-          ...(opts.stopPin ? this.cpStopGuardValues(opts.stopPin.target, opts.stopPin.snapshotId, opts.expectedGeneration!) : [])),
+        .bind(now, taskId, opts.expectedGeneration ?? before.generation, opts.expectedGeneration ?? before.generation,
+          ...(opts.stopPin ? this.cpStopGuardValues(opts.stopPin.target, opts.stopPin.snapshotId, opts.expectedGeneration ?? before.generation) : [])),
+      this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, status_before, status_after,
+          generation, source, payload_json, created_at)
+        SELECT ?, id, 'task_cancelled', ?, 'cancelled', generation, ?,
+          json_set(?, '$.deliveriesSuppressed', (SELECT count(*) FROM deliveries WHERE user_task_id = durable_tasks.id
+            AND status IN ('pending','accepted'))), ?
+        FROM durable_tasks WHERE ${cancellationGuard}
+          AND NOT EXISTS (SELECT 1 FROM task_events WHERE user_task_id = durable_tasks.id
+            AND kind = 'task_cancelled' AND task_events.generation = durable_tasks.generation)`)
+        .bind(`cancel-confirmed:${taskId}:${opts.expectedGeneration ?? before.generation}`, before.status, source,
+          JSON.stringify({ reason: opts.reason ?? null, closedAwaiting: true, stopConfirmed: true,
+            ...(opts.nativeStops ? { nativeStops: opts.nativeStops } : {}) }), now, ...cancellationValues),
       this.db
         .prepare(`UPDATE awaiting_inputs SET status = 'cancelled' WHERE user_task_id = ? AND status = 'open'
-          AND (? IS NULL OR EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND generation = ? AND status = 'cancelled'))`)
-        .bind(taskId, opts.expectedGeneration ?? null, taskId, opts.expectedGeneration ?? null),
+          AND EXISTS (SELECT 1 FROM durable_tasks WHERE ${cancellationGuard})`)
+        .bind(taskId, ...cancellationValues),
+      this.db.prepare(`UPDATE deliveries SET status = 'failed', last_error = 'suppressed_by_cancel',
+          next_attempt_at = NULL, updated_at = ? WHERE user_task_id = ? AND status IN ('pending','accepted')
+          AND EXISTS (SELECT 1 FROM durable_tasks WHERE ${cancellationGuard})`)
+        .bind(now, taskId, ...cancellationValues),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const row = await this.requireTask(taskId);
       return { cancelled: false, generation: row.generation, status: row.status };
     }
 
-    // Подтверждённая остановка подавляет retry доставки этой задачи (C03).
-    const suppressed = await this.suppressPendingDeliveries(taskId);
     const after = await this.requireTask(taskId);
-    await this.logEvent({
-      taskId,
-      kind: 'task_cancelled',
-      statusBefore: before.status,
-      statusAfter: 'cancelled',
-      generation: after.generation,
-      source,
-      payload: {
-        reason: opts.reason ?? null,
-        closedAwaiting: true,
-        stopConfirmed: true,
-        deliveriesSuppressed: suppressed,
-        ...(opts.nativeStops ? { nativeStops: opts.nativeStops } : {}),
-      },
-    });
     return { cancelled: true, generation: after.generation, status: 'cancelled' };
   }
 
@@ -2477,12 +2479,18 @@ export class TaskStore {
     attemptId: string, outcome: 'success' | 'failed' | 'cancelled'): Promise<boolean> {
     const attempt = target.attempts.find(value => value.attemptId === attemptId);
     if (!attempt) return false;
-    const updated = await this.db.prepare(`UPDATE executions SET status = ?, finished_at = COALESCE(finished_at, ?)
-      WHERE id = ? AND task_id = ? AND generation = ? AND session_id IS ?
+    const updated = await this.db.prepare(`UPDATE executions SET status = ?, finished_at = ?
+      WHERE id = ? AND task_id = ? AND generation = ? AND session_id IS ? AND finished_at IS NULL
         AND EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL})`)
       .bind(outcome, Date.now(), attempt.attemptId, target.userTaskId, attempt.ownerGeneration, attempt.runId,
         target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, generation)).run();
-    return updated.meta.changes === 1;
+    if (updated.meta.changes === 1) return true;
+    return !!await this.db.prepare(`SELECT 1 AS present FROM executions
+      WHERE id = ? AND task_id = ? AND generation = ? AND session_id IS ?
+        AND finished_at IS NOT NULL AND status IN ('success','failed','cancelled')
+        AND EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL})`)
+      .bind(attempt.attemptId, target.userTaskId, attempt.ownerGeneration, attempt.runId,
+        target.userTaskId, ...this.cpStopGuardValues(target, snapshotId, generation)).first();
   }
 
   async recordCpStopEvidence(target: CpStopTarget, snapshotId: string, generation: number,
@@ -2553,9 +2561,10 @@ export class TaskStore {
     reason: string | null;
   }): Promise<CpStopWindowRow | null> {
     await this.db.prepare(
-      `UPDATE cp_stop_windows SET stop_confirmed = ?, reason = ?, updated_at = ?
+      `UPDATE cp_stop_windows SET stop_confirmed = MAX(stop_confirmed, ?),
+         reason = CASE WHEN stop_confirmed = 1 OR ? = 1 THEN NULL ELSE ? END, updated_at = ?
        WHERE profile_id = ? AND conversation_id = ? AND snapshot_id = ?`,
-    ).bind(input.stopConfirmed ? 1 : 0, input.reason, Date.now(), input.profileId,
+    ).bind(input.stopConfirmed ? 1 : 0, input.stopConfirmed ? 1 : 0, input.reason, Date.now(), input.profileId,
       input.conversationId, input.snapshotId).run();
     const current = await this.cpStopWindow(input.profileId, input.conversationId);
     return current?.snapshot_id === input.snapshotId ? current : null;

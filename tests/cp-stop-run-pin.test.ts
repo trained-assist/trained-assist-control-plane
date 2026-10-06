@@ -3,7 +3,7 @@ import { env } from './env';
 import { TaskStore } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port/workflow-port';
 import { CpStopTargetsService } from '../src/workflow-port/external-stop';
-import type { ExternalStopContext } from '../src/workflow-port/external-stop';
+import type { ExternalStopContext, ExternalStopOutcome } from '../src/workflow-port/external-stop';
 import type { RunnerResult } from '../src/runner-adapter/runner-api-adapter';
 
 let sequence = 0;
@@ -135,6 +135,55 @@ describe('immutable stop execution pins', () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it.each(['done', 'failed', 'cancelled'] as const)
+  ('does not confirm stop for TaskStore %s while Workflow is running or unobservable', async taskStatus => {
+    const current = await fixture();
+    const originalResult = { original: taskStatus, answer: 'preserve original terminal result' };
+    await current.store.finishRun(current.attempt.id, 'failed');
+    await current.store.commit(current.taskId, 1, { status: taskStatus, stage: 'finished', result: originalResult });
+    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
+    const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
+    const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
+    expect(current.status).toHaveBeenCalledOnce();
+    current.status.mockRejectedValueOnce(new Error('Workflow status unavailable'));
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
+    expect(current.terminate).not.toHaveBeenCalled();
+    expect(JSON.parse((await current.store.requireTask(current.taskId)).result_json!)).toEqual(originalResult);
+    current.status.mockResolvedValueOnce({ status: 'complete' });
+    expect(await port.cancel(current.taskId, { stopPin: current.pin }))
+      .toMatchObject({ stopConfirmed: true, status: taskStatus, cancelled: taskStatus === 'cancelled' });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(JSON.parse((await current.store.requireTask(current.taskId)).result_json!)).toEqual(originalResult);
+  });
+
+  it('preserves a finished export failure while recording separate successful native exit evidence', async () => {
+    const current = await fixture();
+    const originalResult = { reason: 'export_not_persisted', persistence: 'failed' };
+    await current.store.finishRun(current.attempt.id, 'failed', {
+      errorClass: 'export_not_persisted', errorText: 'Export was not confirmed', result: originalResult,
+    });
+    await current.store.commit(current.taskId, 1, { status: 'failed', stage: 'finished', result: originalResult });
+    const before = await current.store.requireRun(current.attempt.id);
+    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const,
+      result: { ...result(context), outcome: 'succeeded' as const, exitCode: 0, exitSignal: null } }));
+    const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
+    const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
+    expect(await current.store.requireRun(current.attempt.id)).toEqual(before);
+    const proofs = (await current.store.history(current.taskId)).map(event => JSON.parse(event.payload_json))
+      .filter(payload => payload.event === 'native_stop.confirmed');
+    expect(proofs).toHaveLength(1);
+    expect(proofs[0].nativeStops).toMatchObject([{ attemptId: current.attempt.id, runId: current.runId,
+      ownerGeneration: 1, state: 'succeeded', exitObserved: true }]);
+    current.status.mockResolvedValueOnce({ status: 'complete' });
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: 'failed' });
+    expect(await current.store.requireRun(current.attempt.id)).toEqual(before);
+    expect(JSON.parse((await current.store.requireTask(current.taskId)).result_json!)).toEqual(originalResult);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(current.terminate).not.toHaveBeenCalled();
+  });
+
   it('guards terminal commit when a new attempt appears between validation and status mutation', async () => {
     const current = await fixture();
     const generation = await current.store.claimCpStopTarget(current.target, current.snapshotId);
@@ -147,6 +196,93 @@ describe('immutable stop execution pins', () => {
     expect(await current.store.confirmCancel(current.taskId, { expectedGeneration: generation!, stopPin: current.pin }))
       .toMatchObject({ cancelled: false });
     expect((await current.store.requireTask(current.taskId)).status).not.toBe('cancelled');
+  });
+
+  it('rolls back cancellation, awaiting cleanup, delivery suppression and journal together on transaction failure', async () => {
+    const current = await fixture();
+    await current.store.openAwaiting({ taskId: current.taskId, purpose: 'missing_fact', question: 'fixture wait',
+      respondentScope: current.profileId, generation: 1 });
+    const delivery = await current.store.queueDelivery({ taskId: current.taskId,
+      logicalMessageId: `${current.taskId}-delivery`, channel: 'telegram', message: { text: 'pending fixture' } });
+    const generation = await current.store.claimCpStopTarget(current.target, current.snapshotId);
+    const before = await current.store.requireTask(current.taskId);
+    const broken = new TaskStore({ prepare: env.DB.prepare.bind(env.DB),
+      batch: (statements: D1PreparedStatement[]) => env.DB.batch([...statements,
+        env.DB.prepare('INSERT INTO stop_pin_nonexistent_table(value) VALUES(1)')]),
+    } as unknown as D1Database);
+    await expect(broken.confirmCancel(current.taskId, { expectedGeneration: generation!, stopPin: current.pin })).rejects.toThrow();
+    expect(await current.store.requireTask(current.taskId)).toEqual(before);
+    expect((await current.store.getOpenAwaiting(current.taskId))?.status).toBe('open');
+    expect((await current.store.requireDelivery(delivery.delivery.id)).status).toBe('pending');
+    expect((await current.store.history(current.taskId)).filter(event => event.kind === 'task_cancelled')).toHaveLength(0);
+    const lostAck = new TaskStore({ prepare: env.DB.prepare.bind(env.DB),
+      batch: async (statements: D1PreparedStatement[]) => {
+        await env.DB.batch(statements);
+        throw new Error('Committed cancellation ACK lost');
+      },
+    } as unknown as D1Database);
+    await expect(lostAck.confirmCancel(current.taskId, { expectedGeneration: generation!, stopPin: current.pin }))
+      .rejects.toThrow('Committed cancellation ACK lost');
+    expect((await current.store.requireTask(current.taskId)).status).toBe('cancelled');
+    expect(await current.store.getOpenAwaiting(current.taskId)).toBeNull();
+    expect(await current.store.requireDelivery(delivery.delivery.id)).toMatchObject({ status: 'failed', last_error: 'suppressed_by_cancel' });
+    const events = (await current.store.history(current.taskId)).filter(event => event.kind === 'task_cancelled');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.payload_json).deliveriesSuppressed).toBe(1);
+    await current.store.confirmCancel(current.taskId, { expectedGeneration: generation!, stopPin: current.pin });
+    expect((await current.store.history(current.taskId)).filter(event => event.kind === 'task_cancelled')).toHaveLength(1);
+  });
+
+  it('cold retry repairs historical cancelled state with missing cleanup and event exactly once', async () => {
+    const current = await fixture();
+    await current.store.openAwaiting({ taskId: current.taskId, purpose: 'missing_fact', question: 'fixture wait',
+      respondentScope: current.profileId, generation: 1 });
+    const delivery = await current.store.queueDelivery({ taskId: current.taskId,
+      logicalMessageId: `${current.taskId}-delivery`, channel: 'telegram', message: { text: 'pending fixture' } });
+    await current.store.claimCpStopTarget(current.target, current.snapshotId);
+    await env.DB.prepare("UPDATE durable_tasks SET status = 'cancelled' WHERE id = ?").bind(current.taskId).run();
+    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
+    const workflow = { get: vi.fn(async () => ({ status: async () => ({ status: 'complete' }) })) } as unknown as Workflow;
+    const store = new TaskStore(env.DB);
+    const port = new CfWorkflowPort(workflow, store, undefined, { stop });
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true });
+    expect(await store.getOpenAwaiting(current.taskId)).toBeNull();
+    expect((await store.requireDelivery(delivery.delivery.id)).status).toBe('failed');
+    const events = (await store.history(current.taskId)).filter(event => event.kind === 'task_cancelled');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.payload_json).deliveriesSuppressed).toBe(1);
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true });
+    expect((await store.history(current.taskId)).filter(event => event.kind === 'task_cancelled')).toEqual(events);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('late pending updates cannot regress confirmed snapshot or affect replacement snapshot identity', async () => {
+    const current = await fixture();
+    let releaseLate!: () => void;
+    let enterLate!: () => void;
+    const gate = new Promise<void>(resolve => { releaseLate = resolve; });
+    const entered = new Promise<void>(resolve => { enterLate = resolve; });
+    const stop = vi.fn<(context: ExternalStopContext) => Promise<ExternalStopOutcome>>(
+      async context => ({ state: 'stopped', result: result(context) }))
+      .mockImplementationOnce(async () => { enterLate(); await gate; return { state: 'pending' }; });
+    current.status.mockResolvedValue({ status: 'complete' });
+    const workflow = { get: vi.fn(async () => ({ status: current.status })) } as unknown as Workflow;
+    const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
+    const service = new CpStopTargetsService(current.store, port);
+    const polled = service.stop(current.input);
+    await entered;
+    expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: true });
+    releaseLate();
+    expect(await polled).toMatchObject({ stopConfirmed: false });
+    const saved = await current.store.cpStopWindow(current.profileId, current.conversationId);
+    expect(saved).toMatchObject({ snapshot_id: current.snapshotId, stop_confirmed: 1, reason: null });
+    const replacement = await current.store.openCpStopWindow({ ...current.input,
+      windowId: `${current.input.windowId}-replacement`, restart: true, targets: [current.target] });
+    if (!replacement.ok) throw new Error('replacement fixture failed');
+    expect(await current.store.updateCpStopWindow({ ...current.input, snapshotId: current.snapshotId,
+      stopConfirmed: false, reason: 'native_stop_unknown' })).toBeNull();
+    expect(await current.store.cpStopWindow(current.profileId, current.conversationId))
+      .toMatchObject({ snapshot_id: replacement.window.snapshot_id, stop_confirmed: 0 });
   });
 
   it('holds a snapshot whose durable submission witness has a conflicting key', async () => {

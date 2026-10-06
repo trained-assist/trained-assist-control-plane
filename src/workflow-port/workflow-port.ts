@@ -361,6 +361,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
     if (!requested.requested) {
       const verified = await this.verifyTerminalNativeStops(taskId, opts.reason);
       const stopConfirmed = isTerminalStatus(requested.status ?? '') && verified.stopConfirmed;
+      if (requested.status === 'cancelled' && stopConfirmed) await this.store.confirmCancel(taskId, {
+        expectedGeneration: requested.generation, reason: opts.reason, nativeStops: verified.nativeStops,
+      });
       return { cancelled: requested.status === 'cancelled' && stopConfirmed, generation: requested.generation,
         status: requested.status, stopConfirmed, nativeStops: verified.nativeStops,
         ...(verified.nativeStopState ? { nativeStopState: verified.nativeStopState } : {}) };
@@ -501,14 +504,20 @@ export class CfWorkflowPort implements WorkflowPortApi {
       nativeStops.push(observed);
     }
     if (!await matches()) return unresolved;
-    const task = await this.store.requireTask(taskId);
-    if (isTerminalStatus(task.status)) return { cancelled: task.status === 'cancelled', stopConfirmed: true,
-      generation, status: task.status, nativeStops };
     try {
       const instance = await this.wf.get(taskId);
       if (!['terminated', 'complete', 'errored'].includes((await instance.status()).status)) return unresolved;
     } catch { return unresolved; }
     if (!await matches()) return unresolved;
+    const task = await this.store.requireTask(taskId);
+    if (!await matches()) return unresolved;
+    if (task.status === 'cancelled') {
+      await this.store.confirmCancel(taskId, { expectedGeneration: generation,
+        reason: `cp_stop_window:${snapshotId}`, nativeStops, stopPin: pin });
+      if (!await matches()) return unresolved;
+    }
+    if (isTerminalStatus(task.status)) return { cancelled: task.status === 'cancelled', stopConfirmed: true,
+      generation, status: task.status, nativeStops };
     const result = await this.store.confirmCancel(taskId, { expectedGeneration: generation,
       reason: `cp_stop_window:${snapshotId}`, nativeStops, stopPin: pin });
     return { ...result, cancelled: result.cancelled, stopConfirmed: result.cancelled, nativeStops };
