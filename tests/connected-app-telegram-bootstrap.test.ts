@@ -92,6 +92,15 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     expect((await start(update, { chatId: -chat })).status).toBe(400);
     expect((await start(update, { telegramUserId: '123456788' })).status).toBe(400);
     expect((await start(update)).status).toBe(403);
+    const routed = await worker.fetch(new Request(`${issuer}/v1/connected-app-bootstrap/telegram/start`, {
+      method: 'POST', headers: { authorization: `Bearer ${gatewayKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ botId: bot, updateId: update, telegramUserId: user,
+        chatId: chat, chatType: 'private' }),
+    }), { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
+      CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED: 'true',
+      CONNECTED_APP_TELEGRAM_GATEWAY_KEY: gatewayKey, CONNECTED_APP_ISSUER: issuer,
+      CONNECTED_APP_START_URLS: config.startUrls });
+    expect(routed.status).toBe(403);
     await provision();
     expect((await start(update)).status).toBe(202);
     expect(await (await start(update)).json()).toMatchObject({ duplicate: true });
