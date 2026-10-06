@@ -188,6 +188,33 @@ describe('inactive host MCP routing composition', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it.each(['policy-drift', 'discovery-failure'] as const)(
+    'keeps an admitted run authoritative on repeated dispatch after %s', async failure => {
+      const current = await fixture();
+      const routed = await routeRequest(current.input, { communicationV1: {
+        select: async () => ({ user_goal: '', decision: current.selectedName }),
+        health: current.health, hostMcp: current.hostMcp,
+      } });
+      const instances = new Map<string, unknown>();
+      const workflow = { create: vi.fn(async (request: { id: string; params: unknown }) => { instances.set(request.id, request.params); return {}; }),
+        get: async (id: string) => instances.has(id) ? { status: async () => ({ status: 'running' }) } : null } as unknown as Workflow;
+      const port = new CfWorkflowPort(workflow, current.store);
+      const first = await dispatchAcceptedAgent(current.store, port, await current.store.requireTask(current.taskId), routed,
+        'dynamic-ip-azure-agent-run', current.hostMcp);
+      const submit = vi.spyOn(port, 'submit');
+      const run = (await current.store.listRuns(current.taskId))[0]!;
+      expect(first).toMatchObject({ issued: true, runId: run.id });
+      if (failure === 'policy-drift') current.changeRegistry();
+      else current.rpc.mockRejectedValueOnce(new Error('offline discovery'));
+      const outcome = await dispatchAcceptedAgent(current.store, port,
+        await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
+      expect(outcome).toMatchObject({ issued: false, refusal: 'existing_run_requires_reconciliation', runId: run.id });
+      expect(await current.store.requireTask(current.taskId)).not.toMatchObject({ status: 'blocked' });
+      expect(await current.store.listRuns(current.taskId)).toHaveLength(1);
+      expect(submit).not.toHaveBeenCalled();
+    },
+  );
+
   it('disabled injection does not discover or expose host catalogue metadata', async () => {
     const current = await fixture();
     current.hostMcp.enabled = false;

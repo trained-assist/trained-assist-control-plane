@@ -70,6 +70,14 @@ export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPo
   const current = await store.requireTask(task.id);
   if (current.generation !== task.generation) throw new FencedError(task.id, task.generation, current.generation);
   if (isTerminalStatus(current.status)) return { owner: 'output', issued: false, refusal: 'task_terminal' };
+  // A previous submit may already have an authoritative run receipt. Reconcile
+  // that attempt before revalidating pre-launch MCP policy: a later catalogue
+  // outage must not rewrite an admitted run as "agent not started".
+  const runs = await store.listRuns(task.id);
+  if (runs.length > 0) {
+    const existing = runs.find((run) => run.status !== 'running') ?? runs[runs.length - 1]!;
+    return { owner: 'output', requested: true, issued: false, refusal: 'existing_run_requires_reconciliation', runId: existing.id, generation: current.generation };
+  }
   let mcpDescriptor;
   if (result.mcpInstruction) {
     const scope = result.mcpInstruction.scope;
@@ -84,9 +92,6 @@ export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPo
   }
   const userValue = current.user_value ? JSON.parse(current.user_value) as Record<string, unknown> : {};
   if (userValue.gtdId) return { owner: 'output', issued: false, refusal: 'gtd_owns_continuation' };
-  const runs = await store.listRuns(task.id);
-  const unresolved = runs.find((run) => run.status !== 'running');
-  if (unresolved) return { owner: 'output', requested: true, issued: false, refusal: 'existing_run_requires_reconciliation', runId: unresolved.id, generation: current.generation };
   const selection = result.continuation;
   if (!selection) return { owner: 'output', issued: false, refusal: 'no_agent_selection' };
   const start = await port.submit({
