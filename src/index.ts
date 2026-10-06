@@ -34,7 +34,8 @@ import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { connectedAppRequest } from './connected-app/session-service';
-import { telegramBootstrapRequest, telegramPlatformSessionResolver } from './connected-app/telegram-bootstrap';
+import { telegramBootstrapRequest } from './connected-app/telegram-bootstrap';
+import { createAgentProfileAuthorityV1 } from './agent-profile-authority/v1';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -1077,7 +1078,7 @@ const store = new TaskStore(env.DB);
           issuer: env.CONNECTED_APP_ISSUER,
           redirectUris: env.CONNECTED_APP_REDIRECT_URIS,
         }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
-          ? telegramPlatformSessionResolver(env.DB) : null);
+          ? createAgentProfileAuthorityV1(env.DB) : null);
       }
       if (url.pathname === '/') {
         return json({

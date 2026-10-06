@@ -30,8 +30,20 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.introspection.inactiveResponse).toEqual({ active: false });
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.create');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.review');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
     expect(contract.audiences['crm-web']).toContain('crm.catalog.read');
+    expect(contract.audiences['crm-web']).toContain('crm.deals.read');
+    expect(contract.audiences['crm-web']).toContain('crm.deals.create');
+    expect(contract.agentProfileAuthority).toMatchObject({
+      urn: 'urn:trained-assist:agent-profile-context:v1', version: 1,
+      owner: 'trained-assist-agent',
+      sourceRevision: '3cc6358b052a466410c3b45e3355ec3f7548dd30',
+      contextFields: ['principalId', 'profileId', 'sessionId', 'profileGeneration'],
+      runtimeStatus: 'opt_in_cp_hosted_bootstrap_prototype',
+    });
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });
 
