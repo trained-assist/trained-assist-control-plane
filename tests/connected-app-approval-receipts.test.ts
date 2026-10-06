@@ -199,6 +199,47 @@ describe('CP one-use Connected App human approval receipts through real Worker a
     expect(rows?.count).toBe(1);
   });
 
+  it('recovers the same consumed receipt after intent expiry and prepare-time cleanup', async () => {
+    await provision();
+    const cookie = await makeResolverSession();
+    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const prepared = await prepare(token);
+    const resolve = await resolverFor(prepared.intentId);
+    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
+      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const html = await page.text();
+    const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
+    const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
+    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
+      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    expect(confirmed.status).toBe(200);
+
+    const consumerRequestId = 'crm-command-recovery-001';
+    const consumeBody = { appToken: token, audience: 'crm-web', command, sourceRevision, operation,
+      intentId: prepared.intentId, consumerRequestId };
+    const first = await approval('consume', consumeBody);
+    expect(first.status).toBe(201);
+    const firstReceipt = (await first.json() as { receipt: { receiptId: string } }).receipt;
+
+    const now = Math.floor(Date.now() / 1000);
+    const intentHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prepared.intentId))
+      .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''));
+    await env.DB.prepare('UPDATE connected_app_approval_intents SET expires_at=? WHERE intent_hash=?')
+      .bind(now - 1, intentHash).run();
+
+    const recoveredAfterExpiry = await approval('consume', consumeBody);
+    expect(recoveredAfterExpiry.status).toBe(200);
+    expect(await recoveredAfterExpiry.json()).toMatchObject({ receipt: { receiptId: firstReceipt.receiptId } });
+
+    // A subsequent prepare performs expiry cleanup. A consumed receipt must remain recoverable.
+    const nextIntent = await prepare(token, { ...operation, externalProjectId: 'case-next' }, 'c'.repeat(64));
+    expect(nextIntent.intentId).toMatch(/^[a-f0-9]{64}$/);
+    const recoveredAfterCleanup = await approval('consume', consumeBody);
+    expect(recoveredAfterCleanup.status).toBe(200);
+    expect(await recoveredAfterCleanup.json()).toMatchObject({ receipt: { receiptId: firstReceipt.receiptId } });
+  });
+
   it('invalidates approval if the selected profile generation changes before confirmation or consume', async () => {
     await provision();
     const cookie = await makeResolverSession();
@@ -222,5 +263,68 @@ describe('CP one-use Connected App human approval receipts through real Worker a
     expect(review.status).toBe(401);
     expect((await approval('consume', { appToken: token, audience: 'crm-web', command, sourceRevision,
       operation, intentId: prepared.intentId, consumerRequestId: 'switched-profile-command' })).status).toBe(403);
+  });
+
+  it('rechecks the session grant before showing the approval form', async () => {
+    await provision();
+    const cookie = await makeResolverSession();
+    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const prepared = await prepare(token);
+    await env.DB.prepare(`UPDATE connected_app_grants SET scopes_json='[]' WHERE session_id=? AND audience='crm-web'`)
+      .bind(sessionId).run();
+    const resolve = await resolverFor(prepared.intentId);
+    const review = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
+      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    expect(review.status).toBe(401);
+  });
+
+  it('refuses receipt consumption after membership revocation', async () => {
+    await provision();
+    const cookie = await makeResolverSession();
+    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const prepared = await prepare(token);
+    const resolve = await resolverFor(prepared.intentId);
+    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
+      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const html = await page.text();
+    const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
+    const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
+    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
+      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    expect(confirmed.status).toBe(200);
+    await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0 WHERE principal_id=? AND profile_id=? AND audience='crm-web'`)
+      .bind(principalId, profileId).run();
+    expect((await approval('consume', { appToken: token, audience: 'crm-web', command, sourceRevision,
+      operation, intentId: prepared.intentId, consumerRequestId: 'revoked-membership-command' })).status).toBe(403);
+  });
+
+  it('allows only one winner when two service requests race to consume the same approval', async () => {
+    await provision();
+    const cookie = await makeResolverSession();
+    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const prepared = await prepare(token);
+    const resolve = await resolverFor(prepared.intentId);
+    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
+      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const html = await page.text();
+    const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
+    const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
+    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
+      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    expect(confirmed.status).toBe(200);
+
+    const common = { appToken: token, audience: 'crm-web', command, sourceRevision, operation, intentId: prepared.intentId };
+    const results = await Promise.all([
+      approval('consume', { ...common, consumerRequestId: 'crm-command-race-a' }),
+      approval('consume', { ...common, consumerRequestId: 'crm-command-race-b' }),
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+    const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM connected_app_approval_receipts WHERE intent_hash=?')
+      .bind(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prepared.intentId))
+        .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('')))
+      .first<{ count: number }>();
+    expect(count?.count).toBe(1);
   });
 });

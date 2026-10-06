@@ -13,7 +13,13 @@ type Intent = { intent_hash: string; session_id: string; generation: number; pri
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HEX = /^[a-f0-9]{64}$/;
 const MAX_INTENT_AGE = 10 * 60;
+const RECEIPT_RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const MAX_OPERATION_BYTES = 16_384;
+// v1 registers one confidential web client per audience.
+const REGISTERED_CLIENT_ID: Record<Audience, string> = {
+  'recruiting-web': 'recruiting-web',
+  'crm-web': 'crm-web',
+};
 const OPERATION_SCOPE: Record<string, { audience: Audience; scope: string }> = {
   'crm.deals.create': { audience: 'crm-web', scope: 'crm.deals.create' },
 };
@@ -70,7 +76,8 @@ function operationJson(value: unknown): string | null {
 }
 async function operationHash(audience: Audience, command: string, sourceRevision: string,
   encodedOperation: string): Promise<string> {
-  return sha(JSON.stringify({ audience, clientId: audience, commandId: command, operation: JSON.parse(encodedOperation), sourceRevision }));
+  return sha(JSON.stringify({ audience, clientId: REGISTERED_CLIENT_ID[audience], commandId: command,
+    operation: JSON.parse(encodedOperation), sourceRevision }));
 }
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
@@ -127,12 +134,20 @@ async function currentPlatformSession(db: D1Database, resolver: PlatformSessionR
   const membership = await db.prepare(`SELECT scopes_json,enabled FROM connected_app_memberships
     WHERE principal_id=? AND profile_id=? AND audience=?`)
     .bind(intent.principal_id, intent.profile_id, intent.audience).first<{ scopes_json: string; enabled: number }>();
-  let memberScopes: unknown;
-  try { memberScopes = JSON.parse(membership?.scopes_json ?? '[]'); } catch { return null; }
-  const policy = commandPolicy(intent.command, intent.audience as Audience);
-  if (!policy || !current || current.enabled !== 1 || current.generation !== intent.generation ||
+  const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id=? AND audience=?')
+    .bind(intent.session_id, intent.audience).first<{ scopes_json: string }>();
+  let memberScopes: unknown, grantScopes: unknown;
+  try {
+    memberScopes = JSON.parse(membership?.scopes_json ?? '[]');
+    grantScopes = JSON.parse(grant?.scopes_json ?? '[]');
+  } catch { return null; }
+  const audience = audienceOf(intent.audience);
+  const policy = audience ? commandPolicy(intent.command, audience) : null;
+  if (!policy || !audience || intent.client_id !== REGISTERED_CLIENT_ID[audience] ||
+      !current || current.enabled !== 1 || current.generation !== intent.generation ||
       current.principal_id !== intent.principal_id || current.profile_id !== intent.profile_id ||
-      membership?.enabled !== 1 || !Array.isArray(memberScopes) || !memberScopes.includes(policy.scope)) return null;
+      membership?.enabled !== 1 || !Array.isArray(memberScopes) || !memberScopes.includes(policy.scope) ||
+      !Array.isArray(grantScopes) || !grantScopes.includes(policy.scope)) return null;
   return verified;
 }
 async function readIntent(db: D1Database, intentId: unknown): Promise<Intent | null> {
@@ -171,14 +186,18 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
       const minted = randomHex();
       const expiresAt = now + MAX_INTENT_AGE;
       await db.batch([
-      db.prepare('DELETE FROM connected_app_approval_intents WHERE expires_at <= ?').bind(now),
-        db.prepare('DELETE FROM connected_app_approval_receipts WHERE consumed_at <= ?').bind(now - 90 * 24 * 60 * 60),
+        db.prepare('DELETE FROM connected_app_approval_receipts WHERE consumed_at <= ?')
+          .bind(now - RECEIPT_RETENTION_SECONDS),
+        db.prepare(`DELETE FROM connected_app_approval_intents
+          WHERE (consumed_at IS NULL AND expires_at <= ?) OR consumed_at <= ?`)
+          .bind(now, now - RECEIPT_RETENTION_SECONDS),
         db.prepare(`INSERT INTO connected_app_approval_intents
           (intent_hash,session_id,generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,source_revision,
            operation_json,created_at,expires_at,review_nonce_hash,approved_at,consumed_at,consumer_request_id,receipt_id)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)`)
           .bind(await sha(minted), active.session.session_id, active.session.generation, active.session.principal_id,
-            active.session.profile_id, audience, audience, body.command, policy.scope, requestHash, sourceRevision, encodedOperation, now, expiresAt),
+            active.session.profile_id, audience, REGISTERED_CLIENT_ID[audience], body.command, policy.scope,
+            requestHash, sourceRevision, encodedOperation, now, expiresAt),
       ]);
       return json(201, { version: 1, intentId: minted,
         approvalUrl: `${config.issuer}/v1/connected-app-approvals/review?intent=${minted}`, expiresAt });
@@ -187,9 +206,10 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
     if (typeof intentId !== 'string' || !HEX.test(intentId) || typeof consumerRequestId !== 'string' || !ID.test(consumerRequestId))
       return json(400, { error: 'invalid request' });
     const intent = await readIntent(db, intentId);
-    if (!intent || intent.expires_at <= now || intent.session_id !== active.session.session_id ||
+    if (!intent || intent.session_id !== active.session.session_id ||
         intent.generation !== active.session.generation || intent.principal_id !== active.session.principal_id ||
-        intent.profile_id !== active.session.profile_id || intent.audience !== audience || intent.client_id !== audience ||
+        intent.profile_id !== active.session.profile_id || intent.audience !== audience ||
+        intent.client_id !== REGISTERED_CLIENT_ID[audience] ||
         intent.command !== body.command || intent.required_scope !== policy.scope ||
         intent.request_hash !== requestHash || intent.source_revision !== sourceRevision) return json(403, { error: 'approval not available' });
     if (intent.consumed_at !== null) {
@@ -203,6 +223,7 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
         principalId: existing.principal_id, profileId: existing.profile_id,
         approvedAt: existing.approved_at, consumedAt: existing.consumed_at, operation: JSON.parse(String(existing.operation_json)) } });
     }
+    if (intent.expires_at <= now) return json(403, { error: 'approval not available' });
     if (intent.approved_at === null) return json(403, { error: 'human approval required' });
     const receiptId = randomHex();
     const changed = await db.batch([
@@ -216,7 +237,8 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
           AND EXISTS (SELECT 1 FROM connected_app_memberships m WHERE m.principal_id=? AND m.profile_id=?
             AND m.audience=? AND m.enabled=1 AND EXISTS (SELECT 1 FROM json_each(m.scopes_json) WHERE value=?))`)
         .bind(now, consumerRequestId, receiptId, intent.intent_hash, now, active.session.session_id,
-          active.session.generation, active.session.principal_id, active.session.profile_id, audience, audience,
+          active.session.generation, active.session.principal_id, active.session.profile_id, audience,
+          REGISTERED_CLIENT_ID[audience],
           body.command, policy.scope, requestHash, sourceRevision, active.session.session_id,
           active.session.generation, active.session.principal_id, active.session.profile_id,
           active.session.principal_id, active.session.profile_id, audience, policy.scope),
@@ -244,7 +266,7 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
         approvedAt: existing.approved_at, consumedAt: existing.consumed_at,
         operation: JSON.parse(String(existing.operation_json)) } });
     }
-    return json(201, { version: 1, receipt: { receiptId, audience, clientId: audience,
+    return json(201, { version: 1, receipt: { receiptId, audience, clientId: REGISTERED_CLIENT_ID[audience],
       command: body.command, requestHash, sourceRevision, principalId: active.session.principal_id,
       profileId: active.session.profile_id, approvedAt: intent.approved_at, consumedAt: now,
       operation: JSON.parse(intent.operation_json) } });
