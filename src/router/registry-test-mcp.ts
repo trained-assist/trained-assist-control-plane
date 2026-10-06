@@ -2,6 +2,7 @@ import { McpCatalogueAdapter } from './mcp-catalogue';
 import type { HostMcpRoutingDeps } from './host-mcp-routing';
 import type { McpCatalogueScope } from './mcp-catalogue-types';
 import type { McpSpec } from '../run-spec/run-spec';
+import { logStructured } from '../logging/structured-log';
 
 export const REGISTRY_FIXTURE_PROFILE = 'integration-telegram-ux-v1';
 export const REGISTRY_FIXTURE_PRINCIPAL = 'integration-telegram-ux-v1';
@@ -100,7 +101,18 @@ export function registryFixtureHostMcp(
           'x-mcp-principal-id': actualScope.principalId,
           'x-mcp-generation': String(actualScope.generation),
         });
-        const response = await fetcher(REGISTRY_FIXTURE_URL, { method: 'POST', headers, body: JSON.stringify(message), redirect: 'manual', signal });
+        let response: Response;
+        try {
+          response = await fetcher(REGISTRY_FIXTURE_URL, { method: 'POST', headers, body: JSON.stringify(message), redirect: 'manual', signal });
+        } catch (error) {
+          logStructured({ event: 'mcp.discovery.transport_error', level: 'warn', userTaskId: actualScope.taskId,
+            profileId: actualScope.profileId, serverId: REGISTRY_FIXTURE_SERVER,
+            errorName: error instanceof Error ? error.name : 'unknown' });
+          throw error;
+        }
+        logStructured({ event: 'mcp.discovery.host_response', userTaskId: actualScope.taskId,
+          profileId: actualScope.profileId, serverId: REGISTRY_FIXTURE_SERVER,
+          status: response.status, contentType: response.headers.get('content-type') ?? '' });
         if (response.status >= 300 && response.status < 400) throw new Error('MCP discovery redirects are refused');
         if (!response.ok) throw new Error(`MCP discovery returned HTTP ${response.status}`);
         const contentType = response.headers.get('content-type') ?? '';

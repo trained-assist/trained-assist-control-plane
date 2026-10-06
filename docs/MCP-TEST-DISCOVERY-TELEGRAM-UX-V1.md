@@ -1,27 +1,34 @@
 # Test MCP discovery contract for Telegram UX v1
 
-Status (06.10.2026): the isolated Host Worker is deployed and configured. A live
-Host discovery request and a separately generated Runner-resolver-signed fixture
-invocation returned the expected tool/marker. The active `agent-runner-api`
-service is now deployed from Runner PR #154's merged revision on the dedicated
-test runtime; health is `ok`, it is idle, and the restricted
-`integration-telegram-ux-v1` principal/key record plus test-only MCP resolver,
-expiry and signing key are configured. The CP test Worker secrets are provisioned
-and PR #67 contains the trusted profile wiring, but its deployed Worker has not
-yet run an authorized task through CP discovery. Therefore no real Runner
-admission, signed invocation from the active service, agent tool call, or Telegram
-session has been demonstrated. The only profile in scope is
-`integration-telegram-ux-v1`; the only capability exposed to the agent is
-`registry.fixture_read`.
+Status (06.10.2026): the full test CP → Runner → native worker/GitHub Actions →
+MCP Host path has passed with the only exposed tool `registry.fixture_read`.
+The successful CP task was `ut-245e42e584834264a5dc`; Runner run
+`run_c8fee149-b277-4ea4-925f-e4f859e7415b` completed successfully in GitHub
+Actions [run #37454650132](https://github.com/vovalikessmoothy-png/opencode-gha-runner/actions/runs/37454650132).
+The returned answer was `registry-fixture-marker-160-v1`, the fixture handler's
+marker. CP test Worker version: `18f0cdab-638c-488a-b123-2480c21d317c`.
 
-The test Host Worker has the dedicated Custom Domain
-`registry-test.trainedassist.store`. Cloudflare has provisioned its managed DNS
-record and unauthenticated `POST /mcp` reaches the Worker, which returns the
-expected `Unauthorized` JSON-RPC error. This verifies DNS and the custom-domain
-route, but not Bearer-authenticated discovery. The earlier `1010
-browser_signature_banned` applied to probes at the `workers.dev` address; do not
-weaken Host proof checks or disguise the caller fingerprint to work around an
-edge rejection.
+The CP discovery and Runner invocation use the isolated Host Worker through the
+test-only `REGISTRY_MCP_HOST_SERVICE` binding. The Runner invocation proof is
+created after admission with the actual Runner `runId`; Host accepted the
+`tools/call` and returned the marker. No Telegram update, chat, or user was
+involved. A temporary authenticated service-level probe was removed after the
+run, together with its secret.
+
+Two live Runner fail-closed submissions also passed. Unknown binding ref was
+rejected as `MCP_BINDING_MISSING` (`run_5a750243-4bc7-4d36-bb12-78c97dd68346`);
+catalogue-version drift was rejected as `MCP_BINDING_SCOPE_MISMATCH`
+(`run_b3fc69d5-1a4d-4746-8c39-7b17286afbe3`). Both ended at preflight before
+the native worker launch, and neither created a GitHub Actions run. CP's own
+selection/dispatch drift mapping to `MCP_REVALIDATION_REQUIRED` remains covered
+by its focused offline tests rather than a live mutation of trusted policy.
+
+The test Runner is an isolated `agent-runner-api-mcp-test` sidecar on VM2,
+running the merged Runner PR #154 revision `82d930ec90b5fec62888c8babe0d9a347533d566`.
+The ordinary `agent-runner-api` unit was restored and is not used by this
+test. The CP test Worker was updated from the merged PR #67 source plus the
+test-only service binding; production Workers and configuration were not
+changed.
 
 ## Discovery before Runner submit
 
@@ -29,12 +36,13 @@ CP discovers the host catalogue after task admission and before Runner submit.
 Discovery authorization is separate from invocation authorization and is scoped
 to the authenticated test principal, `integration-telegram-ux-v1`, and the
 single method `tools/list`. The discovery request has no `runId`; CP does not
-reserve one, fabricate one, or use a probe ID. CP's test transport is pinned to
-`https://registry-test.trainedassist.store/mcp`; its
-`MCP_TEST_AUTH_TOKEN` secret is sent only on bounded, redirect-refusing
-`tools/list` requests. Discovery credentials carry only the `mcp:discover` scope. If transport temporarily uses a shared Bearer, Host
-must still reject invocation unless it validates the actual Runner-created
-`runId` against that run's binding.
+reserve one, fabricate one, or use a probe ID. CP constructs the request for
+the pinned `https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp`
+endpoint and sends it through the test-only `REGISTRY_MCP_HOST_SERVICE` service
+binding. Its `MCP_TEST_AUTH_TOKEN` secret is sent only on bounded,
+redirect-refusing `tools/list` requests. Discovery credentials carry only the
+`mcp:discover` scope. The shared Bearer does not authorize invocation; Host must
+still validate the actual Runner-created `runId` against that run's binding.
 
 Invocation carries `X-MCP-Run-Binding`, a compact EdDSA JWS signed by the
 Runner process only after API admission has created the real Run. Its claims
@@ -106,32 +114,19 @@ keep their own reason codes and are not relabeled as drift.
   → RunSpec descriptor handoff. Runtime activation requires the exact profile
   override plus `MCP_TEST_AUTH_TOKEN` in the sandbox Worker secret store.
 
-### Runtime ownership: do not infer a GCP VM
+### Validation and remaining boundary
 
-The Runner execution path is provided by AI Runner Agents. The test API currently
-runs as `agent-runner-api` on the dedicated Contabo VM2 runtime; its deployment
-and process environment are separate from GCP. GCP Secret Manager holds only the
-bootstrap SSH credential used to administer that VM, not the MCP/API runtime
-credentials. CP discovery happens before Runner submit and does not depend on a
-Runner VM, while actual admission/invocation uses the active Runner API above.
+The CP MCP-focused suite passed 88/88 tests. Full `npm run check` passed:
+typecheck, 681 tests in 51 files, and evidence sanitization. Miniflare printed
+worker cancellation/timeout diagnostics from workflow tests, but the suite
+completed with exit code 0 and no failed tests. The successful live invocation
+proves the test Host call through the deployed path; it does not claim a
+user-facing Telegram conversation or production readiness.
 
-A previous check guessed a Runner deployment from ambient local `gcloud`
-context. That is not sufficient evidence about the service's deployment target.
-For this test, the verified target is the running `agent-runner-api` systemd
-service on Contabo VM2, reached through the recorded SSH bootstrap credential;
-use the service unit, health endpoint and mode-0600 runtime files as evidence.
-
-## Offline boundary
-
-Tests inject catalogue and Runner fixtures and mock the pinned Host fetch. They
-prove request shape, bounded discovery policy, revalidation after selection and
-at Output handoff, drift result/status mapping, descriptor handoff, and no
-CP-side `tools/call`; they do not prove CP-to-Host discovery through the
-deployed Worker, active Runner service, or a real agent tool call. The Host test
-lease and matching secret/key material are provisioned in test-only trusted
-stores. This PR created no secrets; the CP test Worker was deployed separately.
-Remaining acceptance is Bearer-authenticated discovery through the deployed CP,
-then an authorized test task through CP, admission and proof-bound Host
-invocation through the active Runner service, followed by a real Telegram agent
-session if required by the user-facing acceptance. The Runner's trusted endpoint
-must also be updated to the dedicated Custom Domain before a live run.
+The live unknown-binding and version-drift checks submitted descriptors directly
+to the isolated Runner API, so they validate Runner's own admission/preflight
+gate. CP's non-submission status `MCP_REVALIDATION_REQUIRED` is covered offline;
+a live CP policy-mutation test was intentionally not done because it would
+require changing trusted test policy during the run. The temporary probe and
+negative-test API key have been removed. Test CP/Runner/Host services remain
+isolated for the next review step.

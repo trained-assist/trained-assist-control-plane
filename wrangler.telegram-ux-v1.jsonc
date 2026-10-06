@@ -5,7 +5,10 @@
   "compatibility_date": "2025-09-01",
   "workers_dev": true,
   "observability": { "enabled": true },
-  "services": [{ "binding": "COMMUNICATION_SERVICE", "service": "trained-assist-communication-v1-sandbox" }],
+  "services": [
+    { "binding": "COMMUNICATION_SERVICE", "service": "trained-assist-communication-v1-sandbox" },
+    { "binding": "REGISTRY_MCP_HOST_SERVICE", "service": "trained-assist-mcp-host-test-160" }
+  ],
   "d1_databases": [{ "binding": "DB", "database_name": "ta-integration-telegram-ux-v1-taskstore", "database_id": "01d17f46-63e2-46bc-947d-9eda3e0bb697", "migrations_dir": "migrations" }],
   "workflows": [{ "name": "ta-integration-telegram-ux-v1-task-workflow", "binding": "TASK_WORKFLOW", "class_name": "TaskWorkflow" }],
   "vars": {
