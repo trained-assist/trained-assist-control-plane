@@ -4,9 +4,11 @@ Status: the isolated Host Worker is deployed and configured. A live Host
 discovery request and a separately generated Runner-resolver-signed fixture
 invocation returned the expected tool/marker. The latter verifies Host proof
 validation and the resolver's signing output; it does not prove that an active
-Runner service launched an agent or that the agent called the tool. Current CP
-PR wiring has not yet been deployed to the test Worker. The active Runner
-service and a real Telegram agent session are still unverified. The only profile in scope is
+Runner service launched an agent or that the agent called the tool. The CP
+test Worker now runs version `757b595d-de95-4a19-a6de-5414ef84541d` with this
+test-only wiring. An authorized task has not yet exercised CP discovery through
+the deployed Worker. The active Runner service and a real Telegram agent session
+are still unverified. The only profile in scope is
 `integration-telegram-ux-v1`; the only capability exposed to the agent is
 `registry.fixture_read`.
 
@@ -112,9 +114,9 @@ credentials and runtime readiness.
 Tests inject catalogue and Runner fixtures and mock the pinned Host fetch. They
 prove request shape, bounded discovery policy, revalidation after selection and
 at Output handoff, drift result/status mapping, descriptor handoff, and no
-CP-side `tools/call`; they do not prove deployed CP wiring, active Runner
-service, or a real agent tool call. The Host test lease and matching secret/key
-material are provisioned in test-only trusted stores. This PR itself creates no
-secrets and deploys nothing. Remaining acceptance is deployment of this CP
-revision, invocation through the active Runner service, and a real Telegram
-agent session.
+CP-side `tools/call`; they do not prove CP-to-Host discovery through the
+deployed Worker, active Runner service, or a real agent tool call. The Host test
+lease and matching secret/key material are provisioned in test-only trusted
+stores. This PR created no secrets; the CP test Worker was deployed separately.
+Remaining acceptance is an authorized task through the deployed CP, invocation
+through the active Runner service, and a real Telegram agent session.

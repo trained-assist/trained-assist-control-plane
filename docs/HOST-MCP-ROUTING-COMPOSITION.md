@@ -1,6 +1,6 @@
 # Test-gated host MCP routing composition
 
-This integration is available only to `integration-telegram-ux-v1`, principal `integration-telegram-ux-v1`, and the single `registry.fixture_read` tool. CP source wiring is behind the trusted profile override `hostMcpBinding: registry-mcp-test-160-read` and secret `MCP_TEST_AUTH_TOKEN`; no request field or model output can enable it. The isolated Host test Worker has been deployed and provisioned. The current CP pull request still needs deployment to the test Worker, followed by invocation through the active Runner service. The discovery, descriptor and ownership contract is [MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
+This integration is available only to `integration-telegram-ux-v1`, principal `integration-telegram-ux-v1`, and the single `registry.fixture_read` tool. CP source wiring is behind the trusted profile override `hostMcpBinding: registry-mcp-test-160-read` and secret `MCP_TEST_AUTH_TOKEN`; no request field or model output can enable it. The isolated Host test Worker is deployed and provisioned. CP's test Worker now runs version `757b595d-de95-4a19-a6de-5414ef84541d`; an authorized task through CP and invocation through the active Runner service remain to be verified. The discovery, descriptor and ownership contract is [MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
 
 ## Routing contract
 
@@ -24,4 +24,4 @@ The trusted profile runtime supplies the same fixed one-tool descriptor to routi
 
 Run `npm run typecheck`, `npm test -- tests/registry-test-mcp.test.ts tests/profile-runtime.test.ts tests/host-mcp-composition.test.ts tests/mcp-catalogue-boundary.test.ts tests/communication-v1.test.ts`, then `npm run check`. The discovery transport test uses a mocked fetch; it is not live readiness evidence.
 
-Validation before this runtime wiring: 74 focused tests, 561 full tests across 46 files, typecheck, evidence sanitization and Wrangler dry bundle passed. Those counts predate the selection and Output revalidation follow-up. Live end-to-end readiness still requires deploying this CP revision and invoking through the active Runner service; the current source change does not claim either.
+Validation before this runtime wiring: 74 focused tests, 561 full tests across 46 files, typecheck, evidence sanitization and Wrangler dry bundle passed. Those counts predate the selection and Output revalidation follow-up. Live end-to-end readiness still requires an authorized task through the deployed CP Worker and invocation through the active Runner service.
