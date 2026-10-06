@@ -18,6 +18,7 @@ import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
+import type { RouteResult } from '../router/service';
 import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
 function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'legacy'; reason: string } {
@@ -504,10 +505,15 @@ export class CfWorkflowPort implements WorkflowPortApi {
       nativeStops.push(observed);
     }
     if (!await matches()) return unresolved;
+    const quickAnswer = await this.quickAnswerStopEvidence(target, snapshotId, generation);
+    if (quickAnswer === 'delivery_pending') return unresolved;
     try {
       const instance = await this.wf.get(taskId);
       if (!['terminated', 'complete', 'errored'].includes((await instance.status()).status)) return unresolved;
-    } catch { return unresolved; }
+    } catch (error) {
+      if (quickAnswer !== 'quiescent' || !(error instanceof Error) || error.message !== 'instance.not_found') return unresolved;
+    }
+    if (quickAnswer === 'quiescent' && await this.quickAnswerStopEvidence(target, snapshotId, generation) !== 'quiescent') return unresolved;
     if (!await matches()) return unresolved;
     const task = await this.store.requireTask(taskId);
     if (!await matches()) return unresolved;
@@ -521,6 +527,43 @@ export class CfWorkflowPort implements WorkflowPortApi {
     const result = await this.store.confirmCancel(taskId, { expectedGeneration: generation,
       reason: `cp_stop_window:${snapshotId}`, nativeStops, stopPin: pin });
     return { ...result, cancelled: result.cancelled, stopConfirmed: result.cancelled, nativeStops };
+  }
+
+  private async quickAnswerStopEvidence(target: CpStopTarget, snapshotId: string, generation: number): Promise<'not_quick' | 'delivery_pending' | 'quiescent'> {
+    if (target.attempts.length !== 0 || generation !== target.taskGeneration
+      || !await this.store.cpStopTargetMatches(target, snapshotId, generation)) return 'not_quick';
+    const task = await this.store.requireTask(target.userTaskId);
+    if (task.status !== 'done' || !task.result_json) return 'not_quick';
+    let result: { ok?: boolean; mode?: string; version?: string; answer?: string; quickAnswer?: { id?: string; version?: number } };
+    try { result = JSON.parse(task.result_json); } catch { return 'not_quick'; }
+    const selection = await this.store.routingSelection(target.userTaskId, generation) as RouteResult | null;
+    if (!result || result.ok !== true || result.mode !== 'quick_answer' || result.version !== 'communication-v1'
+      || typeof result.answer !== 'string' || !result.answer.trim() || result.quickAnswer?.version !== 1
+      || !['system_health', 'catalog.brief'].includes(result.quickAnswer?.id ?? '')
+      || !selection || selection.decision?.route !== 'deterministic' || selection.decision.needsExecutor !== false
+      || typeof selection.decisionId !== 'string' || !selection.decisionId.trim()
+      || selection.decision.outcome !== 'reply' || selection.workOrder !== null || selection.continuation !== null
+      || selection.execution?.agentDispatchAttempts !== 0 || selection.execution.recipeCalls !== 0
+      || selection.decision.capabilityId !== result.quickAnswer?.id
+      || selection.decision.capabilityVersion !== result.quickAnswer?.version
+      || selection.reply?.text !== result.answer) return 'not_quick';
+    let outputCommit = false;
+    for (const event of await this.store.history(target.userTaskId)) {
+      let payload: { event?: string; decisionId?: string; capabilityId?: string; capabilityVersion?: number };
+      try { payload = JSON.parse(event.payload_json); } catch { return 'not_quick'; }
+      if (event.execution_id !== null || event.kind === 'run_started'
+        || payload.event === 'runner_submit_started') return 'not_quick';
+      if (event.kind === 'task_status_changed' && event.source === 'output' && event.generation === generation
+        && event.status_after === 'done' && payload.decisionId === selection.decisionId
+        && payload.capabilityId === result.quickAnswer?.id && payload.capabilityVersion === result.quickAnswer?.version) outputCommit = true;
+    }
+    if (!outputCommit) return 'not_quick';
+    const deliveries = await this.store.listDeliveries(target.userTaskId);
+    const settled = task.delivery_state === 'not_required' && deliveries.length === 0
+      || task.delivery_state === 'delivered' && deliveries.length > 0
+        && deliveries.every(delivery => delivery.status === 'delivered' && !!delivery.provider_message_id);
+    if (!await this.store.cpStopTargetMatches(target, snapshotId, generation)) return 'not_quick';
+    return settled ? 'quiescent' : 'delivery_pending';
   }
 
   async status(taskId: string): Promise<PortStatusResult> {

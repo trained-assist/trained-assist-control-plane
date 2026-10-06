@@ -2560,12 +2560,22 @@ export class TaskStore {
     stopConfirmed: boolean;
     reason: string | null;
   }): Promise<CpStopWindowRow | null> {
-    await this.db.prepare(
+    const updated = await this.db.prepare(
       `UPDATE cp_stop_windows SET stop_confirmed = MAX(stop_confirmed, ?),
          reason = CASE WHEN stop_confirmed = 1 OR ? = 1 THEN NULL ELSE ? END, updated_at = ?
-       WHERE profile_id = ? AND conversation_id = ? AND snapshot_id = ?`,
+       WHERE profile_id = ? AND conversation_id = ? AND snapshot_id = ?
+         AND (? = 0 OR NOT EXISTS (SELECT 1 FROM json_each(cp_stop_windows.targets_json) AS target
+           JOIN durable_tasks AS task ON task.id = json_extract(target.value, '$.userTaskId')
+           WHERE json_array_length(json_extract(target.value, '$.attempts')) = 0
+             AND json_extract(CASE WHEN json_valid(task.result_json) THEN task.result_json ELSE '{}' END, '$.mode') = 'quick_answer'
+             AND (task.delivery_state NOT IN ('not_required','delivered')
+               OR (task.delivery_state = 'not_required' AND EXISTS (SELECT 1 FROM deliveries WHERE user_task_id = task.id))
+               OR EXISTS (SELECT 1 FROM deliveries WHERE user_task_id = task.id
+                 AND (status != 'delivered' OR provider_message_id IS NULL OR provider_message_id = ''))
+               OR (task.delivery_state = 'delivered' AND NOT EXISTS (SELECT 1 FROM deliveries WHERE user_task_id = task.id)))))`,
     ).bind(input.stopConfirmed ? 1 : 0, input.stopConfirmed ? 1 : 0, input.reason, Date.now(), input.profileId,
-      input.conversationId, input.snapshotId).run();
+      input.conversationId, input.snapshotId, input.stopConfirmed ? 1 : 0).run();
+    if (updated.meta.changes !== 1) return null;
     const current = await this.cpStopWindow(input.profileId, input.conversationId);
     return current?.snapshot_id === input.snapshotId ? current : null;
   }
