@@ -91,17 +91,17 @@ export function createAgentProfileAuthorityV1(db: D1Database,
           !Number.isSafeInteger(input.now) || !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= input.now)
         return false;
       const result = await db.batch([
-        db.prepare(`UPDATE agent_profile_login_challenges SET consumed_at=? WHERE code_hash=?
+        db.prepare(`UPDATE agent_profile_login_challenges SET consumed_at=?,consumed_session_hash=? WHERE code_hash=?
           AND consumed_at IS NULL AND invalidated_at IS NULL AND expires_at>? AND EXISTS(
             SELECT 1 FROM agent_telegram_bindings b WHERE b.bot_id=agent_profile_login_challenges.bot_id
               AND b.telegram_user_id=agent_profile_login_challenges.telegram_user_id
               AND b.principal_id=agent_profile_login_challenges.principal_id AND b.enabled=1)`)
-          .bind(input.now, input.codeHash, input.now),
+          .bind(input.now, input.sessionHash, input.codeHash, input.now),
         db.prepare(`INSERT INTO agent_profile_browser_sessions
           (session_hash,session_id,bot_id,telegram_user_id,principal_id,profile_id,profile_generation,issued_at,expires_at,revoked_at)
           SELECT ?,?,c.bot_id,c.telegram_user_id,c.principal_id,'',0,?,?,NULL FROM agent_profile_login_challenges c
-          WHERE c.code_hash=? AND c.consumed_at=? AND c.invalidated_at IS NULL`)
-          .bind(input.sessionHash, input.sessionId, input.now, input.expiresAt, input.codeHash, input.now),
+          WHERE c.code_hash=? AND c.consumed_session_hash=? AND c.invalidated_at IS NULL`)
+          .bind(input.sessionHash, input.sessionId, input.now, input.expiresAt, input.codeHash, input.sessionHash),
       ]);
       return result[0]?.meta.changes === 1 && result[1]?.meta.changes === 1;
     },

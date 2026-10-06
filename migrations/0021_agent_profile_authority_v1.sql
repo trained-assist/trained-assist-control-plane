@@ -27,6 +27,7 @@ CREATE TABLE agent_profile_login_challenges (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER,
+  consumed_session_hash TEXT,
   invalidated_at INTEGER,
   UNIQUE (bot_id, update_id)
 );

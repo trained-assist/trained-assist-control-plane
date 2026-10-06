@@ -178,6 +178,24 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     expect(auth.status).toBe(303);
   });
 
+  it('creates exactly one browser session when the same one-time code is redeemed concurrently', async () => {
+    await provision();
+    const link = await linkFor();
+    const page = await preview(link);
+    const csrf = csrfFrom(await page.text());
+    const csrfCookie = page.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const before = await env.DB.prepare(`SELECT COUNT(*) AS count FROM agent_profile_browser_sessions
+      WHERE bot_id=? AND telegram_user_id=?`).bind(bot, user).first<{ count: number }>();
+
+    const responses = await Promise.all([
+      redeem(link, csrf, csrfCookie), redeem(link, csrf, csrfCookie),
+    ]);
+    expect(responses.map(response => response.status).sort()).toEqual([303, 403]);
+    const after = await env.DB.prepare(`SELECT COUNT(*) AS count FROM agent_profile_browser_sessions
+      WHERE bot_id=? AND telegram_user_id=?`).bind(bot, user).first<{ count: number }>();
+    expect(after?.count).toBe((before?.count ?? 0) + 1);
+  });
+
   it('closes challenge on delivery failure and on reviewed binding removal', async () => {
     await provision();
     const update = String(nextUpdate++);
