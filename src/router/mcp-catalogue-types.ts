@@ -26,6 +26,10 @@ export interface HostMcpCatalogueBinding {
   serverId: string;
   bindingRef: string;
   policyVersion: string;
+  /** Stable host-pinned version, distinct from the per-request catalogueId. */
+  catalogueVersion: string;
+  /** Optional pinned digest of the authorized tools/list metadata. */
+  catalogueDigest?: string;
   allowedTools: readonly string[];
   request: (message: McpListRequest, signal: AbortSignal) => Promise<unknown>;
 }
@@ -42,6 +46,8 @@ export interface SelectedMcpInstruction {
   serverId: string;
   bindingRef: string;
   policyVersion: string;
+  catalogueVersion: string;
+  catalogueDigest: string;
   name: string;
   description?: string;
   inputSchema: Readonly<Record<string, unknown>>;

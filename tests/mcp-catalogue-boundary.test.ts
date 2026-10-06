@@ -6,7 +6,7 @@ const scope: McpCatalogueScope = { taskId: 'accepted-task', generation: 1, profi
 const metadata = (name: string) => ({ name, description: `Authoritative instruction for ${name}`, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } });
 
 function binding(names: string[], serverId = 'native-domain'): HostMcpCatalogueBinding {
-  return { scope: { ...scope }, discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/list'] }, serverId, bindingRef: `binding:${serverId}`, policyVersion: 'policy-v1', allowedTools: names,
+  return { scope: { ...scope }, discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/list'] }, serverId, bindingRef: `binding:${serverId}`, policyVersion: 'policy-v1', catalogueVersion: 'catalogue-v1', allowedTools: names,
     request: vi.fn(async message => ({ jsonrpc: '2.0', id: message.id, result: { tools: names.map(metadata) } })),
   };
 }
@@ -21,7 +21,7 @@ describe('host-authorized full MCP catalogue boundary', () => {
       expect(snapshot.decisionOptions).toEqual(names.map(id => ({ id })));
       expect(snapshot.readiness).toBe('not_verified');
       const selected = await adapter.selectedInstruction(scope, snapshot.catalogueId, names.at(-1)!);
-      expect(selected).toMatchObject({ name: names.at(-1), serverId: 'second', bindingRef: 'binding:second', policyVersion: 'policy-v1', scope, readiness: 'not_verified' });
+      expect(selected).toMatchObject({ name: names.at(-1), serverId: 'second', bindingRef: 'binding:second', policyVersion: 'policy-v1', catalogueVersion: 'catalogue-v1', scope, readiness: 'not_verified' });
       expect(selected.description).toBe(metadata(names.at(-1)!).description);
       expect(selected.inputSchema).toEqual(metadata(names.at(-1)!).inputSchema);
       for (const server of servers) expect(server.request).toHaveBeenCalledOnce();
@@ -93,6 +93,22 @@ describe('host-authorized full MCP catalogue boundary', () => {
   it('refuses 257 names explicitly rather than yielding a partial snapshot', async () => {
     const server = binding(Array.from({ length: 257 }, (_, index) => `actual_method_${index}`));
     await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ code: 'catalogue_budget_exceeded' });
+  });
+
+  it('refuses a catalogue that differs from the trusted digest pin', async () => {
+    const server = binding(['web_current_page']);
+    server.catalogueDigest = `sha256-${'0'.repeat(64)}`;
+    await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ code: 'catalogue_drift' });
+  });
+
+  it('revalidates the authorized catalogue at Output handoff and blocks metadata drift', async () => {
+    const server = binding(['web_current_page']);
+    const adapter = new McpCatalogueAdapter(async () => [server]);
+    const snapshot = await adapter.discover(scope);
+    const selected = await adapter.selectedInstruction(scope, snapshot.catalogueId, 'web_current_page');
+    server.request = vi.fn(async message => ({ jsonrpc: '2.0', id: message.id,
+      result: { tools: [{ ...metadata('web_current_page'), description: 'Changed authoritative description' }] } }));
+    await expect(adapter.revalidateInstruction(selected)).rejects.toMatchObject({ code: 'snapshot_stale' });
   });
 
   it('refuses repeated pagination tokens', async () => {

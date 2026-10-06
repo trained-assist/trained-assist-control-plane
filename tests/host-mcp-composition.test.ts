@@ -25,20 +25,23 @@ async function fixture(count = 66, profileId = 'integration-telegram-ux-v1') {
   const scope = { taskId, profileId, principalId, generation: 1 };
   const names = ['registry.fixture_read', ...Array.from({ length: Math.max(0, count - 1) }, (_unused, index) => `ungranted_method_${index}`)];
   const selectedName = names[0]!;
-  const selectedDescription = 'AUTHORITATIVE_SELECTED_DESCRIPTION';
+  const selectedDescription = 'Read the pinned marker from the Registry MCP test fixture.';
   const description = (index: number) => index === 0 ? selectedDescription : `UNSELECTED_DESCRIPTION_${index}`;
-  const inputSchema = { type: 'object', properties: { document_ref: { type: 'string', description: 'HIDDEN_SCHEMA_DESCRIPTION' } }, required: ['document_ref'] };
-  let policyVersion = 'registry-revision-1';
+  const inputSchema = { type: 'object', properties: {}, additionalProperties: false };
+  let policyVersion = 'registry-fixture-policy-v1';
+  let catalogueDescription = selectedDescription;
   const rpc = vi.fn(async (message: { id: string; method: string; params?: unknown; runId?: unknown }) => {
     expect(message.method).toBe('tools/list');
     expect(message).not.toHaveProperty('runId');
-    return { jsonrpc: '2.0', id: message.id, result: { tools: names.map((name, index) => ({ name, description: description(index), inputSchema })) } };
+    return { jsonrpc: '2.0', id: message.id, result: { tools: names.map((name, index) => ({ name, description: index === 0 ? catalogueDescription : description(index), inputSchema })) } };
   });
   const catalogue = new McpCatalogueAdapter(async requestedScope => [{ scope: { ...requestedScope },
     discoveryAuthorization: { principalId: requestedScope.principalId, profileId: requestedScope.profileId, scope: 'mcp:discover', methods: ['tools/list'] },
-    serverId: 'fixture-registry', bindingRef: 'fixture-registry-scoped-ref', policyVersion, allowedTools: ['registry.fixture_read'], request: rpc }]);
-  const mcp = { servers: [{ serverId: 'fixture-registry', transport: 'remote' as const,
-    url: 'https://approved-fixture.example.test/mcp', bindingRef: 'fixture-registry-scoped-ref', allowedTools: [selectedName] }] };
+    serverId: 'trained-assist-registry-test', bindingRef: 'registry-mcp-test-160-read', policyVersion,
+    catalogueVersion: 'registry-fixture-catalogue-v1', catalogueDigest: 'sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d',
+    allowedTools: ['registry.fixture_read'], request: rpc }]);
+  const mcp = { servers: [{ serverId: 'trained-assist-registry-test', transport: 'remote' as const,
+    url: 'https://approved-fixture.example.test/mcp', bindingRef: 'registry-mcp-test-160-read', allowedTools: [selectedName] }] };
   const state = { scope: { ...scope }, policyVersion, mcp };
   const hostMcp: HostMcpRoutingDeps = { enabled: true, catalogue, readExecutionState: async () => structuredClone(state) };
   const text = 'Use the approved document method and preserve this complete original request';
@@ -56,7 +59,8 @@ async function fixture(count = 66, profileId = 'integration-telegram-ux-v1') {
   };
   const health = vi.fn(async () => ({ runner: 'unknown' as const, checkedAt: 'fixture-time' }));
   return { store, taskId, profileId, principalId, scope, names, selectedName, selectedDescription, inputSchema, input, hostMcp, state, rpc, health,
-    changeRegistry: () => { policyVersion = 'registry-revision-2'; } };
+    changeRegistry: () => { policyVersion = 'registry-fixture-policy-v2'; },
+    changeCatalogue: () => { catalogueDescription = 'Changed host instructions'; } };
 }
 
 describe('inactive host MCP routing composition', () => {
@@ -92,8 +96,8 @@ describe('inactive host MCP routing composition', () => {
     await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
     expect(create).toHaveBeenCalledOnce();
     expect(params).toMatchObject({ taskId: current.taskId, profileId: current.profileId, generation: 1, instructions: routed.agentInstructions,
-      mcpDescriptor: { servers: [{ serverId: 'fixture-registry', bindingRef: 'fixture-registry-scoped-ref',
-        allowedTools: ['registry.fixture_read'], catalogueVersion: routed.mcpInstruction!.catalogueId, policyVersion: 'registry-revision-1' }] } });
+      mcpDescriptor: { servers: [{ serverId: 'trained-assist-registry-test', bindingRef: 'registry-mcp-test-160-read',
+        allowedTools: ['registry.fixture_read'], catalogueVersion: 'registry-fixture-catalogue-v1', policyVersion: 'registry-fixture-policy-v1' }] } });
     const canonicalRun = `run_${crypto.randomUUID()}`;
     const submit = vi.fn();
     const adapter = new RunnerApiAdapter('https://runner-fixture.example.test', 'fixture-key', async (url, init) => {
@@ -102,7 +106,7 @@ describe('inactive host MCP routing composition', () => {
         const body = JSON.parse(String(init?.body));
         submit(body);
         expect(body).toMatchObject({ userTaskId: current.taskId, engine: { name: 'dynamic-ip-azure-agent-run' },
-        mcp: { servers: [{ ...current.state.mcp.servers[0], catalogueVersion: routed.mcpInstruction!.catalogueId,
+        mcp: { servers: [{ ...current.state.mcp.servers[0], catalogueVersion: 'registry-fixture-catalogue-v1',
           policyVersion: routed.mcpInstruction!.policyVersion }] } });
         expect(body.input.inlinePrompt).toContain(routed.agentInstructions);
         return Response.json({ userTaskId: current.taskId, runId: canonicalRun, requestId: 'fixture-native-receipt', deduplicated: false });
@@ -162,6 +166,19 @@ describe('inactive host MCP routing composition', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it('re-reads the authorized catalogue at Output handoff and blocks catalogue drift', async () => {
+    const current = await fixture();
+    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
+      health: current.health, hostMcp: current.hostMcp } });
+    expect(routed.mcpInstruction).toBeDefined();
+    current.changeCatalogue();
+    const submit = vi.fn();
+    const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
+      await current.store.requireTask(current.taskId), routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
+    expect(outcome).toMatchObject({ issued: false, refusal: 'mcp_execution_not_authorized' });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it('disabled injection does not discover or expose host catalogue metadata', async () => {
     const current = await fixture();
     current.hostMcp.enabled = false;
@@ -176,7 +193,8 @@ describe('inactive host MCP routing composition', () => {
     const current = await fixture();
     const adapter = new McpCatalogueAdapter(async scope => [{ scope,
       discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/call'] as unknown as ['tools/list'] },
-      serverId: 'fixture-registry', bindingRef: 'fixture-registry-scoped-ref', policyVersion: 'p1', allowedTools: ['registry.fixture_read'],
+      serverId: 'trained-assist-registry-test', bindingRef: 'registry-mcp-test-160-read', policyVersion: 'registry-fixture-policy-v1',
+      catalogueVersion: 'registry-fixture-catalogue-v1', catalogueDigest: 'sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d', allowedTools: ['registry.fixture_read'],
       request: async () => ({}) }]);
     await expect(adapter.discover(current.scope)).rejects.toMatchObject({ code: 'discovery_authorization_invalid' });
   });

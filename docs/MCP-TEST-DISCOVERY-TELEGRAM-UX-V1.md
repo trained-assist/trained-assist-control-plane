@@ -40,11 +40,19 @@ snapshot and trusted host execution policy, then builds one descriptor with:
 - `serverId` and `bindingRef` from the host binding;
 - the trusted remote address from the host MCP policy;
 - `allowedTools: ["registry.fixture_read"]`;
-- `catalogueVersion` and `policyVersion` from the verified discovery snapshot.
+- stable `catalogueVersion` and `policyVersion` from the trusted discovery binding;
+  the random per-request snapshot ID is internal correlation only.
 
-Output passes that descriptor through the existing Workflow submit parameters
-and RunSpec builder. The selected capability is presented to the agent as
-available; instructions say to use it only when needed for the accepted task.
+The trusted discovery binding pins `catalogueVersion` independently of the
+per-request `catalogueId`. CP hashes canonical authorized `tools/list` metadata
+and requires it to match the binding's pinned catalogue digest. For this fixture
+the version is `registry-fixture-catalogue-v1` and the digest is
+`sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d`;
+the Host's internal `registryDigest` in the Runner proof is a separate digest.
+Output re-reads and revalidates the selected catalogue before passing the
+descriptor through the existing Workflow submit parameters and RunSpec builder.
+The selected capability is presented to the agent as available; instructions
+say to use it only when needed for the accepted task.
 Normal agent work is not required to call it. The end-to-end fixture task must
 explicitly ask the agent to read the fixture so that a tool invocation is an
 acceptance expectation for that task.

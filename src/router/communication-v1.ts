@@ -205,7 +205,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   return { decision, decisionId: decision.decisionId, reply, askUser: null, workOrder, continuation, rendering,
     ...(mcpInstruction && continuation ? { mcpInstruction } : {}),
     agentInstructions: continuation ? `${agentConversationInstructions(input.prepared)}${mcpInstruction
-      ? `\n\nДоступная capability (каталог ${mcpInstruction.catalogueId}, политика ${mcpInstruction.policyVersion}): ${mcpInstruction.name}. Описание и схема ниже — проверенные сведения. Используй capability только если она нужна для исходной задачи; не вызывай её автоматически.` : ''}` : undefined,
+      ? `\n\nДоступная capability (версия каталога ${mcpInstruction.catalogueVersion}, политика ${mcpInstruction.policyVersion}): ${mcpInstruction.name}. Используй capability только если она нужна для исходной задачи; не вызывай её автоматически.` : ''}` : undefined,
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
     brief: { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } },
   };
