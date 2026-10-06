@@ -278,6 +278,99 @@ const authorizeTaskRoute = async (
   return task;
 };
 
+const inputManifestForTask = async (task: TaskRow) => {
+  let userValue: Record<string, unknown>;
+  try {
+    userValue = JSON.parse(task.user_value ?? '{}') as Record<string, unknown>;
+  } catch {
+    throw new Error('task input manifest is invalid');
+  }
+  if (!Array.isArray(userValue.inputItems)) throw new Error('task input manifest is invalid');
+  const inputItems = userValue.inputItems.map((rawItem) => {
+    if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) throw new Error('task input manifest is invalid');
+    const item = rawItem as Record<string, unknown>;
+    if (item.text !== undefined && item.text !== null && typeof item.text !== 'string') throw new Error('task input manifest is invalid');
+    const rawArtifacts = Array.isArray(item.artifacts) ? item.artifacts : [];
+    const artifacts = rawArtifacts.map((rawArtifact) => {
+      if (!rawArtifact || typeof rawArtifact !== 'object' || Array.isArray(rawArtifact)) throw new Error('task input manifest is invalid');
+      const artifact = rawArtifact as Record<string, unknown>;
+      if (artifact.contractVersion !== 1
+        || typeof artifact.ref !== 'string'
+        || typeof artifact.version !== 'string'
+        || artifact.ownerProfileId !== task.profile_id
+        || typeof artifact.mediaType !== 'string'
+        || typeof artifact.name !== 'string'
+        || !Number.isSafeInteger(artifact.sizeBytes)
+        || typeof artifact.sha256 !== 'string') throw new Error('task input manifest is invalid');
+      return {
+        contractVersion: 1,
+        ref: artifact.ref,
+        version: artifact.version,
+        ownerProfileId: artifact.ownerProfileId,
+        mediaType: artifact.mediaType,
+        name: artifact.name,
+        sizeBytes: artifact.sizeBytes,
+        sha256: artifact.sha256,
+      };
+    });
+    return { ...(typeof item.text === 'string' ? { text: item.text } : {}), artifacts };
+  });
+  const canonical = JSON.stringify({ contractVersion: 1, userTaskId: task.id, profileId: task.profile_id, inputItems });
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+  const version = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return {
+    manifestRef: `cp-input-manifest:${task.id}`,
+    manifestVersion: version,
+    contractVersion: 1 as const,
+    userTaskId: task.id,
+    profileId: task.profile_id,
+    inputItems,
+  };
+};
+
+const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: Awaited<ReturnType<typeof inputManifestForTask>>, ref: string, version: string): Promise<Response> => {
+  if (!env.INGRESS_BUFFER) return json({ error: 'input artifact transport unavailable' }, 503);
+  const artifact = manifest.inputItems.flatMap((item) => item.artifacts).find((entry) => entry.ref === ref && entry.version === version);
+  if (!artifact) return json({ error: 'input artifact not found' }, 404);
+  const url = new URL('https://ingress-buffer/v1/artifacts/content');
+  url.searchParams.set('profileId', task.profile_id);
+  url.searchParams.set('ref', artifact.ref);
+  url.searchParams.set('version', artifact.version);
+  let response: Response;
+  try {
+    response = await env.INGRESS_BUFFER.fetch(url, { method: 'GET' });
+  } catch {
+    return json({ error: 'input artifact transport unavailable' }, 503);
+  }
+  if (response.status === 404) return json({ error: 'input artifact not found' }, 404);
+  if (response.status >= 500) return json({ error: 'input artifact transport unavailable' }, 503);
+  if (!response.ok) return json({ error: 'input artifact access denied' }, 403);
+  const metadataMatches = response.headers.get('x-artifact-ref') === artifact.ref
+    && response.headers.get('x-artifact-version') === artifact.version
+    && response.headers.get('x-artifact-owner-profile-id') === task.profile_id
+    && response.headers.get('x-artifact-size-bytes') === String(artifact.sizeBytes)
+    && response.headers.get('x-artifact-sha256') === artifact.sha256
+    && response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() === artifact.mediaType
+    && response.headers.get('content-length') === String(artifact.sizeBytes);
+  if (!metadataMatches) {
+    await response.body?.cancel();
+    return json({ error: 'input artifact metadata mismatch' }, 409);
+  }
+  return new Response(response.body, {
+    status: 200,
+    headers: {
+      'content-type': artifact.mediaType,
+      'content-length': String(artifact.sizeBytes),
+      'cache-control': 'private, no-store',
+      'x-artifact-ref': artifact.ref,
+      'x-artifact-version': artifact.version,
+      'x-artifact-owner-profile-id': task.profile_id,
+      'x-artifact-size-bytes': String(artifact.sizeBytes),
+      'x-artifact-sha256': artifact.sha256,
+    },
+  });
+};
+
 /**
  * Проверенная личность: подпись HMAC по binding `PRINCIPAL_SECRET`, а не доверие
  * заголовку клиента. Без секрета доступ закрыт (fail closed) — см.
@@ -1239,6 +1332,30 @@ const store = new TaskStore(env.DB);
           retryAfterSec: (body.retryAfterSec as number | undefined) ?? 0,
         });
         return result ? json(result) : json({ delivered: false, reason: 'outbox empty' });
+      }
+      if (url.pathname === '/runner/input-manifest') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        const inputTaskId = url.searchParams.get('taskId');
+        if (!inputTaskId) return json({ error: 'taskId is required' }, 400);
+        const task = await authorizeTaskRoute(store, req, inputTaskId, 'tasks:read', auth);
+        return json(await inputManifestForTask(task));
+      }
+      if (url.pathname === '/runner/input-artifact') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        const inputTaskId = url.searchParams.get('taskId');
+        const manifestRef = url.searchParams.get('manifestRef');
+        const manifestVersion = url.searchParams.get('manifestVersion');
+        const ref = url.searchParams.get('ref');
+        const version = url.searchParams.get('version');
+        if (!inputTaskId || !manifestRef || !manifestVersion || !ref || !version) {
+          return json({ error: 'taskId, manifestRef, manifestVersion, ref and version are required' }, 400);
+        }
+        const task = await authorizeTaskRoute(store, req, inputTaskId, 'tasks:read', auth);
+        const manifest = await inputManifestForTask(task);
+        if (manifest.manifestRef !== manifestRef || manifest.manifestVersion !== manifestVersion) {
+          return json({ error: 'input manifest version mismatch' }, 409);
+        }
+        return await serveIngressInputArtifact(env, task, manifest, ref, version);
       }
       if (url.pathname === '/artifact') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);

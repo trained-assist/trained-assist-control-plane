@@ -41,3 +41,21 @@ The buffer returns HTTP 200 only after confirming object existence, immutable ve
 ```
 
 CP requires an exact metadata match. Missing binding, unavailable buffer, missing object, or mismatched metadata prevents task admission; there is no text-only partial fallback. The verifier is an admission check, not the Runner byte transport. Runner materialization remains a separate required integration before media execution can be enabled.
+
+## Runner read API
+
+Runner uses the same signed principal authentication as other CP clients. Its principal needs `tasks:read` for the task profile. Credentials stay in Runner deployment bindings and are never put in RunSpec. The CP exposes a task-pinned manifest:
+
+```http
+GET /runner/input-manifest?taskId=<userTaskId>
+```
+
+Response fields are `manifestRef`, content-addressed `manifestVersion`, `contractVersion`, `userTaskId`, `profileId`, and ordered `inputItems[]` (each with optional text and verified artifact metadata). The hash covers the task/profile identity and the full ordered input snapshot.
+
+For bytes, Runner requests a ref only from that pinned manifest:
+
+```http
+GET /runner/input-artifact?taskId=<userTaskId>&manifestRef=<manifestRef>&manifestVersion=<sha256>&ref=<opaque-ref>&version=<object-version>
+```
+
+CP checks signed `tasks:read` authorization, manifest identity/version, and artifact membership before reading through the private buffer binding. The buffer's `GET /v1/artifacts/content?profileId=…&ref=…&version=…` response must carry `x-artifact-ref`, `x-artifact-version`, `x-artifact-owner-profile-id`, `x-artifact-size-bytes`, `x-artifact-sha256`, `Content-Type`, and `Content-Length`; CP compares all headers against the admitted manifest and streams the body without buffering it. Runner independently verifies exact bytes and SHA-256 before exposing any input to the engine.
