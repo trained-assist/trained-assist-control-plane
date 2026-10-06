@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import worker from '../src/index';
-import { telegramBootstrapRequest, telegramPlatformSessionResolver, sendPrivateLink, type SendPrivateLink } from '../src/connected-app/telegram-bootstrap';
+import { telegramBootstrapRequest, sendPrivateLink, type SendPrivateLink } from '../src/connected-app/telegram-bootstrap';
 
 const issuer = 'https://control.example.invalid';
 const gatewayKey = 'telegram-gateway-test-key-with-32-chars';
@@ -115,7 +115,7 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED: 'true',
       CONNECTED_APP_TELEGRAM_GATEWAY_KEY: gatewayKey, CONNECTED_APP_ISSUER: issuer,
       CONNECTED_APP_START_URLS: config.startUrls });
-    expect(routed.status).toBe(403);
+    expect(routed.status).toBe(404);
     await provision();
     expect((await start(update)).status).toBe(202);
     expect(await (await start(update)).json()).toMatchObject({ duplicate: true });
@@ -145,14 +145,8 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       headers: { cookie: browserCookie },
     }), env.DB, config);
     expect(landing.status).toBe(200);
-    expect(await landing.text()).toContain('https://recruiting.example.invalid/auth/connected/start');
+    expect(await landing.text()).not.toContain('https://recruiting.example.invalid/auth/connected/start');
     expect((await redeem(link, csrf, csrfCookie)).status).toBe(403);
-    const resolver = telegramPlatformSessionResolver(env.DB);
-    const resolved = await resolver(new Request(`${issuer}/v1/connected-app-sessions/authorize`, {
-      headers: { cookie: browserCookie },
-    }));
-    expect(resolved).toMatchObject({ principalId: principal, profileId: profile,
-      grants: { 'recruiting-web': ['recruiting.responses.read'] } });
     const url = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', 'recruiting-web');
@@ -167,7 +161,7 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       CONNECTED_APP_ISSUER: issuer,
       CONNECTED_APP_REDIRECT_URIS: JSON.stringify({ 'recruiting-web': 'https://recruiting.example.invalid/oauth/callback' }),
     });
-    expect(auth.status).toBe(303);
+    expect(auth.status).toBe(503);
   });
 
   it('closes challenge on delivery failure and on reviewed binding removal', async () => {
@@ -193,14 +187,9 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const accepted = await redeem(link, csrf, csrfCookie);
     const browserCookie = accepted.headers.get('set-cookie')?.split(';')[0] ?? '';
     expect((await selectProfile(browserCookie)).status).toBe(303);
-    const resolver = telegramPlatformSessionResolver(env.DB);
-    const request = () => new Request(`${issuer}/v1/connected-app-sessions/authorize`, { headers: { cookie: browserCookie } });
-    expect(await resolver(request())).not.toBeNull();
     await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0,updated_at=updated_at+1
       WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`).bind(principal, profile).run();
-    expect(await resolver(request())).toBeNull();
     await provision();
-    expect(await resolver(request())).toBeNull();
     const nextLink = await linkFor();
     const nextPage = await preview(nextLink);
     const nextCsrf = csrfFrom(await nextPage.text());
@@ -218,9 +207,6 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       body: new URLSearchParams({ csrf: logoutCsrf }),
     }), env.DB, config);
     expect(logout.status).toBe(303);
-    expect(await resolver(new Request(`${issuer}/v1/connected-app-sessions/authorize`, {
-      headers: { cookie: nextCookie },
-    }))).toBeNull();
   });
 
   it('revokes an old Connected App grant when the same browser signs in again', async () => {
@@ -236,7 +222,7 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       .bind(digest).first<{ session_id: string }>();
     expect(row?.session_id).toBeTruthy();
     await env.DB.prepare(`INSERT INTO connected_app_sessions
-      (session_id,principal_id,profile_id,enabled,generation,updated_at) VALUES(?,?,?,1,1,1)`)
+      (session_id,principal_id,profile_id,enabled,generation,updated_at,agent_generation) VALUES(?,?,?,1,1,1,1)`)
       .bind(row!.session_id, principal, profile).run();
     const nextLink = await linkFor();
     const nextPage = await preview(nextLink);
@@ -259,11 +245,6 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const accepted = await redeem(link, csrfFrom(await page.text()),
       page.headers.get('set-cookie')?.split(';')[0] ?? '');
     const browserCookie = accepted.headers.get('set-cookie')?.split(';')[0] ?? '';
-    const resolver = telegramPlatformSessionResolver(env.DB);
-    const request = () => new Request(`${issuer}/v1/connected-app-sessions/authorize`, {
-      headers: { cookie: browserCookie },
-    });
-    expect(await resolver(request())).toBeNull();
     const chooser = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
       headers: { cookie: browserCookie },
     }), env.DB, config);
@@ -273,18 +254,8 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     expect(chooserText).not.toContain('https://recruiting.example.invalid/auth/connected/start');
     expect((await selectProfile(browserCookie, 'foreign_profile')).status).toBe(403);
     expect((await selectProfile(browserCookie, profile)).status).toBe(303);
-    const first = await resolver(request());
-    expect(first?.profileId).toBe(profile);
-    await env.DB.prepare(`INSERT INTO connected_app_sessions
-      (session_id,principal_id,profile_id,enabled,generation,updated_at) VALUES(?,?,?,1,1,1)`)
-      .bind(first!.sessionId, principal, profile).run();
     expect((await selectProfile(browserCookie, second)).status).toBe(303);
-    expect((await resolver(request()))?.profileId).toBe(second);
-    const prior = await env.DB.prepare('SELECT enabled,generation FROM connected_app_sessions WHERE session_id=?')
-      .bind(first!.sessionId).first<{ enabled: number; generation: number }>();
-    expect(prior).toMatchObject({ enabled: 0, generation: 2 });
     await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0,updated_at=updated_at+1
       WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`).bind(principal, second).run();
-    expect(await resolver(request())).toBeNull();
   });
 });

@@ -2,9 +2,12 @@ import contract from '../../contracts/connected-app-identity-v1.contract.json';
 
 type Audience = keyof typeof contract.audiences;
 type Config = { enabled?: string; hostKey?: string; serviceKeys?: string; issuer?: string; redirectUris?: string };
-export type VerifiedPlatformSession = { principalId: string; profileId: string; sessionId: string;
-  grants: Partial<Record<Audience, string[]>> };
-export type PlatformSessionResolver = (request: Request) => Promise<VerifiedPlatformSession | null>;
+export type AgentProfileContext = { principalId: string; profileId: string; sessionId: string;
+  profileGeneration: number };
+export type AgentProfileAuthority = {
+  resolveBrowserSession(request: Request): Promise<AgentProfileContext | null>;
+  resolveCurrentSession(sessionId: string): Promise<AgentProfileContext | null>;
+};
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_AGE = contract.token.maxLifetimeSeconds;
@@ -60,7 +63,7 @@ function redirectOf(raw: string | undefined, audience: Audience): string | null 
     return url.protocol === 'https:' && !url.username && !url.password && !url.hash && url.href === value ? value : null;
   } catch { return null; }
 }
-type Session = { principal_id: string; profile_id: string; enabled: number; generation: number };
+type Session = { principal_id: string; profile_id: string; enabled: number; generation: number; agent_generation: number };
 type Membership = { scopes_json: string; enabled: number };
 type Token = { session_id: string; generation: number; audience: string; scopes_json: string; issued_at: number;
   expires_at: number; revoked_at: number | null };
@@ -75,6 +78,8 @@ async function s256(verifier: string): Promise<string> {
 
 async function membershipScopes(db: D1Database, principalId: string, profileId: string,
   audience: Audience): Promise<string[]> {
+  // This row is only an audience-specific Connected App entitlement. It is not
+  // proof that the Agent user belongs to the profile; that comes from Agent authority.
   const row = await db.prepare(`SELECT scopes_json, enabled FROM connected_app_memberships
     WHERE principal_id = ? AND profile_id = ? AND audience = ?`)
     .bind(principalId, profileId, audience).first<Membership>();
@@ -82,9 +87,35 @@ async function membershipScopes(db: D1Database, principalId: string, profileId: 
   try { return scopesOf(JSON.parse(row.scopes_json), audience) ?? []; } catch { return []; }
 }
 
+function validAgentContext(context: AgentProfileContext | null, sessionId?: string): context is AgentProfileContext {
+  return !!context && ID.test(context.principalId) && ID.test(context.profileId) && ID.test(context.sessionId) &&
+    (sessionId === undefined || context.sessionId === sessionId) &&
+    Number.isSafeInteger(context.profileGeneration) && context.profileGeneration > 0;
+}
+
+function matchesAgentSession(context: AgentProfileContext | null, sessionId: string, session: Session): boolean {
+  return validAgentContext(context, sessionId) && context.principalId === session.principal_id &&
+    context.profileId === session.profile_id && context.profileGeneration === session.agent_generation;
+}
+
+async function resolveCurrent(authority: AgentProfileAuthority | null, sessionId: string): Promise<
+  { status: 'active'; context: AgentProfileContext } | { status: 'inactive' } | { status: 'unavailable' }> {
+  if (!authority) return { status: 'unavailable' };
+  try {
+    const context = await authority.resolveCurrentSession(sessionId);
+    return validAgentContext(context, sessionId) ? { status: 'active', context } : { status: 'inactive' };
+  } catch {
+    return { status: 'unavailable' };
+  }
+}
+
+function authorityUnavailable() {
+  return respond({ error: 'agent profile authority unavailable' }, 503);
+}
+
 /** Host-side and app-service API only. No browser credential is minted here. */
 export async function connectedAppRequest(req: Request, db: D1Database, config: Config, body: Record<string, unknown>,
-  resolvePlatformSession: PlatformSessionResolver | null = null): Promise<Response> {
+  agentAuthority: AgentProfileAuthority | null = null): Promise<Response> {
   if (config.enabled !== 'true') return respond({ error: 'not found' }, 404);
   const url = new URL(req.url);
   const path = url.pathname;
@@ -104,8 +135,8 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
   if (req.method !== (isAuthorize ? 'GET' : 'POST')) return respond({ error: 'method not allowed' }, 405);
 
   if (isAuthorize) {
-    // The normal Worker deliberately supplies no resolver: a browser cannot assert its own profile.
-    if (!resolvePlatformSession) return respond({ error: 'platform session authority unavailable' }, 503);
+    // The Worker deliberately supplies no production authority until Agent auth is wired.
+    if (!agentAuthority) return authorityUnavailable();
     const scopeText = params?.get('scope') ?? '';
     const requested = handoffAudience ? scopesOf(scopeText.split(' '), handoffAudience) : null;
     const registeredRedirect = handoffAudience ? redirectOf(config.redirectUris, handoffAudience) : null;
@@ -119,11 +150,11 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
         typeof state !== 'string' || state.length < 16 || state.length > 256 ||
         typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return invalid();
     if (!config.issuer || !/^https:\/\//.test(config.issuer)) return respond({ error: 'issuer not configured' }, 503);
-    const verified = await resolvePlatformSession(req);
-    if (!verified || !ID.test(verified.principalId) || !ID.test(verified.profileId) || !ID.test(verified.sessionId)) return unauthorized();
-    const verifiedScopes = scopesOf(verified.grants[handoffAudience], handoffAudience);
-    const memberScopes = await membershipScopes(db, verified.principalId, verified.profileId, handoffAudience);
-    const allowed = verifiedScopes?.filter(scope => memberScopes.includes(scope)) ?? [];
+    let verified: AgentProfileContext | null;
+    try { verified = await agentAuthority.resolveBrowserSession(req); }
+    catch { return authorityUnavailable(); }
+    if (!validAgentContext(verified)) return unauthorized();
+    const allowed = await membershipScopes(db, verified.principalId, verified.profileId, handoffAudience);
     if (!allowed.length || !requested.every(scope => allowed.includes(scope))) return respond({ error: 'forbidden' }, 403);
     const previous = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
       .bind(verified.sessionId).first<Session>();
@@ -131,13 +162,15 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     const oldGrant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
       .bind(verified.sessionId, handoffAudience).first<{ scopes_json: string }>();
     const changed = !previous || previous.profile_id !== verified.profileId || previous.enabled !== 1 ||
+      previous.agent_generation !== verified.profileGeneration ||
       oldGrant?.scopes_json !== JSON.stringify(allowed);
     if (changed) {
       await db.batch([
-        db.prepare(`INSERT INTO connected_app_sessions(session_id,principal_id,profile_id,enabled,generation,updated_at)
-          VALUES(?,?,?,?,1,?) ON CONFLICT(session_id) DO UPDATE SET profile_id=excluded.profile_id,
+        db.prepare(`INSERT INTO connected_app_sessions(session_id,principal_id,profile_id,enabled,generation,updated_at,agent_generation)
+          VALUES(?,?,?,?,1,?,?) ON CONFLICT(session_id) DO UPDATE SET profile_id=excluded.profile_id,
+          agent_generation=excluded.agent_generation,
           enabled=1,generation=generation+1,updated_at=excluded.updated_at`)
-          .bind(verified.sessionId, verified.principalId, verified.profileId, 1, now),
+          .bind(verified.sessionId, verified.principalId, verified.profileId, 1, now, verified.profileGeneration),
         ...(previous?.profile_id !== verified.profileId
           ? [db.prepare('DELETE FROM connected_app_grants WHERE session_id = ?').bind(verified.sessionId)] : []),
         db.prepare(`INSERT INTO connected_app_grants(session_id,audience,scopes_json) VALUES(?,?,?)
@@ -178,20 +211,26 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
         row.state_hash !== await hash(state) || row.code_challenge !== await s256(verifier) ||
         row.expires_at <= now || row.consumed_at !== null)
       return respond({ error: 'invalid code' }, 403);
-    // Conditional update is the one-use fence under concurrent exchanges.
-    const consume = await db.prepare(`UPDATE connected_app_browser_codes SET consumed_at = ?
-      WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?`).bind(now, codeHash, now).run();
-    if (consume.meta.changes !== 1) return respond({ error: 'invalid code' }, 403);
     const session = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
       .bind(row.session_id).first<Session>();
+    if (!session || session.enabled !== 1 || session.generation !== row.generation)
+      return respond({ error: 'session changed' }, 403);
+    const currentContext = await resolveCurrent(agentAuthority, row.session_id);
+    if (currentContext.status === 'unavailable') return authorityUnavailable();
+    if (currentContext.status !== 'active' || !matchesAgentSession(currentContext.context, row.session_id, session))
+      return respond({ error: 'session changed' }, 403);
     const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
       .bind(row.session_id, handoffAudience).first<{ scopes_json: string }>();
     const scopes = JSON.parse(row.scopes_json) as string[];
     const allowed = grant ? JSON.parse(grant.scopes_json) as string[] : [];
-    const memberScopes = session ? await membershipScopes(db, session.principal_id, session.profile_id, handoffAudience) : [];
-    if (!session || session.enabled !== 1 || session.generation !== row.generation ||
-        !scopes.every(scope => allowed.includes(scope) && memberScopes.includes(scope))) return respond({ error: 'session changed' }, 403);
+    const appScopes = await membershipScopes(db, session.principal_id, session.profile_id, handoffAudience);
+    if (!scopes.every(scope => allowed.includes(scope) && appScopes.includes(scope))) return respond({ error: 'session changed' }, 403);
     if (!config.issuer || !/^https:\/\//.test(config.issuer)) return respond({ error: 'issuer not configured' }, 503);
+    // An unavailable authority above does not burn the code. Consume only after
+    // current Agent session and app grant have both been checked.
+    const consume = await db.prepare(`UPDATE connected_app_browser_codes SET consumed_at = ?
+      WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?`).bind(now, codeHash, now).run();
+    if (consume.meta.changes !== 1) return respond({ error: 'invalid code' }, 403);
     const bearer = token();
     await db.prepare(`INSERT INTO connected_app_tokens(token_hash,session_id,generation,audience,scopes_json,issued_at,expires_at,revoked_at)
       VALUES(?,?,?,?,?,?,?,NULL)`).bind(await hash(bearer), row.session_id, row.generation, handoffAudience,
@@ -206,14 +245,17 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     if (!row || row.revoked_at !== null || row.audience !== audience || row.expires_at <= now || row.issued_at > now) return respond(inactive());
     const session = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
       .bind(row.session_id).first<Session>();
+    if (!session || session.enabled !== 1 || session.generation !== row.generation ||
+        !ID.test(session.principal_id) || !ID.test(session.profile_id)) return respond(inactive());
+    const currentContext = await resolveCurrent(agentAuthority, row.session_id);
+    if (currentContext.status === 'unavailable') return authorityUnavailable();
     const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
       .bind(row.session_id, audience).first<{ scopes_json: string }>();
     const tokenScopes = JSON.parse(row.scopes_json) as string[];
     const currentScopes = grant ? JSON.parse(grant.scopes_json) as string[] : [];
-    const memberScopes = session ? await membershipScopes(db, session.principal_id, session.profile_id, audience) : [];
-    if (!session || session.enabled !== 1 || session.generation !== row.generation ||
-        !ID.test(session.principal_id) || !ID.test(session.profile_id) ||
-        !tokenScopes.length || !tokenScopes.every(scope => currentScopes.includes(scope) && memberScopes.includes(scope))) return respond(inactive());
+    const appScopes = await membershipScopes(db, session.principal_id, session.profile_id, audience);
+    if (currentContext.status !== 'active' || !matchesAgentSession(currentContext.context, row.session_id, session) ||
+        !tokenScopes.length || !tokenScopes.every(scope => currentScopes.includes(scope) && appScopes.includes(scope))) return respond(inactive());
     return respond({ active: true, iss: config.issuer, aud: audience, sub: session.principal_id,
       profileId: session.profile_id, sessionId: row.session_id, nbf: row.issued_at, exp: row.expires_at,
       scopes: tokenScopes });
@@ -228,6 +270,22 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     if (!entries.length || entries.some(([aud, scopes]) => !audienceOf(aud) || !scopesOf(scopes, aud as Audience))) return invalid();
     const previous = await db.prepare('SELECT principal_id FROM connected_app_sessions WHERE session_id = ?')
       .bind(sessionId).first<{ principal_id: string }>();
+    // Disabling is only a revocation of an existing session. It must not create
+    // app state from caller-supplied identity fields or alter Agent selection.
+    if (!enabled) {
+      if (!previous) return respond({ selected: true });
+      if (previous.principal_id !== principalId) return respond({ error: 'session owner conflict' }, 409);
+      await db.prepare(`UPDATE connected_app_sessions SET enabled = 0, generation = generation + 1, updated_at = ?
+        WHERE session_id = ?`).bind(now, sessionId).run();
+      return respond({ selected: true });
+    }
+    if (!agentAuthority) return authorityUnavailable();
+    const currentContext = await resolveCurrent(agentAuthority, sessionId);
+    if (currentContext.status === 'unavailable') return authorityUnavailable();
+    if (currentContext.status !== 'active' || !validAgentContext(currentContext.context, sessionId) ||
+        currentContext.context.principalId !== principalId || currentContext.context.profileId !== profileId)
+      return respond({ error: 'agent profile context mismatch' }, 403);
+    const agentGeneration = currentContext.context.profileGeneration;
     if (previous && previous.principal_id !== principalId) return respond({ error: 'session owner conflict' }, 409);
     if (enabled) {
       for (const [aud, scopes] of entries) {
@@ -237,10 +295,11 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     }
     // Every host update advances generation, immediately invalidating earlier tokens.
     await db.batch([
-      db.prepare(`INSERT INTO connected_app_sessions(session_id, principal_id, profile_id, enabled, generation, updated_at)
-        VALUES(?,?,?,?,1,?) ON CONFLICT(session_id) DO UPDATE SET profile_id=excluded.profile_id,
+      db.prepare(`INSERT INTO connected_app_sessions(session_id, principal_id, profile_id, enabled, generation, updated_at, agent_generation)
+        VALUES(?,?,?,?,1,?,?) ON CONFLICT(session_id) DO UPDATE SET profile_id=excluded.profile_id,
+        agent_generation=excluded.agent_generation,
         enabled=excluded.enabled, generation=generation+1, updated_at=excluded.updated_at`)
-        .bind(sessionId, principalId, profileId, enabled ? 1 : 0, now),
+        .bind(sessionId, principalId, profileId, enabled ? 1 : 0, now, agentGeneration),
       db.prepare('DELETE FROM connected_app_grants WHERE session_id = ?').bind(sessionId),
       ...entries.map(([aud, scopes]) => db.prepare('INSERT INTO connected_app_grants(session_id,audience,scopes_json) VALUES(?,?,?)')
         .bind(sessionId, aud, JSON.stringify(scopes))),
@@ -258,8 +317,13 @@ export async function connectedAppRequest(req: Request, db: D1Database, config: 
     const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
       .bind(sessionId, audience).first<{ scopes_json: string }>();
     const allowed = grant ? JSON.parse(grant.scopes_json) as string[] : [];
-    const memberScopes = session ? await membershipScopes(db, session.principal_id, session.profile_id, audience) : [];
-    if (!session || session.enabled !== 1 || !scopes.every(scope => allowed.includes(scope) && memberScopes.includes(scope))) return respond({ error: 'forbidden' }, 403);
+    if (!session || session.enabled !== 1) return respond({ error: 'forbidden' }, 403);
+    const currentContext = await resolveCurrent(agentAuthority, sessionId);
+    if (currentContext.status === 'unavailable') return authorityUnavailable();
+    if (currentContext.status !== 'active' || !matchesAgentSession(currentContext.context, sessionId, session))
+      return respond({ error: 'forbidden' }, 403);
+    const appScopes = await membershipScopes(db, session.principal_id, session.profile_id, audience);
+    if (!scopes.every(scope => allowed.includes(scope) && appScopes.includes(scope))) return respond({ error: 'forbidden' }, 403);
     const bearer = token();
     await db.prepare(`INSERT INTO connected_app_tokens(token_hash,session_id,generation,audience,scopes_json,issued_at,expires_at,revoked_at)
       VALUES(?,?,?,?,?,?,?,NULL)`).bind(await hash(bearer), sessionId, session.generation, audience,

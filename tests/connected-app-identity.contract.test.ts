@@ -31,11 +31,12 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.conversation.open');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
-    expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
-    expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.create');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.review');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
     expect(contract.audiences['crm-web']).toContain('crm.catalog.read');
+    expect(contract.audiences['crm-web']).toContain('crm.deals.read');
     expect(contract.audiences['crm-web']).toContain('crm.deals.create');
     expect(contract.rules.writeScopeVocabularyOnly).toBe(true);
     expect(contract.rules.writeScopeGrantDoesNotImplyHumanApproval).toBe(true);

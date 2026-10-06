@@ -1,5 +1,4 @@
 import contract from '../../contracts/connected-app-identity-v1.contract.json';
-import type { PlatformSessionResolver, VerifiedPlatformSession } from './session-service';
 
 type Audience = keyof typeof contract.audiences;
 export type TelegramBootstrapConfig = {
@@ -233,11 +232,7 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
     const csrf = token();
     const choices = profiles.map(profile => `<button type="submit" name="profile_id" value="${profile}">${profile}</button>`).join('');
     const chooser = `<form method="post" action="/v1/connected-app-bootstrap/select-profile"><input type="hidden" name="csrf" value="${csrf}">${choices}</form>`;
-    const verified = profiles.includes(session.profile_id) ? await telegramPlatformSessionResolver(db)(req) : null;
-    const links = Object.entries(starts).filter(([audience]) => verified &&
-      Object.hasOwn(verified.grants, audience)).map(([audience, href]) =>
-      `<li><a href="${href}">${audience === 'recruiting-web' ? 'Рекрутинг' : 'CRM'}</a></li>`).join('');
-    return html(200, `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Выбор профиля</title><h1>Выберите профиль</h1>${chooser}${links ? `<h2>Выбран: ${session.profile_id}</h2><ul>${links}</ul>` : ''}</html>`,
+    return html(200, `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Выбор профиля</title><h1>Выберите профиль</h1>${chooser}</html>`,
       { 'set-cookie': `${CSRF_COOKIE}=${csrf}; HttpOnly; Secure; SameSite=Strict; Path=/` });
   }
   if (path === '/v1/connected-app-bootstrap/select-profile' && req.method === 'POST') {
@@ -293,27 +288,4 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
       'set-cookie': `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0` } });
   }
   return json(404, { error: 'not found' });
-}
-
-export function telegramPlatformSessionResolver(db: D1Database): PlatformSessionResolver {
-  return async (req): Promise<VerifiedPlatformSession | null> => {
-    const row = await currentBrowserSession(req, db);
-    if (!row || !ID.test(row.profile_id)) return null;
-    const members = await db.prepare(`SELECT audience,scopes_json FROM connected_app_memberships
-      WHERE principal_id = ? AND profile_id = ? AND enabled = 1`)
-      .bind(row.principal_id, row.profile_id).all<{ audience: string; scopes_json: string }>();
-    const grants: Partial<Record<Audience, string[]>> = {};
-    for (const member of members.results) {
-      if (!Object.hasOwn(contract.audiences, member.audience)) continue;
-      const audience = member.audience as Audience;
-      let scopes: unknown;
-      try { scopes = JSON.parse(member.scopes_json); } catch { continue; }
-      if (!Array.isArray(scopes) || !scopes.length || scopes.length > 16 ||
-          new Set(scopes).size !== scopes.length || scopes.some(scope =>
-        typeof scope !== 'string' || !contract.audiences[audience].includes(scope as never))) continue;
-      grants[audience] = scopes as string[];
-    }
-    return Object.keys(grants).length ? { principalId: row.principal_id, profileId: row.profile_id,
-      sessionId: row.session_id, grants } : null;
-  };
 }

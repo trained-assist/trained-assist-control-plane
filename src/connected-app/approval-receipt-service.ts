@@ -1,12 +1,12 @@
 import contract from '../../contracts/connected-app-identity-v1.contract.json';
-import type { PlatformSessionResolver, VerifiedPlatformSession } from './session-service';
+import type { AgentProfileAuthority, AgentProfileContext } from './session-service';
 
 type Audience = keyof typeof contract.audiences;
 type Config = { enabled?: string; serviceKeys?: string; issuer?: string };
 type Token = { session_id: string; generation: number; audience: string; scopes_json: string[] | string;
   issued_at: number; expires_at: number; revoked_at: number | null };
-type Session = { session_id: string; principal_id: string; profile_id: string; enabled: number; generation: number };
-type Intent = { intent_hash: string; session_id: string; generation: number; principal_id: string; profile_id: string;
+type Session = { session_id: string; principal_id: string; profile_id: string; enabled: number; generation: number; agent_generation: number };
+type Intent = { intent_hash: string; session_id: string; generation: number; agent_generation: number; principal_id: string; profile_id: string;
   audience: string; client_id: string; command: string; required_scope: string; request_hash: string; source_revision: string; operation_json: string;
   created_at: number; expires_at: number; review_nonce_hash: string | null; approved_at: number | null;
   consumed_at: number | null; consumer_request_id: string | null; receipt_id: string | null };
@@ -98,12 +98,15 @@ function appStart(raw: string | undefined, audience: Audience): string | null {
   } catch { return null; }
 }
 async function activeAppToken(db: D1Database, rawToken: unknown, audience: Audience,
-  requiredScope: string, now: number): Promise<{ token: string; session: Session; scopes: string[] } | null> {
-  if (typeof rawToken !== 'string' || !HEX.test(rawToken)) return null;
+  requiredScope: string, now: number, authority: AgentProfileAuthority | null): Promise<
+    { status: 'active'; token: string; session: Session; scopes: string[] } |
+    { status: 'inactive' } | { status: 'unavailable' }> {
+  if (!authority) return { status: 'unavailable' };
+  if (typeof rawToken !== 'string' || !HEX.test(rawToken)) return { status: 'inactive' };
   const token = await db.prepare('SELECT * FROM connected_app_tokens WHERE token_hash = ?')
     .bind(await sha(rawToken)).first<Token>();
   if (!token || token.revoked_at !== null || token.audience !== audience || token.issued_at > now ||
-      token.expires_at <= now || token.expires_at - token.issued_at > contract.token.maxLifetimeSeconds) return null;
+      token.expires_at <= now || token.expires_at - token.issued_at > contract.token.maxLifetimeSeconds) return { status: 'inactive' };
   const session = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id = ?')
     .bind(token.session_id).first<Session>();
   const grant = await db.prepare('SELECT scopes_json FROM connected_app_grants WHERE session_id = ? AND audience = ?')
@@ -111,24 +114,36 @@ async function activeAppToken(db: D1Database, rawToken: unknown, audience: Audie
   const membership = await db.prepare(`SELECT scopes_json,enabled FROM connected_app_memberships
     WHERE principal_id=? AND profile_id=? AND audience=?`)
     .bind(session?.principal_id ?? '', session?.profile_id ?? '', audience).first<{ scopes_json: string; enabled: number }>();
-  let scopes: string[] = [], current: string[] = [], member: string[] = [];
+  let scopes: string[] = [], grantScopes: string[] = [], member: string[] = [];
   try {
     scopes = JSON.parse(typeof token.scopes_json === 'string' ? token.scopes_json : '[]');
-    current = JSON.parse(grant?.scopes_json ?? '[]');
+    grantScopes = JSON.parse(grant?.scopes_json ?? '[]');
     member = JSON.parse(membership?.scopes_json ?? '[]');
-  } catch { return null; }
+  } catch { return { status: 'inactive' }; }
   if (!session || session.enabled !== 1 || session.generation !== token.generation || membership?.enabled !== 1 ||
       !Array.isArray(scopes) || !scopes.includes(requiredScope) ||
-      scopes.some(scope => !current.includes(scope) || !member.includes(scope) ||
-        !contract.audiences[audience].includes(scope as never))) return null;
-  return { token: rawToken, session, scopes };
+      scopes.some(scope => !grantScopes.includes(scope) || !member.includes(scope) ||
+        !contract.audiences[audience].includes(scope as never))) return { status: 'inactive' };
+  let current: AgentProfileContext | null;
+  try { current = await authority.resolveCurrentSession(session.session_id); }
+  catch { return { status: 'unavailable' }; }
+  if (!current || current.sessionId !== session.session_id || current.principalId !== session.principal_id ||
+      current.profileId !== session.profile_id || current.profileGeneration !== session.agent_generation)
+    return { status: 'inactive' };
+  return { status: 'active', token: rawToken, session, scopes };
 }
-async function currentPlatformSession(db: D1Database, resolver: PlatformSessionResolver | null,
-  request: Request, intent: Intent): Promise<VerifiedPlatformSession | null> {
-  if (!resolver) return null;
-  const verified = await resolver(request);
+async function currentAgentSession(db: D1Database, authority: AgentProfileAuthority | null,
+  request: Request, intent: Intent): Promise<'active' | 'inactive' | 'unavailable'> {
+  if (!authority) return 'unavailable';
+  let verified: AgentProfileContext | null;
+  try { verified = await authority.resolveBrowserSession(request); } catch { return 'unavailable'; }
   if (!verified || verified.sessionId !== intent.session_id || verified.principalId !== intent.principal_id ||
-      verified.profileId !== intent.profile_id) return null;
+      verified.profileId !== intent.profile_id || verified.profileGeneration !== intent.agent_generation) return 'inactive';
+  let currentAgent: AgentProfileContext | null;
+  try { currentAgent = await authority.resolveCurrentSession(intent.session_id); } catch { return 'unavailable'; }
+  if (!currentAgent) return 'inactive';
+  if (currentAgent.sessionId !== intent.session_id || currentAgent.principalId !== intent.principal_id ||
+      currentAgent.profileId !== intent.profile_id || currentAgent.profileGeneration !== intent.agent_generation) return 'inactive';
   const current = await db.prepare('SELECT * FROM connected_app_sessions WHERE session_id=?')
     .bind(intent.session_id).first<Session>();
   const membership = await db.prepare(`SELECT scopes_json,enabled FROM connected_app_memberships
@@ -140,15 +155,16 @@ async function currentPlatformSession(db: D1Database, resolver: PlatformSessionR
   try {
     memberScopes = JSON.parse(membership?.scopes_json ?? '[]');
     grantScopes = JSON.parse(grant?.scopes_json ?? '[]');
-  } catch { return null; }
+  } catch { return 'inactive'; }
   const audience = audienceOf(intent.audience);
   const policy = audience ? commandPolicy(intent.command, audience) : null;
   if (!policy || !audience || intent.client_id !== REGISTERED_CLIENT_ID[audience] ||
       !current || current.enabled !== 1 || current.generation !== intent.generation ||
       current.principal_id !== intent.principal_id || current.profile_id !== intent.profile_id ||
+      current.agent_generation !== intent.agent_generation ||
       membership?.enabled !== 1 || !Array.isArray(memberScopes) || !memberScopes.includes(policy.scope) ||
-      !Array.isArray(grantScopes) || !grantScopes.includes(policy.scope)) return null;
-  return verified;
+      !Array.isArray(grantScopes) || !grantScopes.includes(policy.scope)) return 'inactive';
+  return 'active';
 }
 async function readIntent(db: D1Database, intentId: unknown): Promise<Intent | null> {
   if (typeof intentId !== 'string' || !HEX.test(intentId)) return null;
@@ -158,7 +174,7 @@ async function readIntent(db: D1Database, intentId: unknown): Promise<Intent | n
 
 /** Human-reviewed, one-use approval receipt boundary. The app service never mints approval. */
 export async function connectedAppApprovalRequest(req: Request, db: D1Database, config: Config,
-  body: Record<string, unknown>, resolvePlatformSession: PlatformSessionResolver | null = null): Promise<Response> {
+  body: Record<string, unknown>, agentAuthority: AgentProfileAuthority | null = null): Promise<Response> {
   if (config.enabled !== 'true') return json(404, { error: 'not found' });
   const url = new URL(req.url);
   const path = url.pathname;
@@ -171,8 +187,10 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
     const authorization = req.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
     if (!key || !secureEqual(authorization, key)) return inactive();
     if (req.method !== 'POST' || !audience || !policy) return json(400, { error: 'invalid request' });
-    const active = await activeAppToken(db, body.appToken, audience, policy.scope, now);
-    if (!active) return json(403, { error: 'active operation scope required' });
+    const activeResult = await activeAppToken(db, body.appToken, audience, policy.scope, now, agentAuthority);
+    if (activeResult.status === 'unavailable') return unavailable();
+    if (activeResult.status !== 'active') return json(403, { error: 'active operation scope required' });
+    const active = activeResult;
     const sourceRevision = body.sourceRevision;
     const encodedOperation = operationJson(body.operation);
     if (typeof sourceRevision !== 'string' || !HEX.test(sourceRevision) || !encodedOperation)
@@ -192,10 +210,10 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
           WHERE (consumed_at IS NULL AND expires_at <= ?) OR consumed_at <= ?`)
           .bind(now, now - RECEIPT_RETENTION_SECONDS),
         db.prepare(`INSERT INTO connected_app_approval_intents
-          (intent_hash,session_id,generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,source_revision,
+          (intent_hash,session_id,generation,agent_generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,source_revision,
            operation_json,created_at,expires_at,review_nonce_hash,approved_at,consumed_at,consumer_request_id,receipt_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)`)
-          .bind(await sha(minted), active.session.session_id, active.session.generation, active.session.principal_id,
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)`)
+          .bind(await sha(minted), active.session.session_id, active.session.generation, active.session.agent_generation, active.session.principal_id,
             active.session.profile_id, audience, REGISTERED_CLIENT_ID[audience], body.command, policy.scope,
             requestHash, sourceRevision, encodedOperation, now, expiresAt),
       ]);
@@ -207,7 +225,7 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
       return json(400, { error: 'invalid request' });
     const intent = await readIntent(db, intentId);
     if (!intent || intent.session_id !== active.session.session_id ||
-        intent.generation !== active.session.generation || intent.principal_id !== active.session.principal_id ||
+        intent.generation !== active.session.generation || intent.agent_generation !== active.session.agent_generation || intent.principal_id !== active.session.principal_id ||
         intent.profile_id !== active.session.profile_id || intent.audience !== audience ||
         intent.client_id !== REGISTERED_CLIENT_ID[audience] ||
         intent.command !== body.command || intent.required_scope !== policy.scope ||
@@ -230,22 +248,22 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
       db.prepare(`UPDATE connected_app_approval_intents
         SET consumed_at=?,consumer_request_id=?,receipt_id=?,review_nonce_hash=NULL
         WHERE intent_hash=? AND approved_at IS NOT NULL AND consumed_at IS NULL AND expires_at>?
-          AND session_id=? AND generation=? AND principal_id=? AND profile_id=? AND audience=? AND client_id=?
+          AND session_id=? AND generation=? AND agent_generation=? AND principal_id=? AND profile_id=? AND audience=? AND client_id=?
           AND command=? AND required_scope=? AND request_hash=? AND source_revision=?
           AND EXISTS (SELECT 1 FROM connected_app_sessions s WHERE s.session_id=? AND s.enabled=1
             AND s.generation=? AND s.principal_id=? AND s.profile_id=?)
           AND EXISTS (SELECT 1 FROM connected_app_memberships m WHERE m.principal_id=? AND m.profile_id=?
             AND m.audience=? AND m.enabled=1 AND EXISTS (SELECT 1 FROM json_each(m.scopes_json) WHERE value=?))`)
         .bind(now, consumerRequestId, receiptId, intent.intent_hash, now, active.session.session_id,
-          active.session.generation, active.session.principal_id, active.session.profile_id, audience,
+          active.session.generation, active.session.agent_generation, active.session.principal_id, active.session.profile_id, audience,
           REGISTERED_CLIENT_ID[audience],
           body.command, policy.scope, requestHash, sourceRevision, active.session.session_id,
           active.session.generation, active.session.principal_id, active.session.profile_id,
           active.session.principal_id, active.session.profile_id, audience, policy.scope),
       db.prepare(`INSERT INTO connected_app_approval_receipts
-        (receipt_id,intent_hash,session_id,generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,
+        (receipt_id,intent_hash,session_id,generation,agent_generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,
          source_revision,approved_at,consumed_at,consumer_request_id,operation_json)
-        SELECT receipt_id,intent_hash,session_id,generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,
+        SELECT receipt_id,intent_hash,session_id,generation,agent_generation,principal_id,profile_id,audience,client_id,command,required_scope,request_hash,
           source_revision,approved_at,consumed_at,consumer_request_id,operation_json FROM connected_app_approval_intents
         WHERE intent_hash=? AND consumed_at=? AND consumer_request_id=? AND receipt_id=?
         ON CONFLICT(intent_hash) DO NOTHING`)
@@ -276,21 +294,24 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
     const intent = await readIntent(db, url.searchParams.get('intent'));
     if (!intent || intent.expires_at <= now || intent.approved_at !== null || intent.consumed_at !== null)
       return asHtml(404, '<!doctype html><html><meta charset="utf-8"><title>Подтверждение</title><p>Запрос недоступен или истёк.</p></html>');
-    if (!await currentPlatformSession(db, resolvePlatformSession, req, intent)) return asHtml(401,
+    const agentSession = await currentAgentSession(db, agentAuthority, req, intent);
+    if (agentSession === 'unavailable') return unavailable();
+    if (agentSession !== 'active') return asHtml(401,
       '<!doctype html><html><meta charset="utf-8"><title>Подтверждение</title><p>Войдите в Control Plane под тем же профилем.</p></html>');
     const nonce = randomHex();
     const policy = commandPolicy(intent.command, intent.audience as Audience);
     if (!policy) return asHtml(404, '<!doctype html><html><meta charset="utf-8"><title>Подтверждение</title><p>Запрос недоступен.</p></html>');
     const updated = await db.prepare(`UPDATE connected_app_approval_intents SET review_nonce_hash=?
       WHERE intent_hash=? AND approved_at IS NULL AND consumed_at IS NULL AND expires_at>?
-        AND session_id=? AND generation=? AND principal_id=? AND profile_id=? AND audience=? AND client_id=?
+        AND session_id=? AND generation=? AND agent_generation=? AND principal_id=? AND profile_id=? AND audience=? AND client_id=?
         AND required_scope=?
         AND EXISTS (SELECT 1 FROM connected_app_sessions s WHERE s.session_id=? AND s.enabled=1
-          AND s.generation=? AND s.principal_id=? AND s.profile_id=?)
+          AND s.generation=? AND s.agent_generation=? AND s.principal_id=? AND s.profile_id=?)
         AND EXISTS (SELECT 1 FROM connected_app_memberships m WHERE m.principal_id=? AND m.profile_id=?
           AND m.audience=? AND m.enabled=1 AND EXISTS (SELECT 1 FROM json_each(m.scopes_json) WHERE value=?))`)
-      .bind(await sha(nonce), intent.intent_hash, now, intent.session_id, intent.generation, intent.principal_id,
+      .bind(await sha(nonce), intent.intent_hash, now, intent.session_id, intent.generation, intent.agent_generation, intent.principal_id,
         intent.profile_id, intent.audience, intent.client_id, policy.scope, intent.session_id, intent.generation,
+        intent.agent_generation,
         intent.principal_id, intent.profile_id, intent.principal_id, intent.profile_id, intent.audience, policy.scope).run();
     if (updated.meta.changes !== 1) return asHtml(409, '<!doctype html><html><meta charset="utf-8"><title>Подтверждение</title><p>Запрос уже обработан.</p></html>');
     let operation: unknown;
@@ -306,20 +327,22 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
     const intent = await readIntent(db, intentId);
     if (!intent || typeof nonce !== 'string' || !HEX.test(nonce) || intent.expires_at <= now ||
         intent.approved_at !== null || intent.consumed_at !== null || !intent.review_nonce_hash ||
-        !secureEqual(await sha(nonce), intent.review_nonce_hash) ||
-        !await currentPlatformSession(db, resolvePlatformSession, req, intent)) return json(403, { error: 'approval session invalid' });
+        !secureEqual(await sha(nonce), intent.review_nonce_hash)) return json(403, { error: 'approval session invalid' });
+    const current = await currentAgentSession(db, agentAuthority, req, intent);
+    if (current === 'unavailable') return unavailable();
+    if (current !== 'active') return json(403, { error: 'approval session invalid' });
     const changed = await db.prepare(`UPDATE connected_app_approval_intents
       SET approved_at=?,review_nonce_hash=NULL WHERE intent_hash=? AND review_nonce_hash=?
         AND approved_at IS NULL AND consumed_at IS NULL AND expires_at>? AND session_id=?
-        AND generation=? AND principal_id=? AND profile_id=? AND audience=? AND client_id=?
+        AND generation=? AND agent_generation=? AND principal_id=? AND profile_id=? AND audience=? AND client_id=?
         AND command=? AND required_scope=?
         AND EXISTS (SELECT 1 FROM connected_app_sessions s WHERE s.session_id=? AND s.enabled=1
-          AND s.generation=? AND s.principal_id=? AND s.profile_id=?)
+          AND s.generation=? AND s.agent_generation=? AND s.principal_id=? AND s.profile_id=?)
         AND EXISTS (SELECT 1 FROM connected_app_memberships m WHERE m.principal_id=? AND m.profile_id=?
           AND m.audience=? AND m.enabled=1 AND EXISTS (SELECT 1 FROM json_each(m.scopes_json) WHERE value=?))`)
       .bind(now, intent.intent_hash, intent.review_nonce_hash, now, intent.session_id,
-        intent.generation, intent.principal_id, intent.profile_id, intent.audience, intent.client_id,
-        intent.command, intent.required_scope, intent.session_id, intent.generation, intent.principal_id,
+        intent.generation, intent.agent_generation, intent.principal_id, intent.profile_id, intent.audience, intent.client_id,
+        intent.command, intent.required_scope, intent.session_id, intent.generation, intent.agent_generation, intent.principal_id,
         intent.profile_id, intent.principal_id, intent.profile_id, intent.audience, intent.required_scope).run();
     if (changed.meta.changes !== 1) return json(409, { error: 'approval already used or expired' });
     return asHtml(200, '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Подтверждение сохранено</title><main><h1>Подтверждение сохранено</h1><p>Control Plane записал ваше подтверждение. Вернитесь в приложение, чтобы оно выполнило ровно один запрос по проверенным данным.</p></main></html>');

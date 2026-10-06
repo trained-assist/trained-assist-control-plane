@@ -40,9 +40,8 @@ import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
-import { connectedAppRequest } from './connected-app/session-service';
+import { connectedAppRequest, type AgentProfileAuthority } from './connected-app/session-service';
 import { connectedAppApprovalRequest } from './connected-app/approval-receipt-service';
-import { telegramBootstrapRequest, telegramPlatformSessionResolver } from './connected-app/telegram-bootstrap';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -1165,7 +1164,13 @@ async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: st
  *   POST /signal {taskId, type, payload, idempotencyKey}
  *   POST /cancel {taskId}  ·  /status {taskId}  ·  POST /recover
  */
-export default {
+/**
+ * Runtime composition seam for the Agent-owned profile authority. Production's
+ * default export intentionally receives null until the Agent authority is wired;
+ * tests inject only that boundary while exercising the real Worker routes/D1.
+ */
+export function createControlPlaneWorker(agentProfileAuthority: AgentProfileAuthority | null = null) {
+return {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
@@ -1200,16 +1205,7 @@ const store = new TaskStore(env.DB);
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
-      if (url.pathname.startsWith('/v1/connected-app-bootstrap/')) {
-        return telegramBootstrapRequest(req, env.DB, {
-          enabled: env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED,
-          gatewayKey: env.CONNECTED_APP_TELEGRAM_GATEWAY_KEY,
-          issuer: env.CONNECTED_APP_ISSUER,
-          gatewayUrl: env.GATEWAY_DELIVERY_URL,
-          gatewaySecret: env.GATEWAY_DELIVERY_SECRET,
-          startUrls: env.CONNECTED_APP_START_URLS,
-        });
-      }
+      if (url.pathname.startsWith('/v1/connected-app-bootstrap/')) return json({ error: 'not found' }, 404);
       if (url.pathname.startsWith('/v1/connected-app-sessions/')) {
         return connectedAppRequest(req, env.DB, {
           enabled: env.CONNECTED_APP_IDENTITY_ENABLED,
@@ -1217,16 +1213,14 @@ const store = new TaskStore(env.DB);
           serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
           issuer: env.CONNECTED_APP_ISSUER,
           redirectUris: env.CONNECTED_APP_REDIRECT_URIS,
-        }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
-          ? telegramPlatformSessionResolver(env.DB) : null);
+        }, body, agentProfileAuthority);
       }
       if (approvalPath) {
         return connectedAppApprovalRequest(req, env.DB, {
           enabled: env.CONNECTED_APP_APPROVALS_ENABLED,
           serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
           issuer: env.CONNECTED_APP_ISSUER,
-        }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
-          ? telegramPlatformSessionResolver(env.DB) : null);
+        }, body, agentProfileAuthority);
       }
       if (url.pathname === '/') {
         return json({
@@ -1778,3 +1772,6 @@ const startResult = await port.submit(input);
     }
   },
 };
+}
+
+export default createControlPlaneWorker();

@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { env } from './env';
-import worker from '../src/index';
-import { telegramBootstrapRequest } from '../src/connected-app/telegram-bootstrap';
-import { connectedAppApprovalRequest } from '../src/connected-app/approval-receipt-service';
+import { createControlPlaneWorker } from '../src/index';
+import type { AgentProfileAuthority, AgentProfileContext } from '../src/connected-app/session-service';
 
 const issuer = 'https://control.example.invalid';
 const hostKey = 'approval-host-test-key-with-more-than-32-characters';
@@ -10,14 +9,19 @@ const appKey = 'approval-crm-test-key-with-more-than-32-characters';
 let principalId = 'approval_human_001';
 let profileId = 'approval_profile_001';
 let sessionId = 'approval_session_001';
+let browserCookie = '';
+let currentContext: AgentProfileContext | null = null;
+const authority: AgentProfileAuthority = {
+  resolveBrowserSession: async request => request.headers.get('cookie') === `agent_session=${browserCookie}` ? currentContext : null,
+  resolveCurrentSession: async id => currentContext?.sessionId === id ? currentContext : null,
+};
+const worker = createControlPlaneWorker(authority);
 const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
   CONNECTED_APP_IDENTITY_ENABLED: 'true', CONNECTED_APP_APPROVALS_ENABLED: 'true',
   CONNECTED_APP_HOST_KEY: hostKey, CONNECTED_APP_ISSUER: issuer,
-  CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED: 'true',
   CONNECTED_APP_SERVICE_KEYS: JSON.stringify({ 'crm-web': appKey }),
+  CONNECTED_APP_REDIRECT_URIS: JSON.stringify({ 'crm-web': 'https://crm.example.invalid/oauth/callback' }),
 };
-const bootstrapConfig = { enabled: 'true', gatewayKey: 'approval-gateway-test-key-with-at-least-32-characters',
-  issuer, startUrls: JSON.stringify({ 'crm-web': 'https://crm.example.invalid/auth/connected/start' }) };
 const cp = (route: string, body: object, key = hostKey) => worker.fetch(new Request(`${issuer}/v1/connected-app-sessions/${route}`, {
   method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify(body),
 }), bindings);
@@ -29,93 +33,57 @@ async function provision(scopes = ['crm.deals.create']) {
   principalId = `approval_human_${crypto.randomUUID().replaceAll('-', '')}`;
   profileId = `approval_profile_${crypto.randomUUID().replaceAll('-', '')}`;
   sessionId = `approval_session_${crypto.randomUUID().replaceAll('-', '')}`;
+  browserCookie = crypto.randomUUID();
+  currentContext = { principalId, profileId, sessionId, profileGeneration: 1 };
   await env.DB.prepare(`INSERT INTO connected_app_memberships
     (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?, 'crm-web', ?,1,?)
     ON CONFLICT(principal_id,profile_id,audience) DO UPDATE SET scopes_json=excluded.scopes_json,
       enabled=1,updated_at=excluded.updated_at`).bind(principalId, profileId, JSON.stringify(scopes), Math.floor(Date.now() / 1000)).run();
-  const selected = await cp('select', { sessionId, principalId, profileId, enabled: true,
-    grants: { 'crm-web': scopes } });
-  expect(selected.status).toBe(200);
-  const issued = await cp('issue', { sessionId, audience: 'crm-web', scopes });
+  await env.DB.prepare(`INSERT INTO connected_app_sessions
+    (session_id,principal_id,profile_id,enabled,generation,updated_at,agent_generation) VALUES(?,?,?,1,1,?,1)`)
+    .bind(sessionId, principalId, profileId, Math.floor(Date.now() / 1000)).run();
+  await env.DB.prepare(`INSERT INTO connected_app_grants(session_id,audience,scopes_json) VALUES(?,'crm-web',?)`)
+    .bind(sessionId, JSON.stringify(scopes)).run();
+  const verifier = 'approval-verifier-012345678901234567890123456789012345';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const authorizeUrl = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
+  authorizeUrl.search = new URLSearchParams({ response_type: 'code', client_id: 'crm-web',
+    redirect_uri: 'https://crm.example.invalid/oauth/callback', scope: scopes.join(' '),
+    state: 'approval-state-0123456789012345', code_challenge: codeChallenge,
+    code_challenge_method: 'S256' }).toString();
+  const authorized = await worker.fetch(new Request(authorizeUrl, { headers: { cookie: `agent_session=${browserCookie}` } }), bindings);
+  expect(authorized.status).toBe(303);
+  const code = new URL(authorized.headers.get('location')!).searchParams.get('code')!;
+  const form = new URLSearchParams({ grant_type: 'authorization_code', client_id: 'crm-web',
+    redirect_uri: 'https://crm.example.invalid/oauth/callback', code,
+    state: 'approval-state-0123456789012345', code_verifier: verifier });
+  const issued = await worker.fetch(new Request(`${issuer}/v1/connected-app-sessions/exchange`, { method: 'POST',
+    headers: { authorization: `Bearer ${appKey}`, 'content-type': 'application/x-www-form-urlencoded' }, body: form }), bindings);
   expect(issued.status).toBe(201);
   return (await issued.json() as { token: string }).token;
+}
+async function issueToken(scopes: string[]) {
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const raw = [...tokenBytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))
+    .then(bytes => [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join(''));
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(`INSERT INTO connected_app_tokens
+    (token_hash,session_id,generation,audience,scopes_json,issued_at,expires_at,revoked_at)
+    VALUES(?,?,1,'crm-web',?,?,?,NULL)`).bind(hash, sessionId, JSON.stringify(scopes), now, now + 3600).run();
+  return raw;
 }
 const command = 'crm.deals.create';
 const sourceRevision = 'a'.repeat(64);
 const operation = { clientName: 'Тестовая компания', amount: 125000, currency: 'RUB', externalProjectId: 'case-001' };
-function platformRequest(path: string, cookie = '__Host-ta_platform=') {
+function platformRequest(path: string, cookie = `agent_session=${browserCookie}`) {
   return new Request(`${issuer}${path}`, { headers: { cookie } });
 }
 async function makeResolverSession() {
-  // The browser authority is exercised against a fresh D1 session per test.
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(`INSERT INTO connected_app_telegram_bindings
-    (bot_id,telegram_user_id,principal_id,enabled,updated_at) VALUES(?,?,?,1,1)
-    ON CONFLICT(bot_id,telegram_user_id) DO UPDATE SET principal_id=excluded.principal_id,enabled=1,updated_at=updated_at+1`)
-    .bind('approval_bot', '123456789', principalId).run();
-  const rawCode = crypto.randomUUID().replaceAll('-', '').padEnd(64, 'e').slice(0, 64);
-  const codeHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawCode))
-    .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''));
-  await env.DB.prepare(`INSERT INTO connected_app_telegram_challenges
-    (code_hash,bot_id,update_id,telegram_user_id,principal_id,profile_id,created_at,expires_at,consumed_at,invalidated_at)
-    VALUES(?,?,?,?,?,'',?,?,NULL,NULL)`).bind(codeHash, 'approval_bot', `approval-${crypto.randomUUID()}`,
-      '123456789', principalId, now, now + 300).run();
-  const previewLink = `${issuer}/v1/connected-app-bootstrap/telegram?c=${rawCode}`;
-  const preview = await telegramBootstrapRequest(new Request(previewLink), env.DB, bootstrapConfig);
-  const csrf = (await preview.text()).match(/name="csrf" value="([a-f0-9]{64})"/)?.[1] ?? '';
-  const csrfCookie = preview.headers.get('set-cookie')?.split(';')[0] ?? '';
-  const redeemed = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/telegram`, {
-    method: 'POST', headers: { origin: issuer, 'content-type': 'application/x-www-form-urlencoded', cookie: csrfCookie },
-    body: new URLSearchParams({ c: rawCode, csrf }),
-  }), env.DB, bootstrapConfig);
-  const platformCookie = redeemed.headers.get('set-cookie')?.split(';')[0] ?? '';
-  browserCookie = platformCookie;
-  expect(redeemed.status, await redeemed.clone().text()).toBe(303);
-  const rawBrowserToken = platformCookie.split('=')[1] ?? '';
-  const sessionHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawBrowserToken))
-    .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''));
-  await env.DB.prepare(`UPDATE connected_app_browser_sessions SET session_id=? WHERE session_hash=?`)
-    .bind(sessionId, sessionHash).run();
-  await env.DB.prepare('UPDATE connected_app_browser_sessions SET profile_id=? WHERE session_hash=?')
-    .bind(profileId, sessionHash).run();
-  const selected = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
-    headers: { cookie: platformCookie },
-  }), env.DB, bootstrapConfig);
-  if (selected.status !== 200) throw new Error(`profile chooser ${selected.status}: ${await selected.text()}`);
-  const chooserHtml = await selected.clone().text();
-  const selectCsrf = chooserHtml.match(/name="csrf" value="([a-f0-9]{64})"/)?.[1] ?? '';
-  const selectCookie = selected.headers.get('set-cookie')?.split(';')[0] ?? '';
-  const chosen = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/select-profile`, {
-    method: 'POST', headers: { origin: issuer, 'content-type': 'application/x-www-form-urlencoded',
-      cookie: `${platformCookie}; ${selectCookie}` },
-    body: new URLSearchParams({ profile_id: profileId, csrf: selectCsrf }),
-  }), env.DB, bootstrapConfig);
-  expect(chosen.status, await chosen.clone().text()).toBe(303);
-  await env.DB.prepare(`UPDATE connected_app_browser_sessions SET revoked_at=NULL WHERE session_id=?`).bind(sessionId).run();
-  const chosenSession = await env.DB.prepare(`UPDATE connected_app_browser_sessions SET profile_id=?
-    WHERE session_id=?`).bind(profileId, sessionId).run();
-  expect(chosenSession.meta.changes).toBe(1);
-  await env.DB.prepare('UPDATE connected_app_sessions SET profile_id=?,enabled=1,generation=generation+1 WHERE session_id=?')
-    .bind(profileId, sessionId).run();
-  const selectPlatform = await cp('select', { sessionId, principalId, profileId, enabled: true,
-    grants: { 'crm-web': ['crm.deals.create'] } });
-  expect(selectPlatform.status).toBe(200);
-  const verified = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
-    headers: { cookie: platformCookie },
-  }), env.DB, bootstrapConfig);
-  if (verified.status !== 200) throw new Error(`verified platform session ${verified.status}: ${await verified.text()}`);
-  return platformCookie;
-}
-const approvalCookie = 'verified-approval-session-cookie';
-let browserCookie = '';
-async function browserCookieForSession(_id: string) { return browserCookie; }
-async function resolverFor(intentId: string) {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(intentId))
-    .then(b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''));
-  const intent = await env.DB.prepare('SELECT session_id,principal_id,profile_id FROM connected_app_approval_intents WHERE intent_hash=?')
-    .bind(hash).first<{ session_id: string; principal_id: string; profile_id: string }>();
-  return async (_request: Request) => intent ? ({ sessionId: intent.session_id, principalId: intent.principal_id,
-    profileId: intent.profile_id, grants: { 'crm-web': ['crm.deals.create'] } }) : null;
+  browserCookie = crypto.randomUUID();
+  return `agent_session=${browserCookie}`;
 }
 async function prepare(token: string, op = operation, revision = sourceRevision) {
   const response = await approval('prepare', { appToken: token, audience: 'crm-web', command,
@@ -136,14 +104,12 @@ describe('CP one-use Connected App human approval receipts through real Worker a
   it('requires a same-profile human confirmation, exact origin and one-use nonce; GET never approves', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
     expect(new URL(prepared.approvalUrl).searchParams.get('intent')).toBe(prepared.intentId);
-    const anonymous = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`), bindings);
+    const anonymous = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, ''), bindings);
     expect(anonymous.status).toBe(401);
-    const resolve = await resolverFor(prepared.intentId);
-    const review = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const review = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     expect(review.status, await review.clone().text()).toBe(200);
     const html = await review.text();
     expect(html).toContain(operation.clientName);
@@ -153,34 +119,31 @@ describe('CP one-use Connected App human approval receipts through real Worker a
       .first<{ approved_at: number | null }>())?.approved_at).toBeNull();
     const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
     const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
-    const deniedOrigin = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, {
+    const deniedOrigin = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, {
       method: 'POST', headers: { cookie, origin: 'https://attacker.invalid', 'content-type': 'application/x-www-form-urlencoded' }, body: form,
-    }), env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    }), bindings);
     expect(deniedOrigin.status).toBe(403);
-    const accepted = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, {
+    const accepted = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, {
       method: 'POST', headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form,
-    }), env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    }), bindings);
     expect(accepted.status).toBe(200);
-    const replay = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, {
+    const replay = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, {
       method: 'POST', headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form,
-    }), env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    }), bindings);
     expect(replay.status).toBe(403);
   });
 
   it('binds payload and source revision, atomically issues one receipt, and permits only exact request recovery', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
-    const resolve = await resolverFor(prepared.intentId);
-    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const page = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     const html = await page.text();
     const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
     const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
-    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
-      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
-      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    const confirmed = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }), bindings);
     expect(confirmed.status, await confirmed.clone().text()).toBe(200);
     const consumeBody = { appToken: token, audience: 'crm-web', command, sourceRevision, operation,
       intentId: prepared.intentId, consumerRequestId: 'crm-command-001' };
@@ -202,17 +165,14 @@ describe('CP one-use Connected App human approval receipts through real Worker a
   it('recovers the same consumed receipt after intent expiry and prepare-time cleanup', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
-    const resolve = await resolverFor(prepared.intentId);
-    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const page = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     const html = await page.text();
     const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
     const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
-    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
-      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
-      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    const confirmed = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }), bindings);
     expect(confirmed.status).toBe(200);
 
     const consumerRequestId = 'crm-command-recovery-001';
@@ -243,23 +203,10 @@ describe('CP one-use Connected App human approval receipts through real Worker a
   it('invalidates approval if the selected profile generation changes before confirmation or consume', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
-    const resolve = await resolverFor(prepared.intentId);
-    const chooser = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
-      headers: { cookie: await browserCookieForSession(sessionId) },
-    }), env.DB, bootstrapConfig);
-    const chooserHtml = await chooser.text();
-    const csrf = chooserHtml.match(/name="csrf" value="([a-f0-9]{64})"/)?.[1] ?? '';
-    const csrfCookie = chooser.headers.get('set-cookie')?.split(';')[0] ?? '';
-    const switched = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/select-profile`, {
-      method: 'POST', headers: { origin: issuer, 'content-type': 'application/x-www-form-urlencoded',
-        cookie: `${await browserCookieForSession(sessionId)}; ${csrfCookie}` },
-      body: new URLSearchParams({ profile_id: profileId, csrf }),
-    }), env.DB, bootstrapConfig);
-    expect(switched.status).toBe(303);
-    const review = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    currentContext = { ...currentContext!, profileGeneration: currentContext!.profileGeneration + 1 };
+    const review = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     expect(review.status).toBe(401);
     expect((await approval('consume', { appToken: token, audience: 'crm-web', command, sourceRevision,
       operation, intentId: prepared.intentId, consumerRequestId: 'switched-profile-command' })).status).toBe(403);
@@ -268,30 +215,25 @@ describe('CP one-use Connected App human approval receipts through real Worker a
   it('rechecks the session grant before showing the approval form', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
     await env.DB.prepare(`UPDATE connected_app_grants SET scopes_json='[]' WHERE session_id=? AND audience='crm-web'`)
       .bind(sessionId).run();
-    const resolve = await resolverFor(prepared.intentId);
-    const review = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const review = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     expect(review.status).toBe(401);
   });
 
   it('refuses receipt consumption after membership revocation', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
-    const resolve = await resolverFor(prepared.intentId);
-    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const page = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     const html = await page.text();
     const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
     const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
-    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
-      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
-      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    const confirmed = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }), bindings);
     expect(confirmed.status).toBe(200);
     await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0 WHERE principal_id=? AND profile_id=? AND audience='crm-web'`)
       .bind(principalId, profileId).run();
@@ -302,17 +244,14 @@ describe('CP one-use Connected App human approval receipts through real Worker a
   it('allows only one winner when two service requests race to consume the same approval', async () => {
     await provision();
     const cookie = await makeResolverSession();
-    const token = (await (await cp('issue', { sessionId, audience: 'crm-web', scopes: ['crm.deals.create'] })).json() as { token: string }).token;
+    const token = await issueToken(['crm.deals.create']);
     const prepared = await prepare(token);
-    const resolve = await resolverFor(prepared.intentId);
-    const page = await connectedAppApprovalRequest(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie),
-      env.DB, { enabled: 'true', issuer }, {}, resolve);
+    const page = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
     const html = await page.text();
     const nonce = html.match(/name="nonce" value="([a-f0-9]{64})"/)?.[1] ?? '';
     const form = new URLSearchParams({ intentId: prepared.intentId, nonce });
-    const confirmed = await connectedAppApprovalRequest(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
-      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }),
-      env.DB, { enabled: 'true', issuer }, Object.fromEntries(form.entries()), resolve);
+    const confirmed = await worker.fetch(new Request(`${issuer}/v1/connected-app-approvals/confirm`, { method: 'POST',
+      headers: { cookie, origin: issuer, 'content-type': 'application/x-www-form-urlencoded' }, body: form }), bindings);
     expect(confirmed.status).toBe(200);
 
     const common = { appToken: token, audience: 'crm-web', command, sourceRevision, operation, intentId: prepared.intentId };
