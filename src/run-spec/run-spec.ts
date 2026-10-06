@@ -72,9 +72,12 @@ export interface RemoteMcpServerSpec {
   transport: 'remote';
   url: string;
   bindingRef: string;
+  /** Trusted Registry execution scope; CP never accepts it from task/model data. */
+  scope?: string;
   allowedTools: string[];
   catalogueVersion?: string;
   policyVersion?: string;
+  registryDigest?: string;
   toolTimeoutMs?: number;
 }
 
@@ -281,10 +284,12 @@ const REMOTE_MCP_SERVER_KEYS = new Set([
   'transport',
   'url',
   'bindingRef',
+  'scope',
   'allowedTools',
   'toolTimeoutMs',
   'catalogueVersion',
   'policyVersion',
+  'registryDigest',
 ]);
 
 function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
@@ -641,8 +646,10 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
         }
 
         if (server.transport === 'remote') {
+          if (server.scope !== undefined && (typeof server.scope !== 'string' || !SAFE_ID.test(server.scope))) errors.push(`${path}.scope: expected a safe scope identifier`);
           if (server.catalogueVersion !== undefined && (typeof server.catalogueVersion !== 'string' || !SAFE_ID.test(server.catalogueVersion))) errors.push(`${path}.catalogueVersion: expected a safe version identifier`);
           if (server.policyVersion !== undefined && (typeof server.policyVersion !== 'string' || !SAFE_ID.test(server.policyVersion))) errors.push(`${path}.policyVersion: expected a safe version identifier`);
+          if (server.registryDigest !== undefined && (typeof server.registryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(server.registryDigest))) errors.push(`${path}.registryDigest: expected a lowercase SHA-256 hex digest`);
           if (!isSafeBindingRef(server.bindingRef)) {
             errors.push(`${path}.bindingRef: expected 1..${MAX_MCP_BINDING_REF_CHARS} chars without control characters`);
           }

@@ -52,6 +52,8 @@ export interface RouteServiceDeps {
 
 export interface RouteResult {
   mcpInstruction?: SelectedMcpInstruction;
+  /** Host MCP refusal that must remain visible in task status and dispatch output. */
+  mcpRefusalCode?: string;
   agentInstructions?: string;
   rendering?: { source: 'communication_writer' | 'deterministic'; failure: string | null };
   decision: RoutingDecision;
