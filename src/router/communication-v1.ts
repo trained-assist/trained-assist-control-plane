@@ -113,16 +113,18 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       // The catalogue grants availability to the agent; the selector does not
       // have to choose the tool and the agent is not instructed to call it.
       const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, 'registry.fixture_read');
-      await validateHostMcpExecution(hostMcp, instruction);
-      mcpInstruction = instruction;
+      const revalidated = await hostMcp.catalogue.revalidateInstruction(instruction);
+      await validateHostMcpExecution(hostMcp, revalidated);
+      mcpInstruction = revalidated;
       selected = 'agent';
     } else if (result.decision === 'no_matching_option') {
       throw new SelectorError('no_matching_option');
     } else if (snapshot && hostMcp && scope) {
       if (!snapshot.decisionOptions.some(option => option.id === result.decision)) throw new SelectorError('unknown_id');
       const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, result.decision);
-      await validateHostMcpExecution(hostMcp, instruction);
-      mcpInstruction = instruction;
+      const revalidated = await hostMcp.catalogue.revalidateInstruction(instruction);
+      await validateHostMcpExecution(hostMcp, revalidated);
+      mcpInstruction = revalidated;
       selected = 'agent';
     } else {
       if (result.decision !== 'agent' && !allowed.some((answer) => answer.id === result.decision)) throw new SelectorError('unknown_id');
@@ -133,9 +135,6 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     if (error instanceof McpCatalogueError) {
       blockDispatch = true;
       mcpRefusalCode = requiresMcpRevalidation(error.code) ? 'MCP_REVALIDATION_REQUIRED' : error.code;
-    } else if (error instanceof SelectorError && error.code === 'unknown_id' && Boolean(snapshot && hostMcp)) {
-      blockDispatch = true;
-      mcpRefusalCode = 'MCP_REVALIDATION_REQUIRED';
     }
     selected = 'agent';
     mcpInstruction = undefined;
@@ -220,4 +219,9 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
     brief: { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } },
   };
+}
+
+function isMcpRevalidationDrift(code: string): boolean {
+  return ['catalogue_drift', 'snapshot_stale', 'binding_invalid', 'binding_scope_mismatch', 'execution_scope_changed',
+    'execution_policy_changed', 'execution_binding_missing', 'execution_catalogue_changed'].includes(code);
 }
