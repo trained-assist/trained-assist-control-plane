@@ -1,0 +1,28 @@
+name: Integration v1 sandbox
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-integration-v1
+  cancel-in-progress: false
+
+jobs:
+  remote-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify authenticated durable intake and state on the currently deployed sandbox
+        env:
+          CP_INTEGRATION_V1_PRINCIPAL_SECRET: ${{ secrets.CP_INTEGRATION_V1_PRINCIPAL_SECRET }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: npm run integration:smoke

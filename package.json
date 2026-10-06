@@ -18,6 +18,7 @@
     "web:dev": "wrangler dev -c web/wrangler.web.jsonc",
     "eval:fast-replies": "node --experimental-strip-types --import ./tools/ts-ext-resolver.mjs tools/fast-replies-export-decisions.ts",
     "check:evidence": "node tools/p16-evidence-selfcheck.mjs",
+    "integration:smoke": "node tools/integration-v1-smoke.mjs",
     "sandbox:p16": "./tools/p16-sandbox-probe.sh",
     "sandbox:p20": "./tools/p20-brief-probe.sh"
   },
