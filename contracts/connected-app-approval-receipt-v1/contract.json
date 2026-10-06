@@ -17,9 +17,9 @@
     "recruiting-web": {
       "clientId": "recruiting-web",
       "commands": {
-        "recruiting.responses.message.send": {
+        "recruiting.assignment.material.send": {
           "audience": "recruiting-web",
-          "requiredScope": "recruiting.responses.message.send"
+          "requiredScope": "recruiting.assignment.material.send"
         }
       }
     },

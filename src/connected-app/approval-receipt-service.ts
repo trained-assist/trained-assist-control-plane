@@ -22,7 +22,7 @@ const REGISTERED_CLIENT_ID: Record<Audience, string> = {
 };
 const OPERATION_SCOPE: Record<string, { audience: Audience; scope: string }> = {
   'crm.deals.create': { audience: 'crm-web', scope: 'crm.deals.create' },
-  'recruiting.responses.message.send': { audience: 'recruiting-web', scope: 'recruiting.responses.message.send' },
+  'recruiting.assignment.material.send': { audience: 'recruiting-web', scope: 'recruiting.assignment.material.send' },
 };
 const noStore = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff' };
@@ -52,6 +52,19 @@ function secureEqual(a: string, b: string): boolean {
 async function sha(value: string): Promise<string> {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+async function validCommandOperation(command: string, encodedOperation: string, sourceRevision: string): Promise<boolean> {
+  if (command !== 'recruiting.assignment.material.send') return true;
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(encodedOperation) as Record<string, unknown>; } catch { return false; }
+  const ids = ['vacancyId', 'negotiationId', 'chatId', 'agreementMessageId'];
+  if (ids.some(key => typeof value[key] !== 'string' || !ID.test(value[key] as string)) ||
+      typeof value.sourceSha256 !== 'string' || !HEX.test(value.sourceSha256) ||
+      typeof value.savedPlanRevisionSha256 !== 'string' || !HEX.test(value.savedPlanRevisionSha256) ||
+      value.savedPlanRevisionSha256 !== sourceRevision ||
+      typeof value.materialSha256 !== 'string' || !HEX.test(value.materialSha256) ||
+      typeof value.message !== 'string' || !value.message.trim() || value.message.length > 12_000) return false;
+  return await sha(value.message) === value.materialSha256;
 }
 function randomHex(): string {
   return [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -199,7 +212,8 @@ export async function connectedAppApprovalRequest(req: Request, db: D1Database, 
     const active = activeResult;
     const sourceRevision = body.sourceRevision;
     const encodedOperation = operationJson(body.operation);
-    if (typeof sourceRevision !== 'string' || !HEX.test(sourceRevision) || !encodedOperation)
+    if (typeof sourceRevision !== 'string' || !HEX.test(sourceRevision) || !encodedOperation ||
+        !await validCommandOperation(String(body.command), encodedOperation, sourceRevision))
       return json(400, { error: 'invalid request' });
     const requestHash = await operationHash(audience, String(body.command),
       sourceRevision, encodedOperation);

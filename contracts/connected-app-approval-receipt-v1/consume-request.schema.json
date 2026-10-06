@@ -8,7 +8,7 @@
   "properties": {
     "appToken": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "audience": { "enum": ["crm-web", "recruiting-web"] },
-    "command": { "enum": ["crm.deals.create", "recruiting.responses.message.send"] },
+    "command": { "enum": ["crm.deals.create", "recruiting.assignment.material.send"] },
     "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "operation": { "type": "object" },
     "intentId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
@@ -18,6 +18,20 @@
     { "if": { "properties": { "audience": { "const": "crm-web" } }, "required": ["audience"] },
       "then": { "properties": { "command": { "const": "crm.deals.create" } } } },
     { "if": { "properties": { "audience": { "const": "recruiting-web" } }, "required": ["audience"] },
-      "then": { "properties": { "command": { "const": "recruiting.responses.message.send" } } } }
+      "then": { "properties": { "command": { "const": "recruiting.assignment.material.send" },
+        "operation": { "type": "object", "additionalProperties": false,
+          "required": ["vacancyId", "negotiationId", "chatId", "sourceSha256", "savedPlanRevisionSha256", "materialSha256", "agreementMessageId", "message"],
+          "properties": {
+            "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "negotiationId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "chatId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "sourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "savedPlanRevisionSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "materialSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "agreementMessageId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 12000 }
+          }
+        }
+      } } }
   ]
 }

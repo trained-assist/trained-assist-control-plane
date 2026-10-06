@@ -79,7 +79,7 @@ async function issueToken(scopes: string[], audience: 'crm-web' | 'recruiting-we
   return raw;
 }
 const command = 'crm.deals.create';
-const recruitingCommand = 'recruiting.responses.message.send';
+const recruitingCommand = 'recruiting.assignment.material.send';
 const sourceRevision = 'a'.repeat(64);
 const operation = { clientName: 'Тестовая компания', amount: 125000, currency: 'RUB', externalProjectId: 'case-001' };
 function platformRequest(path: string, cookie = `agent_session=${browserCookie}`) {
@@ -112,10 +112,13 @@ describe('CP one-use Connected App human approval receipts through real Worker a
 
   it('binds Recruiting message approval to its own audience, scope, exact operation and one-use receipt', async () => {
     const operationRevision = 'd'.repeat(64);
+    const message = 'Synthetic exact saved assignment text';
+    const materialSha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message))
+      .then(bytes => [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, '0')).join(''));
     const messageOperation = {
       vacancyId: 'vacancy_demo_001', negotiationId: 'negotiation_demo_001', chatId: 'chat_demo_001',
-      savedPlanRevisionSha256: 'b'.repeat(64), sourceSha256: 'c'.repeat(64),
-      agreementMessageId: 'applicant_agreement_001', message: 'Synthetic exact saved assignment text',
+      savedPlanRevisionSha256: operationRevision, sourceSha256: 'c'.repeat(64), materialSha256,
+      agreementMessageId: 'applicant_agreement_001', message,
     };
 
     const readOnly = await provision(['recruiting.responses.read'], 'recruiting-web');
@@ -125,6 +128,10 @@ describe('CP one-use Connected App human approval receipts through real Worker a
     expect((await approval('prepare', { ...request, audience: 'crm-web' }, appKey)).status).toBe(400);
 
     const token = await provision([recruitingCommand], 'recruiting-web');
+    expect((await approval('prepare', { ...request, appToken: token,
+      operation: { ...messageOperation, materialSha256: 'e'.repeat(64) } }, recruitingAppKey)).status).toBe(400);
+    expect((await approval('prepare', { ...request, appToken: token,
+      sourceRevision: 'e'.repeat(64) }, recruitingAppKey)).status).toBe(400);
     const prepared = await prepare(token, messageOperation, operationRevision, 'recruiting-web', recruitingCommand);
     const cookie = await makeResolverSession();
     const review = await worker.fetch(platformRequest(`/v1/connected-app-approvals/review?intent=${prepared.intentId}`, cookie), bindings);
@@ -140,8 +147,11 @@ describe('CP one-use Connected App human approval receipts through real Worker a
 
     const consumeBody = { ...request, appToken: token, intentId: prepared.intentId,
       consumerRequestId: 'recruiting-message-001' };
+    const changedMessage = 'Changed after approval';
+    const changedMaterialSha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(changedMessage))
+      .then(bytes => [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, '0')).join(''));
     expect((await approval('consume', { ...consumeBody,
-      operation: { ...messageOperation, message: 'Changed after approval' } }, recruitingAppKey)).status).toBe(403);
+      operation: { ...messageOperation, message: changedMessage, materialSha256: changedMaterialSha256 } }, recruitingAppKey)).status).toBe(403);
     const consumed = await approval('consume', consumeBody, recruitingAppKey);
     expect(consumed.status).toBe(201);
     const body = await consumed.json() as { receipt: Record<string, unknown> };
