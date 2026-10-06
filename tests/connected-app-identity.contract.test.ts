@@ -31,11 +31,12 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
     expect(contract.audiences['crm-web']).toContain('crm.catalog.read');
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });
 
-  it('keeps R-03, response and report grants separate without an Agent Run', () => {
+  it('keeps search, response, report and assignment grants separate without an Agent Run', () => {
     const s = session();
     const active = introspect(s, 'recruiting-web');
     expect(active).toMatchObject({ active: true, profileId: 'profile_demo_001',
@@ -43,6 +44,7 @@ describe('connected app identity v1 offline contract', () => {
     expect(active).not.toHaveProperty('runId');
     expect(active).not.toHaveProperty('token');
     expect(active.active && active.scopes.includes('recruiting.reports.read')).toBe(false);
+    expect(active.active && active.scopes.includes('recruiting.assignment.review')).toBe(false);
     s.scopes = ['recruiting.candidateSearch'];
     expect(introspect(s, 'recruiting-web')).toMatchObject({ active: true,
       scopes: ['recruiting.candidateSearch'] });

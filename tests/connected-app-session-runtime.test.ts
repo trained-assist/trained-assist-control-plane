@@ -137,4 +137,46 @@ describe('connected app identity opt-in D1 runtime', () => {
     await membership('profile_reviewed', ['recruiting.responses.read']);
     expect(await (await introspect(bearer)).json()).toEqual({ active: false });
   });
+
+  it('requires an explicit assignment grant for the selected profile and fences a profile switch', async () => {
+    const sessionId = 'session_assignment_review';
+    const first = 'profile_assignment_first';
+    const second = 'profile_assignment_second';
+    const assignment = ['recruiting.assignment.review'];
+    const response = ['recruiting.responses.read'];
+    const selectWith = (profileId: string, scopes: string[]) => request('select', {
+      sessionId, principalId: 'user_demo_001', profileId, enabled: true,
+      grants: { 'recruiting-web': scopes },
+    }, hostKey);
+
+    await membership(first, response);
+    expect((await selectWith(first, assignment)).status).toBe(403);
+    expect(await env.DB.prepare('SELECT session_id FROM connected_app_sessions WHERE session_id=?')
+      .bind(sessionId).first()).toBeNull();
+    await membership(first, assignment);
+    expect((await selectWith(first, assignment)).status).toBe(200);
+    expect((await issue(sessionId, response)).status).toBe(403);
+    const firstToken = (await (await issue(sessionId, assignment)).json() as { token: string }).token;
+    expect(await (await introspect(firstToken)).json()).toMatchObject({
+      active: true, sub: 'user_demo_001', profileId: first, scopes: assignment,
+    });
+
+    await membership(second, response);
+    expect((await selectWith(second, assignment)).status).toBe(403);
+    expect((await selectWith(second, response)).status).toBe(200);
+    expect(await (await introspect(firstToken)).json()).toEqual({ active: false });
+    expect((await issue(sessionId, assignment)).status).toBe(403);
+    const secondToken = (await (await issue(sessionId, response)).json() as { token: string }).token;
+    expect(await (await introspect(secondToken)).json()).toMatchObject({
+      active: true, sub: 'user_demo_001', profileId: second, scopes: response,
+    });
+    await membership(second, assignment);
+    expect((await issue(sessionId, assignment)).status).toBe(403);
+    expect((await selectWith(second, assignment)).status).toBe(200);
+    const assignmentToken = (await (await issue(sessionId, assignment)).json() as { token: string }).token;
+    await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0,updated_at=updated_at+1
+      WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`)
+      .bind('user_demo_001', second).run();
+    expect(await (await introspect(assignmentToken)).json()).toEqual({ active: false });
+  });
 });

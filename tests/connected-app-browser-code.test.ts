@@ -32,7 +32,8 @@ async function membership(profileId: string, scopes = ['recruiting.responses.rea
     .bind('user_demo_001', profileId, 'recruiting-web', JSON.stringify(scopes)).run();
 }
 async function authorize(sessionId: string, options: { audience?: string; redirectUri?: string; scopes?: string;
-  challenge?: string; state?: string; resolve?: PlatformSessionResolver | null; injectedProfile?: string } = {}) {
+  challenge?: string; state?: string; resolve?: PlatformSessionResolver | null; injectedProfile?: string;
+  defaultMembership?: boolean } = {}) {
   const url = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', options.audience ?? 'recruiting-web');
@@ -42,7 +43,7 @@ async function authorize(sessionId: string, options: { audience?: string; redire
   url.searchParams.set('code_challenge', options.challenge ?? await challenge());
   url.searchParams.set('code_challenge_method', 'S256');
   if (options.injectedProfile) url.searchParams.set('profileId', options.injectedProfile);
-  await membership('profile_demo_001');
+  if (options.defaultMembership !== false) await membership('profile_demo_001');
   return connectedAppRequest(new Request(url, { method: 'GET' }), env.DB, config, {},
     options.resolve === undefined ? resolver(sessionId) : options.resolve);
 }
@@ -183,5 +184,30 @@ describe('Connected App browser authorization code with PKCE S256', () => {
       WHERE principal_id = ? AND profile_id = ? AND audience = ?`)
       .bind('user_demo_001', 'profile_demo_001', 'recruiting-web').run();
     expect((await exchange(code)).status).toBe(403);
+  });
+
+  it('requires a reviewed assignment grant before issuing a one-use browser code', async () => {
+    const sessionId = id('assignment_review');
+    const profileId = 'profile_assignment_review';
+    const scope = 'recruiting.assignment.review';
+    const resolve: PlatformSessionResolver = async () => ({
+      principalId: 'user_demo_001', profileId, sessionId,
+      grants: { 'recruiting-web': [scope] },
+    });
+    await membership(profileId, ['recruiting.responses.read']);
+    expect((await authorize(sessionId, { scopes: scope, resolve,
+      defaultMembership: false })).status).toBe(403);
+    await membership(profileId, [scope]);
+    const code = codeFrom(await authorize(sessionId, { scopes: scope, resolve,
+      defaultMembership: false }));
+    const { token } = await (await exchange(code)).json() as { token: string };
+    expect(await (await introspect(token)).json()).toMatchObject({
+      active: true, profileId, scopes: [scope],
+    });
+    expect((await exchange(code)).status).toBe(403);
+    await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0,updated_at=updated_at+1
+      WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`)
+      .bind('user_demo_001', profileId).run();
+    expect(await (await introspect(token)).json()).toEqual({ active: false });
   });
 });
