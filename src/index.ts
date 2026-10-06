@@ -30,6 +30,7 @@ import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/er
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
+import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
@@ -1476,7 +1477,7 @@ const store = new TaskStore(env.DB);
             question: body.question as string | undefined,
             waitTimeoutSec: body.waitTimeoutSec as number | undefined,
             crashRunOnce: body.crashRunOnce as boolean | undefined,
-            runnerEngine: body.runnerEngine as string | undefined,
+            runnerEngine: runnerEngineOf(body.runnerEngine, env.ROUTER_AGENT_ENGINE),
             autoRun: body.autoRun as boolean | undefined,
             gtd: managed,
             criteria: (body.criteria as Record<string, unknown> | undefined) ?? null,
