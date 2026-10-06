@@ -130,3 +130,52 @@ a live CP policy-mutation test was intentionally not done because it would
 require changing trusted test policy during the run. The temporary probe and
 negative-test API key have been removed. Test CP/Runner/Host services remain
 isolated for the next review step.
+
+### Additional France-side run and current boundary (2026-10-06)
+
+After the CP test-principal HMAC override was deployed, task
+`ut-efdd84dc60d0fa9a999c` completed through the isolated
+`agent-runner-api-mcp-test` service on France VM2. Runner run
+`run_683d964a-3e4f-4885-a58a-a0541dfd8c05` reached `succeeded`; CP returned
+the fixture marker. This service still dispatched through its configured
+`dynamic-ip-azure-agent-run` external worker. It proves France-hosted Runner API
+→ external worker, not a local OpenCode process on France. The task answer alone
+is not an independent Host invocation audit, so treat the fixture call for this
+run as unverified at the Host boundary. The earlier GHA run above remains the
+run with recorded Host acceptance. A preceding attempt failed closed with
+`MCP_ENDPOINT_NOT_ALLOWED` before worker launch when the Runner endpoint had not
+yet been aligned to the pinned custom Host domain.
+
+France's local OpenCode CLI has separately passed bounded `ladder/free` stream
+smokes with `step_start`, `text`, and `step_finish` events. That is direct CLI
+evidence only: [Runner #136](https://github.com/trained-assist/ai-agent-runner/issues/136)
+tracks binding a France OpenCode worker into the CP/API admission path. Russia's
+known `ru-edge` remains a thin edge without a persistent OpenCode/Runner worker;
+the required API-boundary and concurrent-stream acceptance checks are still open.
+The 60% CPU/RAM cutoff is also not active on a deployed VM worker: the repository
+contains a VM capacity-admission primitive, but its own README says it is not
+wired to an HTTP worker adapter or durable reservation store yet. Do not treat
+the GHA fallback threshold as enforced until that integration is deployed and
+tested.
+
+### Test credential custody and deployment boundary
+
+Store only names and locations here; secret values, signatures, private keys,
+and API keys must never be committed or pasted into run evidence.
+
+| Credential/configuration | Runtime location | Notes |
+| --- | --- | --- |
+| CP principal HMAC for `integration-telegram-ux-v1` | Cloudflare secret `PRINCIPAL_SECRET_TELEGRAM_UX` on the isolated CP test Worker; operator recovery copy in macOS Keychain service `trained-assist-cp-test-principal-hmac-v1`, account `integration-telegram-ux-v1` | The test-specific secret takes precedence only for this principal. Shared `PRINCIPAL_SECRET` remains unchanged. |
+| CP → Runner API credential | Cloudflare secret `RUNNER_API_KEY_TELEGRAM_UX` on the isolated CP test Worker; verifier is the Runner test key registry | Never store the raw API key in docs or source. |
+| CP → Host discovery Bearer | Cloudflare secret `MCP_TEST_AUTH_TOKEN` on the isolated CP test Worker | Discovery-only; does not authorize `tools/call`. |
+| Host discovery Bearer and invocation policy | `MCP_TEST_AUTH_TOKEN` is a Cloudflare Worker secret on `trained-assist-mcp-host-test-160`. `MCP_TEST_PRINCIPAL_ID`, `MCP_TEST_EXPIRES_AT`, and `MCP_TEST_RUNNER_PUBLIC_JWK` are live Host Worker settings. | Expiry and public JWK are not fully represented in checked-in Worker configuration yet; reconcile them into reviewed deployment config without placing the Bearer or Runner private key there. |
+| Runner invocation-signing private key and Registry test token | Mode-0600 env file `/etc/agent-runner/agent-runner-api-mcp-test.env` on France VM2, consumed by the isolated `agent-runner-api-mcp-test.service` | Host receives only the public JWK. The test Registry token is separately scoped and expiring. This service currently dispatches to the external Azure worker; it is not the local-France OpenCode binding. |
+| Model Ladder bearer | Canonical current value: GCP Secret Manager `alesa-personal-assistent/LLM_LADDER_TOKEN`; Cloudflare secret `LADDER_TOKEN` on `trained-assist-llm-ladder`; the isolated France test Runner receives it as `OPENCODE_LADDER_TOKEN` and `AGENT_API_ENV.LLM_LADDER_TOKEN` | 2026-10-06 rotation added a temporary Cloudflare `LADDER_TOKEN_PREVIOUS` overlap so existing clients continue to work while they migrate. The previous value remains accepted; remove it only after consumer inventory and migration. Never expose either value. |
+
+Ladder code deploys through its GitHub Actions workflow. Its first post-merge
+revision check saw a stale response after deploy; the rerun completed green,
+including the public revision check. The
+isolated CP/Runner test service and VM env are configured manually. Host expiry
+and public-JWK settings also lack a complete checked-in deployment source. A
+repository-driven release for the France/Russia worker chain is therefore not
+yet established.
