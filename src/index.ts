@@ -125,6 +125,7 @@ export interface Env {
   CONNECTED_APP_REDIRECT_URIS?: string;
   CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED?: string;
   CONNECTED_APP_TELEGRAM_GATEWAY_KEY?: string;
+  CONNECTED_APP_START_URLS?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -1065,6 +1066,7 @@ const store = new TaskStore(env.DB);
           issuer: env.CONNECTED_APP_ISSUER,
           gatewayUrl: env.GATEWAY_DELIVERY_URL,
           gatewaySecret: env.GATEWAY_DELIVERY_SECRET,
+          startUrls: env.CONNECTED_APP_START_URLS,
         });
       }
       if (url.pathname.startsWith('/v1/connected-app-sessions/')) {

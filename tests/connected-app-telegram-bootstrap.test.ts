@@ -5,7 +5,8 @@ import { telegramBootstrapRequest, telegramPlatformSessionResolver, sendPrivateL
 
 const issuer = 'https://control.example.invalid';
 const gatewayKey = 'telegram-gateway-test-key-with-32-chars';
-const config = { enabled: 'true', gatewayKey, issuer };
+const config = { enabled: 'true', gatewayKey, issuer,
+  startUrls: JSON.stringify({ 'recruiting-web': 'https://recruiting.example.invalid/auth/connected/start' }) };
 const bot = 'bot_recruiting';
 const user = '123456789';
 const chat = 123456789;
@@ -107,6 +108,12 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     expect(accepted.status).toBe(303);
     const browserCookie = accepted.headers.get('set-cookie')?.split(';')[0] ?? '';
     expect(browserCookie).toMatch(/^__Host-ta_platform=[a-f0-9]{64}$/);
+    expect(accepted.headers.get('location')).toBe('/v1/connected-app-bootstrap/apps');
+    const landing = await telegramBootstrapRequest(new Request(`${issuer}/v1/connected-app-bootstrap/apps`, {
+      headers: { cookie: browserCookie },
+    }), env.DB, config);
+    expect(landing.status).toBe(200);
+    expect(await landing.text()).toContain('https://recruiting.example.invalid/auth/connected/start');
     expect((await redeem(link, csrf, csrfCookie)).status).toBe(403);
     const resolver = telegramPlatformSessionResolver(env.DB);
     const resolved = await resolver(new Request(`${issuer}/v1/connected-app-sessions/authorize`, {

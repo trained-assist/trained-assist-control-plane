@@ -4,6 +4,7 @@ import type { PlatformSessionResolver, VerifiedPlatformSession } from './session
 type Audience = keyof typeof contract.audiences;
 export type TelegramBootstrapConfig = {
   enabled?: string; gatewayKey?: string; issuer?: string; gatewayUrl?: string; gatewaySecret?: string;
+  startUrls?: string;
 };
 type Binding = { principal_id: string; profile_id: string; enabled: number };
 type Challenge = { bot_id: string; telegram_user_id: string; principal_id: string; profile_id: string;
@@ -50,6 +51,22 @@ function origin(config: TelegramBootstrapConfig): string | null {
       ? url.origin : null;
   } catch { return null; }
 }
+function appStarts(raw: string | undefined): Partial<Record<Audience, string>> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const result: Partial<Record<Audience, string>> = {};
+    for (const [audience, value] of Object.entries(parsed)) {
+      if (!Object.hasOwn(contract.audiences, audience) || typeof value !== 'string') continue;
+      const url = new URL(value);
+      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+          url.pathname !== '/auth/connected/start' || url.href !== value) continue;
+      result[audience as Audience] = value;
+    }
+    return result;
+  } catch { return {}; }
+}
 async function hasMembership(db: D1Database, principalId: string, profileId: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM connected_app_memberships
     WHERE principal_id = ? AND profile_id = ? AND enabled = 1 LIMIT 1`)
@@ -91,11 +108,13 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
   const url = new URL(req.url);
   const path = url.pathname;
   const now = Math.floor(Date.now() / 1000);
+  const starts = appStarts(config.startUrls);
   if (path === '/v1/connected-app-bootstrap/telegram/start') {
     if (req.method !== 'POST') return json(405, { error: 'method not allowed' });
     if (!config.gatewayKey || config.gatewayKey.length < 32 ||
         !equal(req.headers.get('authorization')?.replace(/^Bearer /, '') ?? '', config.gatewayKey))
       return json(401, { error: 'unauthorized' });
+    if (!Object.keys(starts).length) return json(503, { error: 'app links unavailable' });
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     const botId = body?.botId, updateId = body?.updateId, userId = body?.telegramUserId;
     const chatId = body?.chatId;
@@ -166,8 +185,17 @@ export async function telegramBootstrapRequest(req: Request, db: D1Database, con
         .bind(await hash(sessionToken), sessionId, now, now + SESSION_AGE, digest, now),
     ]);
     if (saved.at(-1)?.meta.changes !== 1) return html(403, 'Ссылка устарела');
-    return new Response(null, { status: 303, headers: { ...noStore, location: '/',
+    return new Response(null, { status: 303, headers: { ...noStore, location: '/v1/connected-app-bootstrap/apps',
       'set-cookie': `${COOKIE}=${sessionToken}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_AGE}` } });
+  }
+  if (path === '/v1/connected-app-bootstrap/apps' && req.method === 'GET') {
+    const verified = await telegramPlatformSessionResolver(db)(req);
+    if (!verified) return html(401, 'Войдите по новой ссылке из Telegram.');
+    const links = Object.entries(starts).filter(([audience]) =>
+      Object.hasOwn(verified.grants, audience)).map(([audience, href]) =>
+      `<li><a href="${href}">${audience === 'recruiting-web' ? 'Рекрутинг' : 'CRM'}</a></li>`).join('');
+    if (!links) return html(403, 'Нет доступных приложений.');
+    return html(200, `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Приложения</title><h1>Открыть приложение</h1><ul>${links}</ul></html>`);
   }
   if (path === '/v1/connected-app-bootstrap/logout' && req.method === 'GET') {
     const csrf = token();
