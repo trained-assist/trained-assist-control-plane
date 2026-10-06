@@ -134,5 +134,7 @@ describe('connected app identity opt-in D1 runtime', () => {
       .bind('user_demo_001', 'profile_reviewed', 'recruiting-web').run();
     expect(await (await introspect(bearer)).json()).toEqual({ active: false });
     expect((await issue(sessionId)).status).toBe(403);
+    await membership('profile_reviewed', ['recruiting.responses.read']);
+    expect(await (await introspect(bearer)).json()).toEqual({ active: false });
   });
 });
