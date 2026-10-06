@@ -33,6 +33,7 @@ import type { CatalogBrief } from './brief/brief-types';
 import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
 import type { FastPathContinuationRequest } from '../output/continuation';
 import { routeCommunicationV1, type CommunicationV1Deps } from './communication-v1';
+import type { SelectedMcpInstruction } from './mcp-catalogue-types';
 
 export interface RouteServiceDeps {
   communicationV1?: CommunicationV1Deps;
@@ -50,6 +51,7 @@ export interface RouteServiceDeps {
 }
 
 export interface RouteResult {
+  mcpInstruction?: SelectedMcpInstruction;
   agentInstructions?: string;
   rendering?: { source: 'communication_writer' | 'deterministic'; failure: string | null };
   decision: RoutingDecision;

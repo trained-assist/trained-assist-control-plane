@@ -384,6 +384,7 @@ async function handleRouteRoute(
   let result = saved ?? await routeRequest(
     {
       envelope: {
+        generation: task.generation,
         principalId: principal.principalId,
         profileId: task.profile_id,
         userTaskId: task.id,
