@@ -307,6 +307,16 @@ const authorizeTaskRoute = async (
   return task;
 };
 
+const authorizePrincipalScope = async (
+  store: TaskStore,
+  req: Request,
+  scope: AdmissionScope,
+  auth: PrincipalAuth,
+): Promise<void> => {
+  const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
+  requirePermission(principal, principal.profileId, scope);
+};
+
 const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: NonNullable<Awaited<ReturnType<typeof inputManifestForTask>>>, ref: string, version: string): Promise<Response> => {
   const bufferToken = String(env.INGRESS_BUFFER_TOKEN ?? '').trim();
   if (!env.INGRESS_BUFFER || !bufferToken) return json({ error: 'input artifact transport unavailable' }, 503);
@@ -1347,8 +1357,11 @@ const store = new TaskStore(env.DB);
         return json({ deliveryId: delivery.id, status: delivery.status, queued }, queued ? 201 : 200);
       }
       if (url.pathname === '/deliveries/deliver') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
+        const adapter = await resolveDeliveryAdapter(env);
+        if (!adapter) return json({ error: 'delivery adapter not configured' }, 503);
         const owner = (body.owner as string | undefined) ?? 'local-worker';
-        const result = await deliverOnce(store, owner, localDeliveryAdapter, {
+        const result = await deliverOnce(store, owner, adapter, {
           taskId: (body.taskId as string | undefined) ?? null,
           channel: (body.channel as string | undefined) ?? null,
           maxAttempts: (body.maxAttempts as number | undefined) ?? 3,
