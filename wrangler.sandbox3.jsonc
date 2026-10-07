@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trained-assist-cp-sandbox3",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "services": [
+    { "binding": "COMMUNICATION_SERVICE", "service": "trained-assist-communication-v1-sandbox" },
+    { "binding": "REGISTRY_MCP_HOST_SERVICE", "service": "trained-assist-mcp-host-test-160" },
+    { "binding": "INGRESS_BUFFER", "service": "trained-assist-ingress-buffer-sandbox" }
+  ],
+  "d1_databases": [{ "binding": "DB", "database_name": "ta-sandbox3-taskstore", "database_id": "1e1b8108-9186-43e2-8e50-436598233165", "migrations_dir": "migrations" }],
+  "workflows": [{ "name": "ta-sandbox3-task-workflow", "binding": "TASK_WORKFLOW", "class_name": "TaskWorkflow" }],
+  "vars": {
+    "ROUTER_SELECTOR": "communication_v1",
+    "ROUTER_SELECTOR_NAMES_ONLY": "true",
+    "NATIVE_CANCEL_CONFIRMATION": "true",
+    "ROUTER_CONTINUATION_ENABLED": "true",
+    "ROUTER_AGENT_ALLOWED": "true",
+    "ROUTER_AGENT_ENGINE": "eu-vm-agent-run",
+    "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-sandbox3-v1\":{\"policy\":\"generic_text_v1\",\"runnerKeyBinding\":\"RUNNER_API_KEY_SANDBOX3\",\"hostMcpBinding\":\"registry-mcp-test-160-read\"}}",
+    "RUN_SPEC_REPOSITORY": "{\"fullName\":\"vovalikessmoothy-png/opencode-gha-runner\"}",
+    "RUN_SPEC_ENV_ALLOWLIST": "LLM_LADDER_TOKEN",
+    "RUN_SPEC_OUTPUTS": "[{\"path\":\"outputs/category-results.csv\",\"name\":\"Category totals\",\"mime\":\"text/csv\"}]",
+    "RUN_SPEC_TIMEOUT_MS": "300000",
+    "RUN_SPEC_MAX_OUTPUT_BYTES": "1048576",
+    "RUN_SPEC_MAX_LOG_BYTES": "1048576",
+    "RUN_SPEC_STARTUP_TIMEOUT_MS": "600000",
+    "PILOT_ENABLED": "true",
+    "PILOT_COHORT_PROFILE_IDS": "integration-sandbox3-v1",
+    "DELIVERY_ADAPTER": "local"
+  }
+}
