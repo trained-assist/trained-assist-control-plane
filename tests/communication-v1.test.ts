@@ -3,7 +3,7 @@ import { env } from './env';
 import { TaskStore, FencedError } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port';
 import { communicationSelector, communicationWriter, SelectorError } from '../src/router/communication-client';
-import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from '../src/router/communication-v1';
+import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth, type SystemHealthReport } from '../src/router/communication-v1';
 import { deriveAuthorization } from '../src/router/authorization';
 import { routeRequest } from '../src/router/service';
 import type { RouteResult } from '../src/router/service';
@@ -176,6 +176,61 @@ describe('v1 routing', () => {
 });
 
 describe('Task Store and Output ownership', () => {
+  it('carries prior conversation turns with task IDs from intake into MCP routing and agent instructions', async () => {
+    const store = new TaskStore(env.DB);
+    const intake = new IntakeService(store);
+    const conversationId = nextId();
+    const priorRequestId = nextId();
+    const currentRequestId = nextId();
+    const priorFact = `phrase-${crypto.randomUUID()}`;
+    await store.upsertPrincipal({
+      principalId: 'selector-principal',
+      profileId: 'selector-profile',
+      scopes: ['tasks:intake'],
+    });
+
+    const prior = await intake.admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1,
+      requestId: priorRequestId,
+      profileId: 'selector-profile',
+      conversationRef: conversationId,
+      inputItems: [{ text: `Запомни кодовую фразу ${priorFact}` }],
+    });
+    createdIds.push(prior.userTaskId);
+    await store.commit(prior.userTaskId, 1, { status: 'done', result: { answer: `Сохранил ${priorFact}` } });
+
+    const current = await intake.admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1,
+      requestId: currentRequestId,
+      profileId: 'selector-profile',
+      conversationRef: conversationId,
+      inputItems: [{ text: 'Какую кодовую фразу я просил запомнить?' }],
+    });
+    createdIds.push(current.userTaskId);
+    expect(current.conversationId).toBe(conversationId);
+    expect(current.userTaskId).not.toBe(prior.userTaskId);
+
+    const currentTask = await store.requireTask(current.userTaskId);
+    const context = await durableConversationContext(store, currentTask);
+    let capturedSelectorPayload: Record<string, unknown> | null = null;
+    const select = vi.fn(async (payload: Record<string, unknown>) => {
+      capturedSelectorPayload = payload;
+      return selection('agent')();
+    });
+    const input = await routingInput('Какую кодовую фразу я просил запомнить?', current.userTaskId);
+    input.envelope.conversationId = conversationId;
+    input.prepared.durableContext = context;
+    const result = await routeRequest(input, { communicationV1: { select, health: healthy } });
+
+    const selectorPayload = capturedSelectorPayload as unknown as { dialog_context: { history: Array<{ id: string; text: string }> } };
+    expect(selectorPayload.dialog_context.history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `${prior.userTaskId}:input`, text: expect.stringContaining(priorFact) }),
+      expect.objectContaining({ id: `${prior.userTaskId}:result`, text: expect.stringContaining(priorFact) }),
+    ]));
+    expect(result.agentInstructions).toContain(priorFact);
+    expect(result.agentInstructions).toContain(prior.userTaskId);
+  });
+
   it('preserves full conversation inputs/results and excludes foreign profiles', async () => {
     const store = new TaskStore(env.DB);
     const conversationId = nextId();
@@ -329,5 +384,110 @@ describe('Task Store and Output ownership', () => {
     expect(launched.instructions).toContain(goal);
     expect(launched.instructions.match(/\[work-style:v1\]/g)).toHaveLength(1);
     expect(launched.instructions).toContain('Режим запуска: auto');
+  });
+});
+
+describe('system_health: проба Error Watcher', () => {
+  const watcherEnv = { ERROR_WATCHER_URL: 'https://watcher.test/', ERROR_WATCHER_KEY: 'wk-1' };
+
+  const selectorFetch = async (_url: unknown, init?: RequestInit) => {
+    const rpc = JSON.parse(String(init?.body));
+    const data = rpc.params.name === 'resolve_user_intent'
+      ? { user_goal: 'Проверить работоспособность помощника.', decision: 'system_health' }
+      : { status: 'generated', message_text: rpc.params.arguments.context.verified_reply, context_revision: rpc.params.arguments.context_revision };
+    return Response.json({ id: rpc.id, result: { structuredContent: data } });
+  };
+
+  async function systemHealthRequest() {
+    const store = new TaskStore(env.DB);
+    const id = nextId();
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:read', 'tasks:control'] });
+    await store.admitTask({ id, profileId: 'selector-profile', goal: 'Работает?', userValue: { inputItems: [{ text: 'Работает?' }] } });
+    const signature = await signPrincipal('selector-principal', 'test-principal-secret');
+    const request = () => new Request('https://control.example.test/route', { method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature }, body: JSON.stringify({ taskId: id, continue: true }) });
+    const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential', ERROR_WATCHER_URL: 'https://watcher.test', ERROR_WATCHER_KEY: 'wk-1' };
+    return { request, bindings };
+  }
+
+  it('GET /health с ключом и scope error:read читает статус, инциденты и устаревшие источники', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ status: 'degraded', reasons: ['stale_source'], alarmId: 'alarm-7', summary: { openIncidents: 3, staleSources: ['sheets-sync'] } }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await probeWatcherHealth(watcherEnv)).toEqual({
+      watcher: 'degraded',
+      watcherAlarmId: 'alarm-7',
+      watcherReasons: ['stale_source'],
+      watcherOpenIncidents: 3,
+      watcherStaleSources: ['sheets-sync'],
+    });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://watcher.test/health');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['x-watcher-key']).toBe('wk-1');
+    expect(headers['x-watcher-scopes']).toBe('error:read');
+    expect(init.signal).toBeTruthy();
+  });
+
+  it.each([{ ERROR_WATCHER_URL: 'https://watcher.test' }, { ERROR_WATCHER_KEY: 'wk-1' }])('без пары URL+ключ запрос не выполняется: %j', async (partial) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await probeWatcherHealth(partial)).toMatchObject({ watcher: 'not_configured', watcherAlarmId: null, watcherOpenIncidents: 0, watcherStaleSources: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 503])('не-200 ответ вотчера → not_configured', async (status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unavailable', { status })));
+    expect((await probeWatcherHealth(watcherEnv)).watcher).toBe('not_configured');
+  });
+
+  it('обрыв сети → not_configured', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down'); }));
+    expect(await probeWatcherHealth(watcherEnv)).toMatchObject({ watcher: 'not_configured', watcherReasons: [], watcherOpenIncidents: 0, watcherStaleSources: [] });
+  });
+
+  it('таймаут пробы → not_configured', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: unknown, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('timeout', 'TimeoutError')));
+    })));
+    expect((await probeWatcherHealth(watcherEnv, 5)).watcher).toBe('not_configured');
+  });
+
+  it('ответ system_health несёт снимок пробы вотчера', async () => {
+    const health = async () => ({ runner: 'reachable' as const, checkedAt: '2026-10-05T10:00:00Z', watcher: 'degraded' as const, watcherAlarmId: 'alarm-7', watcherReasons: ['stale_source'], openIncidents: 3, staleSources: ['sheets-sync'] });
+    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select: selection('system_health'), health } });
+    expect(result.reply?.health).toEqual({ runner: 'reachable', watcher: 'degraded', openIncidents: 3, staleSources: ['sheets-sync'] });
+    expect(result.reply?.text).toContain('Error Watcher — деградирован; открытых инцидентов: 3; устаревшие источники: sheets-sync; причины: stale_source');
+    expect(result.reply?.evidenceRefs).toContain('error_watcher:degraded:alarm-7');
+  });
+
+  it('без данных о вотчере снимок деградирует в not_configured', async () => {
+    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select: selection('system_health'), health: healthy } });
+    expect(result.reply?.health).toEqual({ runner: 'reachable', watcher: 'not_configured', openIncidents: 0, staleSources: [] });
+    expect(result.reply?.text).toContain('Error Watcher — не настроен; открытых инцидентов: 0');
+  });
+
+  it('через /route настроенный вотчер входит в ответ system_health', async () => {
+    const { request, bindings } = await systemHealthRequest();
+    const watcherFetch = vi.fn(async (_url: unknown) => Response.json({ status: 'ok', reasons: [], alarmId: null, summary: { openIncidents: 1, staleSources: ['sheets-sync'] } }));
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => String(url).startsWith('https://watcher.test/') ? watcherFetch(url) : selectorFetch(url, init));
+    const response = await worker.fetch(request(), bindings);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { reply: { text: string; evidenceRefs: string[]; health?: SystemHealthReport } };
+    expect(watcherFetch).toHaveBeenCalledTimes(1);
+    expect(body.reply?.health).toEqual({ runner: 'not_configured', watcher: 'ok', openIncidents: 1, staleSources: ['sheets-sync'] });
+    expect(body.reply?.text).toContain('Error Watcher — в норме; открытых инцидентов: 1; устаревшие источники: sheets-sync');
+    expect(body.reply?.evidenceRefs.some((ref) => ref.startsWith('error_watcher:ok:'))).toBe(true);
+  });
+
+  it('через /route недоступный вотчер → not_configured и system_health отвечает 200', async () => {
+    const { request, bindings } = await systemHealthRequest();
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      if (String(url).startsWith('https://watcher.test/')) throw new Error('watcher unreachable');
+      return selectorFetch(url, init);
+    });
+    const response = await worker.fetch(request(), bindings);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { reply: { text: string; health?: SystemHealthReport } };
+    expect(body.reply?.health).toEqual({ runner: 'not_configured', watcher: 'not_configured', openIncidents: 0, staleSources: [] });
+    expect(body.reply?.text).toContain('Error Watcher — не настроен');
   });
 });

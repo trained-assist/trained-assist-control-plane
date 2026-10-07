@@ -61,11 +61,43 @@ export function agentConversationInstructions(input: Pick<PreparedInput, 'text' 
   return parts.join('\n\n');
 }
 
+export type WatcherStatus = 'ok' | 'degraded' | 'failing' | 'not_configured';
+
+export interface SystemHealthCheck {
+  runner: 'reachable' | 'unreachable' | 'not_configured' | 'unknown';
+  checkedAt: string;
+  watcher?: WatcherStatus;
+  watcherAlarmId?: string | null;
+  watcherReasons?: string[];
+  openIncidents?: number;
+  staleSources?: string[];
+}
+
+export interface SystemHealthReport {
+  runner: SystemHealthCheck['runner'];
+  watcher: WatcherStatus;
+  openIncidents: number;
+  staleSources: string[];
+}
+
+export interface WatcherHealthEnv {
+  ERROR_WATCHER_URL?: string;
+  ERROR_WATCHER_KEY?: string;
+}
+
+export interface WatcherHealthReport {
+  watcher: WatcherStatus;
+  watcherAlarmId: string | null;
+  watcherReasons: string[];
+  watcherOpenIncidents: number;
+  watcherStaleSources: string[];
+}
+
 export interface CommunicationV1Deps {
   hostMcp?: HostMcpRoutingDeps;
   namesOnly?: boolean;
   select: (input: Record<string, unknown>) => Promise<IntentSelection>;
-  health: () => Promise<{ runner: 'reachable' | 'unreachable' | 'not_configured' | 'unknown'; checkedAt: string }>;
+  health: () => Promise<SystemHealthCheck>;
   write?: (input: Record<string, unknown>) => Promise<string>;
 }
 
@@ -80,6 +112,37 @@ export async function probeRunnerHealth(adapter: { status: (runId: string) => Pr
     finally { clearTimeout(timer); }
   }
   return { runner, checkedAt: new Date().toISOString() };
+}
+
+const WATCHER_SCOPES = 'error:read';
+
+export async function probeWatcherHealth(env: WatcherHealthEnv, timeoutMs = 5_000): Promise<WatcherHealthReport> {
+  const unavailable: WatcherHealthReport = { watcher: 'not_configured', watcherAlarmId: null, watcherReasons: [], watcherOpenIncidents: 0, watcherStaleSources: [] };
+  const url = env.ERROR_WATCHER_URL?.trim();
+  const key = env.ERROR_WATCHER_KEY?.trim();
+  if (!url || !key) return unavailable;
+  try {
+    const response = await fetch(`${url.replace(/\/+$/, '')}/health`, {
+      headers: { 'x-watcher-key': key, 'x-watcher-scopes': WATCHER_SCOPES },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return unavailable;
+    const body = await response.json() as { status?: unknown; reasons?: unknown; alarmId?: unknown; summary?: { openIncidents?: unknown; staleSources?: unknown } };
+    if (body.status !== 'ok' && body.status !== 'degraded' && body.status !== 'failing') return unavailable;
+    const reasons = Array.isArray(body.reasons) ? body.reasons.filter((entry): entry is string => typeof entry === 'string') : [];
+    const stale = body.summary?.staleSources;
+    const staleSources = Array.isArray(stale) ? stale.filter((entry): entry is string => typeof entry === 'string') : [];
+    const openIncidents = Number(body.summary?.openIncidents ?? 0);
+    return {
+      watcher: body.status,
+      watcherAlarmId: typeof body.alarmId === 'string' ? body.alarmId : null,
+      watcherReasons: reasons,
+      watcherOpenIncidents: Number.isFinite(openIncidents) ? openIncidents : 0,
+      watcherStaleSources: staleSources,
+    };
+  } catch {
+    return unavailable;
+  }
 }
 
 export async function routeCommunicationV1(input: RoutingInput, deps: CommunicationV1Deps): Promise<RouteResult> {
@@ -238,7 +301,16 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       let health: Awaited<ReturnType<CommunicationV1Deps['health']>>;
       try { health = await deps.health(); } catch { health = { runner: 'unknown', checkedAt: new Date().toISOString() }; }
       const labels = { reachable: 'доступен', unreachable: 'недоступен', not_configured: 'не настроен', unknown: 'проверка не завершена' };
-      reply = { text: `Проверка ${health.checkedAt}: control plane отвечает, Task Store прочитан; Runner API — ${labels[health.runner]}. Готовность движка, инструментов и доставка в канал этой проверкой не подтверждены.`, evidenceRefs: [`task_store:${input.envelope.userTaskId}`, `runner_api:${health.runner}:${health.checkedAt}`, `communication:resolve_user_intent:${bundleVersion}`], mode: 'deterministic-handler' };
+      const watcherLabels: Record<WatcherStatus, string> = { ok: 'в норме', degraded: 'деградирован', failing: 'со сбоями', not_configured: 'не настроен' };
+      const report: SystemHealthReport = {
+        runner: health.runner,
+        watcher: health.watcher ?? 'not_configured',
+        openIncidents: health.openIncidents ?? 0,
+        staleSources: health.staleSources ?? [],
+      };
+      const reasons = health.watcherReasons ?? [];
+      const watcherText = `${watcherLabels[report.watcher]}; открытых инцидентов: ${report.openIncidents}${report.staleSources.length ? `; устаревшие источники: ${report.staleSources.join(', ')}` : ''}${reasons.length ? `; причины: ${reasons.join('; ')}` : ''}`;
+      reply = { text: `Проверка ${health.checkedAt}: control plane отвечает, Task Store прочитан; Runner API — ${labels[health.runner]}; Error Watcher — ${watcherText}. Готовность движка, инструментов и доставка в канал этой проверкой не подтверждены.`, evidenceRefs: [`task_store:${input.envelope.userTaskId}`, `runner_api:${health.runner}:${health.checkedAt}`, `error_watcher:${report.watcher}:${health.watcherAlarmId ?? health.checkedAt}`, `communication:resolve_user_intent:${bundleVersion}`], mode: 'deterministic-handler', health: report };
     } else {
       const entries = visible.map((entry) => `${entry.title} (${entry.id}): ${entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'доступ выдан; работоспособность интеграции не проверена' : 'требует подключения и выдачи доступа') : 'зарегистрировано в каталоге'}`);
       reply = { text: `Доступные quick answers: состояние системы и описание возможностей. Остальные задачи передаются агенту. Каталог ${input.catalog.version}:\n${entries.join('\n')}`, evidenceRefs: [`catalog:${input.catalog.version}`, input.authorization.snapshotRef], mode: 'deterministic-handler' };

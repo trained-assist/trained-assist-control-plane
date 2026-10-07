@@ -29,7 +29,7 @@ import {
  * Триггер идёт раз в минуту; 30 минут без отметки = планировщик умер молча.
  */
 const WATCHDOG_STALE_MS = 30 * 60_000;
-import { logStructured } from './logging/structured-log';
+import { logError, logStructured, resolveErrorPublisher, setErrorPublisher } from './logging';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
@@ -65,7 +65,7 @@ import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
 import { communicationSelector, communicationWriter } from './router/communication-client';
-import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
+import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth } from './router/communication-v1';
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
 import { observeHealthCatalogue, parseHealthCatalogue } from './diagnostics/health-catalogue';
@@ -114,6 +114,12 @@ export interface Env {
   GATEWAY_DELIVERY_URL?: string;
   /** Секрет шлюза для реального адаптера доставки. */
   GATEWAY_DELIVERY_SECRET?: string;
+  /**
+   * Error Watcher push intake (I2): URL и ключ источника. Без пары
+   * ERROR_WATCHER_URL+ERROR_WATCHER_KEY публикация error-событий выключена.
+   */
+  ERROR_WATCHER_URL?: string;
+  ERROR_WATCHER_KEY?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
@@ -485,6 +491,17 @@ async function handleRouteRoute(
     env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
   const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
   const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
+  const systemHealth = async () => {
+    const [runner, watcher] = await Promise.all([probeRunnerHealth(runtime.adapter), probeWatcherHealth(env)]);
+    return {
+      ...runner,
+      watcher: watcher.watcher,
+      watcherAlarmId: watcher.watcherAlarmId,
+      watcherReasons: watcher.watcherReasons,
+      openIncidents: watcher.watcherOpenIncidents,
+      staleSources: watcher.watcherStaleSources,
+    };
+  };
 
   let result = saved ?? await routeRequest(
     {
@@ -532,7 +549,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter), hostMcp } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: systemHealth, hostMcp } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
@@ -1144,6 +1161,7 @@ async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: st
  */
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    setErrorPublisher(resolveErrorPublisher(env));
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
      const port = workflowPortOf(env, store);
@@ -1745,6 +1763,7 @@ const startResult = await port.submit(input);
    * её и алертит, если отметка устарела — иначе планировщик может умереть молча.
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    setErrorPublisher(resolveErrorPublisher(env));
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
 
@@ -1782,13 +1801,13 @@ const startResult = await port.submit(input);
     // смешанный с «просроченный вход»: у них разные владельцы и разные действия.
     const last = await store.lastWatchdogRun();
     if (!last || Date.now() - last.last_run_at > WATCHDOG_STALE_MS) {
-      console.error(JSON.stringify({
+      logError({
         event: 'intake.watchdog_scheduler_stale',
         level: 'error',
         reason: 'scheduler_not_running',
         lastAt: last?.last_run_at ?? null,
         ageMs: last ? Date.now() - last.last_run_at : null,
-      }));
+      });
     }
 
     if (scheduleError !== undefined) throw scheduleError;

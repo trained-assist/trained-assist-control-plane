@@ -33,7 +33,7 @@ import type { CatalogBrief } from './brief/brief-types';
 import { buildExecutionContext } from './brief/execution-context';
 import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
 import type { FastPathContinuationRequest } from '../output/continuation';
-import { routeCommunicationV1, type CommunicationV1Deps } from './communication-v1';
+import { routeCommunicationV1, type CommunicationV1Deps, type SystemHealthReport } from './communication-v1';
 import type { SelectedMcpInstruction } from './mcp-catalogue-types';
 
 export interface RouteServiceDeps {
@@ -59,8 +59,8 @@ export interface RouteResult {
   rendering?: { source: 'communication_writer' | 'deterministic'; failure: string | null };
   decision: RoutingDecision;
   decisionId: string;
-  /** Пользовательский ответ, если он разрешён решением. */
-  reply: { text: string; evidenceRefs: string[]; mode: RouteMode } | null;
+  /** Пользовательский ответ, если он разрешён решением; system_health несёт снимок пробы. */
+  reply: { text: string; evidenceRefs: string[]; mode: RouteMode; health?: SystemHealthReport } | null;
   /** Вопрос пользователю (clarify/required_input). */
   askUser: { question: string; missingFields: string[] } | null;
   /** Заявка исполнителю; сам запуск — вне модуля. */
