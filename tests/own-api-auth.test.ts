@@ -133,3 +133,46 @@ describe('principal-auth: граница HTTP-слоя', () => {
     expect(body.userTaskId).toMatch(/^ut-/);
   });
 });
+
+describe('protected HTTP route scopes', () => {
+  const unauthenticatedRoutes: Array<{ name: string; path: string; method: string; body?: unknown }> = [
+    { name: '/recover', path: '/recover', method: 'POST', body: {} },
+    { name: '/connection-lost', path: '/connection-lost', method: 'POST', body: { runId: 'missing-run' } },
+    { name: '/heartbeat', path: '/heartbeat', method: 'POST', body: { runId: 'missing-run' } },
+    { name: '/receipt', path: '/receipt?taskId=missing-task', method: 'GET' },
+    { name: '/deliveries/deliver', path: '/deliveries/deliver', method: 'POST', body: {} },
+    { name: '/runner/health', path: '/runner/health', method: 'GET' },
+  ];
+
+  it.each(unauthenticatedRoutes)('rejects anonymous $name before route work', async ({ name, path, method, body }) => {
+    const mod = await import('../src/index');
+    if (name === '/receipt') {
+      const taskId = `anonymous-receipt-${crypto.randomUUID()}`;
+      await new TaskStore(env.DB).admitTask({ id: taskId, profileId: 'private-profile', goal: 'private receipt' });
+      path = `/receipt?taskId=${taskId}`;
+    }
+    const response = await mod.default.fetch(new Request(`https://cp.test${path}`, {
+      method,
+      ...(body === undefined ? {} : {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    }), { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW });
+    expect(response.status).toBe(401);
+  });
+
+  it('allows the tasks:read owner to read an existing task receipt', async () => {
+    const mod = await import('../src/index');
+    const store = new TaskStore(env.DB);
+    const principalId = `receipt-reader-${crypto.randomUUID()}`;
+    const taskId = `receipt-task-${crypto.randomUUID()}`;
+    await store.upsertPrincipal({ principalId, profileId: 'receipt-profile', scopes: ['tasks:read'] });
+    await store.admitTask({ id: taskId, profileId: 'receipt-profile', goal: 'read my receipt' });
+    const signature = await signPrincipal(principalId, SECRET);
+    const response = await mod.default.fetch(new Request(`https://cp.test/receipt?taskId=${taskId}`, {
+      headers: { 'x-principal': principalId, 'x-principal-sig': signature },
+    }), { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: SECRET });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ userTaskId: taskId, durable: true });
+  });
+});

@@ -1363,8 +1363,17 @@ const store = new TaskStore(env.DB);
       }
       if (url.pathname === '/deliveries/deliver') {
         await authorizePrincipalScope(store, req, 'tasks:control', auth);
+        if (!String(env.DELIVERY_ADAPTER ?? '').trim()) {
+          return json({ error: 'delivery adapter not configured' }, 503);
+        }
+        let adapter: DeliveryAdapter;
+        try {
+          adapter = await resolveDeliveryAdapter(env);
+        } catch {
+          return json({ error: 'delivery adapter not configured' }, 503);
+        }
         const owner = (body.owner as string | undefined) ?? 'local-worker';
-        const result = await deliverOnce(store, owner, localDeliveryAdapter, {
+        const result = await deliverOnce(store, owner, adapter, {
           taskId: (body.taskId as string | undefined) ?? null,
           channel: (body.channel as string | undefined) ?? null,
           maxAttempts: (body.maxAttempts as number | undefined) ?? 3,
