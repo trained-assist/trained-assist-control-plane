@@ -387,6 +387,7 @@ export type DecisionSemanticError =
   | 'capability_mode_not_allowed'
   | 'capability_arguments_not_allowed'
   | 'agent_goal_too_long'
+  | 'agent_context_invalid'
   | 'agent_requires_confirmation_not_declared';
 
 export type DecisionSemanticResult =
@@ -456,6 +457,24 @@ export function validateRecipeDecisionAgainst(
       // подтверждение не может потеряться при reformulation (§11.3).
       return { ok: false, code: 'agent_requires_confirmation_not_declared', field: 'assessment.needsActions' };
     }
+    if (
+      decision.preservedConstraints.length > 8 ||
+      decision.preservedConstraints.some((constraint) => constraint.trim().length === 0 || constraint.length > 160) ||
+      decision.requiredCapabilities.length > 10 ||
+      decision.requiredCapabilities.some((id) => id.trim().length === 0 || id.length > 80)
+    ) {
+      return { ok: false, code: 'agent_context_invalid', field: 'preservedConstraints|requiredCapabilities' };
+    }
+    for (const capabilityId of new Set(decision.requiredCapabilities)) {
+      const capability = ctx.catalog.capabilities.find((entry) => entry.id === capabilityId);
+      if (!capability) return { ok: false, code: 'unknown_capability', field: 'requiredCapabilities' };
+      if (
+        !ctx.authorization.grantedCapabilityIds.includes(capabilityId) ||
+        (capability.integrationId !== null && !ctx.authorization.grantedIntegrationIds.includes(capability.integrationId))
+      ) {
+        return { ok: false, code: 'capability_not_granted', field: 'requiredCapabilities' };
+      }
+    }
     return { ok: true, decision, groundedRefs: [] };
   }
 
@@ -498,5 +517,6 @@ export const DECISION_SEMANTIC_ERROR_CODES: readonly DecisionSemanticError[] = [
   'capability_mode_not_allowed',
   'capability_arguments_not_allowed',
   'agent_goal_too_long',
+  'agent_context_invalid',
   'agent_requires_confirmation_not_declared',
 ];

@@ -20,6 +20,7 @@
 import { TERMINAL_EXECUTOR, type ReasonCode } from '../router/router-types';
 import type { AgentWorkOrder } from '../router/handlers';
 import type { TaskStore } from '../taskstore';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Владелец продолжения работы без контроля: Output (§5a/§11). */
 export const FAST_PATH_CONTINUATION_OWNER = 'output' as const;
@@ -35,6 +36,8 @@ export interface FastPathContinuationRequest {
   goal: string;
   /** Ограничения из исходного текста: reformulation их не отбрасывает (§11.3). */
   preservedConstraints: string[];
+  /** Capability IDs, явно выбранные первым Router-вызовом. */
+  selectedCapabilityIds: string[];
   requiredCapabilities: string[];
   reasonCode: ReasonCode;
   /** Частичный результат host-обработчика: агент его не повторяет. */
@@ -42,6 +45,8 @@ export interface FastPathContinuationRequest {
   authorizationRef: string;
   requiresConfirmation: boolean;
   workOrder: AgentWorkOrder;
+  /** Host-built task instructions плюс безопасный manifest для аудита. */
+  executionContext: { instructions: string; manifest: ExecutionContextManifest };
 }
 
 export type ContinuationRefusal =
@@ -50,7 +55,8 @@ export type ContinuationRefusal =
   | { reason: 'agent_not_allowed_by_policy' }
   | { reason: 'task_terminal' }
   | { reason: 'task_missing' }
-  | { reason: 'executor_not_terminal' };
+  | { reason: 'executor_not_terminal' }
+  | { reason: 'execution_context_missing' };
 
 export type ContinuationOutcome =
   | {
@@ -68,7 +74,7 @@ export type ContinuationOutcome =
 export interface ContinuationPort {
   resume(
     taskId: string,
-    opts: { reason: string; instructions?: string; engine?: string | null; previousRunId?: string | null },
+    opts: { reason: string; instructions?: string; executionContext?: ExecutionContextManifest; engine?: string | null; previousRunId?: string | null },
   ): Promise<{ runId: string; generation: number }>;
 }
 
@@ -115,6 +121,9 @@ export async function continueFastPathEscalation(
   if (request.workOrder.executor !== TERMINAL_EXECUTOR) {
     return { owner: FAST_PATH_CONTINUATION_OWNER, created: false, refusal: { reason: 'executor_not_terminal' } };
   }
+  if (!request.executionContext?.instructions || request.executionContext.manifest.decisionId !== request.decisionId) {
+    return { owner: FAST_PATH_CONTINUATION_OWNER, created: false, refusal: { reason: 'execution_context_missing' } };
+  }
 
   // Идемпотентность: тот же decisionId — та же работа. Второй job/run не создаётся.
   const existing = await deps.store.continuationOf(request.userTaskId, request.decisionId);
@@ -139,7 +148,8 @@ export async function continueFastPathEscalation(
 
   const { runId, generation } = await deps.port.resume(request.userTaskId, {
     reason: `fast_path_escalation:${request.reasonCode}`,
-    instructions: request.goal,
+    instructions: request.executionContext.instructions,
+    executionContext: request.executionContext.manifest,
     engine: TERMINAL_EXECUTOR,
     previousRunId: null,
   });
@@ -173,7 +183,7 @@ function isTerminal(status: string): boolean {
 export function portContinuationPort(port: {
   resume(
     taskId: string,
-    opts: { reason?: string; instructions?: string; engine?: string | null; previousRunId?: string | null },
+    opts: { reason?: string; instructions?: string; executionContext?: ExecutionContextManifest; engine?: string | null; previousRunId?: string | null },
   ): Promise<{ runId: string; generation: number }>;
 }): ContinuationPort {
   return {
@@ -181,6 +191,7 @@ export function portContinuationPort(port: {
       port.resume(taskId, {
         reason: opts.reason ?? 'fast_path_escalation',
         instructions: opts.instructions,
+        executionContext: opts.executionContext,
         engine: opts.engine ?? null,
         previousRunId: opts.previousRunId ?? null,
       }),

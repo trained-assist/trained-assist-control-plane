@@ -72,6 +72,34 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
+  it('passes the CP-pinned ingress manifest separately from workspace snapshot refs', () => {
+    const built = buildRunSpec({ ...baseInput, inputManifest: {
+      manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64),
+    } }, policy);
+    expect(built.spec.ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+      userTaskId: 'ut-abc123',
+      profileId: 'profile-1',
+      runId: 'run_ut-abc123_1',
+      ownerGeneration: 1,
+    });
+    expect(built.spec.input?.refs).toBeUndefined();
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
+  it('rejects an ingress manifest combined with generic refs or an unpinned task', () => {
+    const inputManifest = { manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64) };
+    expect(() => buildRunSpec({ ...baseInput, inputManifest, refs: [{ ref: 'snapshot-1', snapshotId: 'snapshot-1' }] }, policy)).toThrow(/cannot be combined/);
+    expect(() => buildRunSpec({ ...baseInput, inputManifest: { ...inputManifest, manifestRef: 'cp-input-manifest:foreign' } }, policy)).toThrow(/task-scoped/);
+  });
+
   it('snapshotId вне алфавита отклоняется: снимок — не произвольная строка', () => {
     expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '../escape' }] }, policy)).toThrow(RunSpecMappingError);
     expect(() => buildRunSpec({ ...baseInput, refs: [{ ref: 'snap-1', snapshotId: '' }] }, policy)).toThrow(RunSpecMappingError);
@@ -86,7 +114,8 @@ describe('run-spec: сборка по умолчанию', () => {
     const instructions = 'Original context:\n```\n  keep whitespace\n```\n';
     const built = buildRunSpec({ ...baseInput, prompt, instructions }, policy);
     expect(built.promptNormalized).toBe(false);
-    expect(toSubmitRequest(built.spec).input?.inlinePrompt).toBe(`${prompt}\n\nAdditional instructions:\n${instructions}`);
+    expect(toSubmitRequest(built.spec).input?.inlinePrompt).toBe(prompt);
+    expect(toSubmitRequest(built.spec).instructions).toBe(instructions.trim());
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
@@ -259,6 +288,24 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     expect(body['input']).toEqual({ inlinePrompt: 'собери отчёт', refs: [{ ref: 'snap-df1c902a', snapshotId: 'snap-df1c902a' }] });
   });
 
+  it('передаёт только immutable ingress pin в POST /v1/runs', () => {
+    const built = buildRunSpec(baseInput, policy);
+    built.spec.ingressManifest = {
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+      userTaskId: built.spec.userTaskId,
+      profileId: built.spec.profileId,
+      runId: built.spec.runId,
+      ownerGeneration: built.spec.ownerGeneration,
+    };
+    expect(toSubmitRequest(built.spec).ingressManifest).toEqual({
+      contractVersion: 1,
+      manifestRef: 'cp-input-manifest:ut-abc123',
+      manifestVersion: 'a'.repeat(64),
+    });
+  });
+
   it('поля, которые Runner выводит сам, перечислены явно', () => {
     const built = buildRunSpec(baseInput, defaultRunSpecPolicy());
     // Без объявленного MCP его в списке нет — поле честно отсутствует.
@@ -297,7 +344,7 @@ describe('run-spec: удалённый MCP (transport remote)', () => {
   it('хостовая политика RUN_SPEC_MCP собирает remote-сервер и проходит локальную проверку контракта', () => {
     const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
 
-    expect(built.version).toBe('run-spec-v3');
+    expect(built.version).toBe('run-spec-v4');
     expect(built.spec.mcp).toEqual({ servers: [remoteServer()] });
     expect(validateRunSpec(built.spec).ok).toBe(true);
     expect(built.spec.credentialBindings).toBeUndefined();

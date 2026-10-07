@@ -371,7 +371,10 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
       id: taskId,
       profileId: 'profile-from-task-row',
       goal: 'сделай работу',
-      userValue: { artifactRefs: ['artifact://input.md'] },
+      userValue: {
+        artifactRefs: ['artifact://input.md', 'ingress-media-1'],
+        inputArtifacts: [{ ref: 'ingress-media-1', version: 'v1', ownerProfileId: 'profile-from-task-row' }],
+      },
     });
     const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
     const { adapter } = makeFakeRunner({ stdout: ['готово'] });
@@ -402,7 +405,10 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
     expect(spec['ownerGeneration']).toBe(1);
     expect(spec['traceId']).toBe(attempt.id);
     // Клиентское: полное сообщение и разрешённые вложения.
-    expect(spec['input']).toEqual({ inlinePrompt: 'сделай работу', refs: [{ ref: 'artifact://input.md' }] });
+    expect(spec['input']).toEqual({ inlinePrompt: 'сделай работу', refs: [
+      { ref: 'artifact://input.md' },
+      { ref: 'ingress-media-1', version: 'v1' },
+    ] });
     expect((spec['runId'] as string).startsWith('run_')).toBe(true);
   });
 });

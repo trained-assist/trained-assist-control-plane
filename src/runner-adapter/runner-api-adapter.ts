@@ -70,14 +70,10 @@ export interface RunnerResult {
   usage: { status: 'unknown' } | { status: 'known'; usd: number };
   outputRefs: string[];
   persistence: 'pending' | 'persisted' | 'failed' | 'not_required';
+  persistenceReason?: string;
   cleanup: 'pending' | 'completed' | 'failed';
   logPath: string;
-  /**
-   * Конечный текст ответа движка. В контракте Runner'а такого поля нет
-   * (`RunResult` несёт только outcome/exitReason/outputRefs), поэтому текст
-   * извлекается контрольным слоем из событий `log`/stdout — см.
-   * `engine-text.ts`. Отсутствие текста ≠ успех: см. `export_not_persisted`.
-   */
+  /** Fast captured engine answer; event extraction remains the compatibility fallback. */
   text?: string | null;
 }
 

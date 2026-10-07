@@ -14,7 +14,15 @@ import {
   type PlanParams,
   type SubmitInput,
 } from './workflow-port';
-import { IntakeService, resolveDeliveryAdapter, runStuckInputSweep } from './intake';
+import {
+  IngressArtifactRejectedError,
+  IngressArtifactUnavailableError,
+  IntakeService,
+  ingressArtifactVerifierOf,
+  inputManifestForTask,
+  resolveDeliveryAdapter,
+  runStuckInputSweep,
+} from './intake';
 
 /**
  * Насколько устаревшей должна быть отметка планировщика, чтобы это стало инцидентом.
@@ -61,7 +69,10 @@ import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
 import { communicationSelector, communicationWriter } from './router/communication-client';
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
-import { commitQuickAnswer, dispatchAcceptedAgent } from './output/communication-v1';
+import { registryFixtureHostMcp } from './router/registry-test-mcp';
+import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
+import { observeHealthCatalogue, parseHealthCatalogue } from './diagnostics/health-catalogue';
+import { traceTask } from './diagnostics/trace';
 import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
@@ -71,17 +82,27 @@ import {
 } from './output';
 
 export interface Env {
+  HEALTH_DIAGNOSTICS_TOKEN?: string;
+  HEALTH_CATALOGUE_JSON?: string;
+  HEALTH_PROBE_TIMEOUT_MS?: string;
+  HEALTH_CACHE_TTL_MS?: string;
   NATIVE_CANCEL_CONFIRMATION?: string;
   ROUTER_SELECTOR_NAMES_ONLY?: string;
   ROUTER_SELECTOR?: string;
   COMMUNICATION_API_URL?: string;
   COMMUNICATION_SERVICE?: Fetcher;
+  /** Test-only direct Worker binding to the isolated Registry MCP host. */
+  REGISTRY_MCP_HOST_SERVICE?: Fetcher;
   COMMUNICATION_TOKEN?: string;
   COMMUNICATION_TIMEOUT_MS?: string;
   COMMUNICATION_WRITER_TIMEOUT_MS?: string;
   ROUTER_AGENT_ENGINE?: string;
   DB: D1Database;
   TASK_WORKFLOW: Workflow;
+  /** Private service binding to the passive ingress artifact buffer. */
+  INGRESS_BUFFER?: Fetcher;
+  /** Shared secret authorizing CP access to the private ingress buffer. */
+  INGRESS_BUFFER_TOKEN?: string;
   /**
    * 'true' — изолированный preview: scheduled-обработчики не выполняются.
    * Держать тем же флагом, что и в tg-bot, чтобы previews не слали алерты.
@@ -101,6 +122,8 @@ export interface Env {
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
+  /** Test-only Bearer used only by the pinned tools/list discovery binding. */
+  MCP_TEST_AUTH_TOKEN?: string;
   RUN_SPEC_POLICY_PROFILE?: string;
   RUN_SPEC_REPOSITORY?: string;
   RUN_SPEC_INPUT_REFS?: string;
@@ -127,6 +150,12 @@ export interface Env {
   CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED?: string;
   CONNECTED_APP_TELEGRAM_GATEWAY_KEY?: string;
   CONNECTED_APP_START_URLS?: string;
+  /** Dedicated HMAC credential for the isolated Telegram UX test principal. */
+  PRINCIPAL_SECRET_TELEGRAM_UX?: string;
+  /** Dedicated HMAC credential for the isolated integration-v1 sandbox principal. */
+  PRINCIPAL_SECRET_INTEGRATION_V1?: string;
+  /** Dedicated HMAC credential for the test-only Telegram UX sandbox smoke principal. */
+  PRINCIPAL_SECRET_CODEX_SMOKE?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -233,6 +262,22 @@ const json = (value: unknown, status = 200): Response =>
     headers: { 'content-type': 'application/json' },
   });
 
+const diagnosticsJson = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, null, 1), {
+  status,
+  headers: { 'content-type': 'application/json', 'cache-control': 'private, no-store' },
+});
+
+const diagnosticsTokenMatches = (request: Request, configured: string | undefined): boolean => {
+  const expected = configured?.trim() ?? '';
+  const provided = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
+  if (!expected || provided.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < expected.length; index++) difference |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
+  return difference === 0;
+};
+
+const healthCatalogueCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
+
 async function credentialHost(req: Request, env: Env): Promise<string | null> {
   const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
   const trusted = (env.CREDENTIAL_HOST_PRINCIPALS ?? '').split(',').map(value => value.trim()).filter(Boolean);
@@ -244,6 +289,8 @@ const errorStatus = (e: unknown): number => {
   if (e instanceof PrincipalUnauthorizedError) return 401;
   if (e instanceof PrincipalForbiddenError) return 403;
   if (e instanceof EnvelopeConflictError) return 409;
+  if (e instanceof IngressArtifactRejectedError) return 403;
+  if (e instanceof IngressArtifactUnavailableError) return 503;
   if (e instanceof FencedError || e instanceof TerminalStateError) return 409;
   if (e instanceof TaskNotFoundError) return 404;
   if (e instanceof AnswerConflictError || e instanceof AnswerRejectedError) return 409;
@@ -270,6 +317,60 @@ const authorizeTaskRoute = async (
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
   requirePermission(principal, task.profile_id, scope);
   return task;
+};
+
+const authorizePrincipalScope = async (
+  store: TaskStore,
+  req: Request,
+  scope: AdmissionScope,
+  auth: PrincipalAuth,
+): Promise<void> => {
+  const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
+  requirePermission(principal, principal.profileId, scope);
+};
+
+const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: NonNullable<Awaited<ReturnType<typeof inputManifestForTask>>>, ref: string, version: string): Promise<Response> => {
+  const bufferToken = String(env.INGRESS_BUFFER_TOKEN ?? '').trim();
+  if (!env.INGRESS_BUFFER || !bufferToken) return json({ error: 'input artifact transport unavailable' }, 503);
+  const artifact = manifest.inputItems.flatMap((item) => item.artifacts).find((entry) => entry.ref === ref && entry.version === version);
+  if (!artifact) return json({ error: 'input artifact not found' }, 404);
+  const url = new URL('https://ingress-buffer/v1/artifacts/content');
+  url.searchParams.set('profileId', task.profile_id);
+  url.searchParams.set('ref', artifact.ref);
+  url.searchParams.set('version', artifact.version);
+  let response: Response;
+  try {
+    response = await env.INGRESS_BUFFER.fetch(url, { method: 'GET', headers: { authorization: `Bearer ${bufferToken}` } });
+  } catch {
+    return json({ error: 'input artifact transport unavailable' }, 503);
+  }
+  if (response.status === 404) return json({ error: 'input artifact not found' }, 404);
+  if (response.status >= 500) return json({ error: 'input artifact transport unavailable' }, 503);
+  if (!response.ok) return json({ error: 'input artifact access denied' }, 403);
+  const metadataMatches = response.headers.get('x-artifact-ref') === artifact.ref
+    && response.headers.get('x-artifact-version') === artifact.version
+    && response.headers.get('x-artifact-owner-profile-id') === task.profile_id
+    && response.headers.get('x-artifact-size-bytes') === String(artifact.sizeBytes)
+    && response.headers.get('x-artifact-sha256') === artifact.sha256
+    && response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() === artifact.mediaType
+    && response.headers.get('content-length') === String(artifact.sizeBytes);
+  if (!metadataMatches) {
+    await response.body?.cancel();
+    return json({ error: 'input artifact metadata mismatch' }, 409);
+  }
+  return new Response(response.body, {
+    status: 200,
+    headers: {
+      'content-type': artifact.mediaType,
+      'content-length': String(artifact.sizeBytes),
+      'cache-control': 'private, no-store',
+      'x-artifact-ref': artifact.ref,
+      'x-artifact-version': artifact.version,
+      'x-artifact-owner-profile-id': task.profile_id,
+      'x-artifact-size-bytes': String(artifact.sizeBytes),
+      'x-artifact-sha256': artifact.sha256,
+    },
+  });
 };
 
 /**
@@ -391,6 +492,9 @@ async function handleRouteRoute(
   const ordinaryV1 = v1 && !typedSignal;
   if (ordinaryV1) await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
   const durableContext = ordinaryV1 ? await durableConversationContext(store, task) : undefined;
+  const hostMcp = ordinaryV1 && env.REGISTRY_MCP_HOST_SERVICE ? registryFixtureHostMcp({ taskId: task.id, generation: task.generation,
+    profileId: task.profile_id, principalId: principal.principalId }, env.MCP_TEST_AUTH_TOKEN, runtime.policy.mcp,
+    env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
   const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
   const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
 
@@ -440,7 +544,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter) } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter), hostMcp } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
@@ -488,10 +592,15 @@ async function handleRouteRoute(
   const continuation = ordinaryV1 && result.continuation && body.continue === true
     ? env.ROUTER_CONTINUATION_ENABLED === 'true'
       ? runtime.adapter
-        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode')
+        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode', hostMcp)
         : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
     : await issueContinuation(result, env, store, port, body);
+
+  if (ordinaryV1 && result.mcpRefusalCode && !result.continuation) {
+    await persistMcpTaskBlock(store, task, result.mcpRefusalCode);
+  }
+  const taskStatus = result.mcpRefusalCode ? await store.requireTask(task.id) : null;
 
   return json({
     decisionId: result.decisionId,
@@ -499,6 +608,8 @@ async function handleRouteRoute(
     route: result.decision.route,
     mode: result.decision.mode,
     reasonCode: result.decision.reasonCode,
+    ...(result.mcpRefusalCode ? { mcpRefusalCode: result.mcpRefusalCode } : {}),
+    ...(taskStatus ? { taskStatus: { status: taskStatus.status, reasonCode: taskStatus.blocker_reason ?? result.mcpRefusalCode } } : {}),
     degraded: result.decision.degraded,
     degradedNotice: result.decision.degradedNotice,
     rendering: result.rendering,
@@ -1051,7 +1162,11 @@ const store = new TaskStore(env.DB);
     // Проверяющая аутентификация: секрет только в binding, в запросе его нет.
     const auth = principalAuthOf(env as unknown as Record<string, string | undefined>);
      // Конфиг пилота читается из env рантайма (process.env в Workers нет).
-     const intake = new IntakeService(store, new PilotRouter({ env: env as unknown as Record<string, string | undefined> }));
+     const intake = new IntakeService(
+       store,
+       new PilotRouter({ env: env as unknown as Record<string, string | undefined> }),
+       ingressArtifactVerifierOf(env.INGRESS_BUFFER, env.INGRESS_BUFFER_TOKEN),
+     );
     const body: Record<string, unknown> =
       req.method === 'POST' && url.pathname === '/v1/connected-app-sessions/exchange'
         ? Object.fromEntries((await req.formData().catch(() => new FormData())).entries())
@@ -1080,11 +1195,54 @@ const store = new TaskStore(env.DB);
         }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
           ? createAgentProfileAuthorityV1(env.DB) : null);
       }
+      if (url.pathname === '/healthz' || url.pathname === '/health') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
+          ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
+      }
+      if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        if (!diagnosticsTokenMatches(req, env.HEALTH_DIAGNOSTICS_TOKEN)) return diagnosticsJson({ error: 'unauthorized' }, 401);
+        let descriptors;
+        try { descriptors = parseHealthCatalogue(env.HEALTH_CATALOGUE_JSON); }
+        catch { return diagnosticsJson({ error: 'health catalogue unavailable' }, 503); }
+        const environment = url.searchParams.get('environment');
+        const region = url.searchParams.get('region');
+        const serviceId = url.searchParams.get('serviceId');
+        const filtered = descriptors.filter((item) => (!environment || item.environment === environment)
+          && (!region || item.region === region) && (!serviceId || item.serviceId === serviceId));
+        if (url.pathname.endsWith('/catalogue')) return diagnosticsJson({ contractVersion: 1, services: filtered });
+        const timeoutMs = Number(env.HEALTH_PROBE_TIMEOUT_MS ?? '1500');
+        const ttlMs = Number(env.HEALTH_CACHE_TTL_MS ?? '10000');
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10_000
+          || !Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > 60_000) return diagnosticsJson({ error: 'health diagnostics config invalid' }, 503);
+        const cacheKey = JSON.stringify([environment, region, serviceId,
+          filtered.map((descriptor) => [descriptor.serviceId, descriptor.healthUrl, descriptor.readinessUrl, descriptor.deployedRevision])]);
+        const now = Date.now();
+        const cached = healthCatalogueCache.get(cacheKey);
+        if (cached && cached.expiresAt > now) return diagnosticsJson({ contractVersion: 1, cached: true, ...cached.summary });
+        const entries = await observeHealthCatalogue(filtered, { timeoutMs, concurrency: 4 });
+        const statuses = entries.map((entry) => entry.observation.status);
+        const status = statuses.length === 0 ? 'unknown' : statuses.includes('unhealthy') ? 'unhealthy' : statuses.includes('unknown') ? 'unknown'
+          : statuses.includes('degraded') ? 'degraded' : 'healthy';
+        if (cached && entries.length > 0 && statuses.every((value) => value === 'unknown')) {
+          return diagnosticsJson({ contractVersion: 1, cached: true, stale: true, status: 'unknown',
+            observedAt: new Date().toISOString(), sourceObservedAt: cached.summary['observedAt'],
+            reasonCodes: ['stale_cache_served', ...entries.flatMap((entry) => entry.observation.reasonCodes)],
+            services: cached.summary['services'] });
+        }
+        const summary = { status, observedAt: new Date().toISOString(), reasonCodes: entries.length ? [] : ['no_services_configured'], services: entries };
+        const jitteredTtl = Math.round(ttlMs * (0.9 + Math.random() * 0.2));
+        healthCatalogueCache.set(cacheKey, { expiresAt: now + jitteredTtl, summary });
+        if (healthCatalogueCache.size > 64) healthCatalogueCache.clear();
+        return diagnosticsJson({ contractVersion: 1, cached: false, ...summary });
+      }
       if (url.pathname === '/') {
         return json({
           service: 'trained-assist-control-plane',
           endpoints: [
             '/intake',
+            '/healthz',
             '/receipt',
             '/route',
             '/start',
@@ -1107,10 +1265,14 @@ const store = new TaskStore(env.DB);
           ],
         });
       }
-      if (url.pathname === '/recover') return json(await port.recover());
+      if (url.pathname === '/recover') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
+        return json(await port.recover());
+      }
 
       // Маршруты попытки исполняются по runId, а не по taskId.
       if (url.pathname === '/connection-lost') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
         const run = await port.markConnectionLost(
           body.runId as string,
           (body.reason as string | undefined) ?? 'connection_lost',
@@ -1118,6 +1280,7 @@ const store = new TaskStore(env.DB);
         return json({ runId: run.id, status: run.status, errorClass: run.error_class, taskId: run.task_id });
       }
       if (url.pathname === '/heartbeat') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
         const run = await port.heartbeat(body.runId as string, body.leaseSec as number | undefined);
         return json({ runId: run.id, status: run.status, leaseUntil: run.lease_until });
       }
@@ -1234,14 +1397,50 @@ const store = new TaskStore(env.DB);
         return json({ deliveryId: delivery.id, status: delivery.status, queued }, queued ? 201 : 200);
       }
       if (url.pathname === '/deliveries/deliver') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
+        if (!String(env.DELIVERY_ADAPTER ?? '').trim()) {
+          return json({ error: 'delivery adapter not configured' }, 503);
+        }
+        let adapter: DeliveryAdapter;
+        try {
+          adapter = await resolveDeliveryAdapter(env);
+        } catch {
+          return json({ error: 'delivery adapter not configured' }, 503);
+        }
         const owner = (body.owner as string | undefined) ?? 'local-worker';
-        const result = await deliverOnce(store, owner, localDeliveryAdapter, {
+        const result = await deliverOnce(store, owner, adapter, {
           taskId: (body.taskId as string | undefined) ?? null,
           channel: (body.channel as string | undefined) ?? null,
           maxAttempts: (body.maxAttempts as number | undefined) ?? 3,
           retryAfterSec: (body.retryAfterSec as number | undefined) ?? 0,
         });
         return result ? json(result) : json({ delivered: false, reason: 'outbox empty' });
+      }
+      if (url.pathname === '/runner/input-manifest') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        const inputTaskId = url.searchParams.get('taskId');
+        if (!inputTaskId) return json({ error: 'taskId is required' }, 400);
+        const task = await authorizeTaskRoute(store, req, inputTaskId, 'tasks:read', auth);
+        const manifest = await inputManifestForTask(task);
+        return manifest ? json(manifest) : json({ error: 'input manifest not found' }, 404);
+      }
+      if (url.pathname === '/runner/input-artifact') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        const inputTaskId = url.searchParams.get('taskId');
+        const manifestRef = url.searchParams.get('manifestRef');
+        const manifestVersion = url.searchParams.get('manifestVersion');
+        const ref = url.searchParams.get('ref');
+        const version = url.searchParams.get('version');
+        if (!inputTaskId || !manifestRef || !manifestVersion || !ref || !version) {
+          return json({ error: 'taskId, manifestRef, manifestVersion, ref and version are required' }, 400);
+        }
+        const task = await authorizeTaskRoute(store, req, inputTaskId, 'tasks:read', auth);
+        const manifest = await inputManifestForTask(task);
+        if (!manifest) return json({ error: 'input manifest not found' }, 404);
+        if (manifest.manifestRef !== manifestRef || manifest.manifestVersion !== manifestVersion) {
+          return json({ error: 'input manifest version mismatch' }, 409);
+        }
+        return await serveIngressInputArtifact(env, task, manifest, ref, version);
       }
       if (url.pathname === '/artifact') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
@@ -1419,6 +1618,7 @@ const store = new TaskStore(env.DB);
         return json({ error: 'method not allowed' }, 405);
       }
       if (url.pathname === '/runner/health') {
+        await authorizePrincipalScope(store, req, 'tasks:read', auth);
         const adapter = runnerAdapterOf(env);
         if (!adapter) return json({ configured: false });
         try {
@@ -1466,6 +1666,7 @@ const store = new TaskStore(env.DB);
 
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
         const receipt = await store.acceptReceipt(taskId);
         if (!receipt) return json({ error: 'receipt not found' }, 404);
         return json({ ...receipt, durable: true });
@@ -1483,6 +1684,14 @@ const store = new TaskStore(env.DB);
         const limit = Number(url.searchParams.get('limit') ?? '100');
         const history = await reportHistory(store, taskId, after ? Number(after) : null, Number.isFinite(limit) ? limit : 100);
         return json(history);
+      }
+      if (url.pathname.startsWith('/trace/')) {
+        const parts = url.pathname.split('/').filter(Boolean);
+        const traceTaskId = parts[1] ?? null;
+        if (!traceTaskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, traceTaskId, 'tasks:read', auth);
+        const trace = await traceTask(store, traceTaskId);
+        return json(trace);
       }
 
       if (!taskId) return json({ error: 'taskId is required' }, 400);
@@ -1573,6 +1782,18 @@ const startResult = await port.submit(input);
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
+
+    // Тот же serverless Cron Trigger запускает пользовательские расписания.
+    // Без profileId проход охватывает все профили; HTTP /schedules/tick
+    // остаётся ограничен профилем вызывающего. Ключи occurrence и дедуп в D1
+    // делают повторный вызов безопасным. Ошибка здесь не отменяет проход watchdog.
+    let scheduleError: unknown;
+    try {
+      await scheduleServiceOf(env, store, new CfWorkflowPort(env.TASK_WORKFLOW, store)).tick();
+    } catch (error) {
+      scheduleError = error;
+    }
+
     const adapter = await resolveDeliveryAdapter(env);
     await workflowPortOf(env, store).recoverCredentialContinuations();
 
@@ -1604,5 +1825,7 @@ const startResult = await port.submit(input);
         ageMs: last ? Date.now() - last.last_run_at : null,
       }));
     }
+
+    if (scheduleError !== undefined) throw scheduleError;
   },
 };

@@ -10,6 +10,7 @@ import type { CredentialReadyEvent } from '../src/awaiting/credential-ready';
 import worker from '../src/index';
 import { signPrincipal } from '../src/auth/principal-auth';
 import { dispatchAcceptedAgent } from '../src/output/communication-v1';
+import { withWorkStyleInstructions } from '../src/output/communication-v1';
 import type { RouteResult } from '../src/router/service';
 import { env } from './env';
 import { agentConversationInstructions, durableConversationContext } from '../src/router/communication-v1';
@@ -66,8 +67,8 @@ async function monthlyFollowup() {
   await store.admitTask({ id: taskId, profileId: 'credential-profile', conversationId, goal,
     userValue: { inputItems: [{ text: goal }] } });
   const task = await store.requireTask(taskId);
-  const expected = agentConversationInstructions({ text: goal, originalInput: JSON.parse(task.user_value!),
-    durableContext: await durableConversationContext(store, task) });
+  const expected = withWorkStyleInstructions(agentConversationInstructions({ text: goal, originalInput: JSON.parse(task.user_value!),
+    durableContext: await durableConversationContext(store, task) }), task);
   const { awaitingInputId } = await store.openAwaiting({ taskId, purpose: 'credential',
     question: 'UNTRUSTED_PROVIDER_QUESTION', respondentScope: task.profile_id, schema: { credential: requirement } });
   const awaiting = (await store.getAwaiting(awaitingInputId))!;
@@ -81,7 +82,7 @@ describe('verified credential completion', () => {
     ['saved', 'ready'], ['saved', 'recovery'], ['fallback', 'ready'], ['fallback', 'recovery'],
   ] as const)('preserves monthly Sheet context in actual Runner input using %s instructions at %s startup', async (selection, entrypoint) => {
     const { store, task, taskId, conversationId, source, goal, expected, event, awaitingInputId } = await monthlyFollowup();
-    const instructions = selection === 'saved' ? `${expected}\nSAVED_ROUTING_CONSTRAINT` : expected;
+    const instructions = withWorkStyleInstructions(selection === 'saved' ? `${expected}\nSAVED_ROUTING_CONSTRAINT` : expected, task);
     if (selection === 'saved') await store.saveRoutingSelection(taskId, task.generation, { agentInstructions: instructions });
     const workflow = { get: vi.fn(async () => { throw new Error('not started'); }),
       create: vi.fn(async (_input: { id: string; params: PlanParams }) => ({})) };
@@ -110,14 +111,19 @@ describe('verified credential completion', () => {
     expect(submit).toHaveBeenCalledTimes(1);
     const request = submit.mock.calls[0]![0];
     expect(request.userTaskId).toBe(taskId);
+    expect(request.runSpec?.instructions).toBe(instructions);
     expect(request.idempotencyKey).toBe(await stableAttemptKey(taskId, task.generation));
     expect(request.runSpec).toMatchObject({ userTaskId: taskId, profileId: task.profile_id, conversationId,
       ownerGeneration: task.generation, runId: `run_${taskId}_${task.generation}`, jobId: `job_${taskId}`,
       operationId: `op_${params.runId}`, engine: { name: execution.runnerEngine } });
-    const prompt = request.runSpec!.input!.inlinePrompt!;
+    const prompt = `${request.runSpec!.input!.inlinePrompt!}\n\nAdditional instructions:\n${request.runSpec!.instructions ?? ''}`;
     expect(prompt).toContain(goal);
     expect(prompt).toContain(source);
+    expect(prompt).toContain('Полный исходный принятый ввод');
+    expect(prompt).toContain('Полный сохранённый контекст диалога для continuation');
     expect(prompt).toContain('Saved Category results');
+    expect(prompt).toContain(`Текущий исходный ввод пользователя (сохраняй формулировку и все ограничения):\n${goal}`);
+    expect(prompt.match(/\[work-style:v1\]/g)).toHaveLength(1);
     expect(prompt).toContain(instructions);
     for (const excluded of ['FOREIGN_PROFILE_PRIVATE', 'UNRELATED_DIALOG_PRIVATE', 'UNTRUSTED_PROVIDER_QUESTION',
       requirement.provider, requirement.bindingRef, requirement.providerSessionRef, requirement.hostPrincipalId]) {
@@ -157,10 +163,14 @@ describe('verified credential completion', () => {
     const { store, taskId, event, awaitingInputId } = await parked();
     await store.completeCredentialAwaiting(event);
     const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async () => ({})) };
+    const principal = 'credential-recovery-operator';
+    const secret = 'credential-recovery-test-secret';
+    await store.upsertPrincipal({ principalId: principal, profileId: event.profileId, scopes: ['tasks:control'] });
     const bindings = { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
-      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000', DELIVERY_ADAPTER: 'local' };
+      PRINCIPAL_SECRET: secret, ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000', DELIVERY_ADAPTER: 'local' };
     if (entrypoint === 'http') {
       expect((await worker.fetch(new Request('https://cp.test/recover', { method: 'POST',
+        headers: { 'x-principal': principal, 'x-principal-sig': await signPrincipal(principal, secret) },
         body: JSON.stringify({ runnerEngine: 'opencode', runnerTimeoutSec: 1 }),
       }), bindings)).status).toBe(200);
     } else {
@@ -171,12 +181,26 @@ describe('verified credential completion', () => {
     }) });
   });
 
+  it('rejects anonymous HTTP recovery without starting credential work', async () => {
+    const { store, taskId, event } = await parked();
+    await store.completeCredentialAwaiting(event);
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };
+    const response = await worker.fetch(new Request('https://cp.test/recover', { method: 'POST' }), {
+      DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
+      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000',
+    });
+    expect(response.status).toBe(401);
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await store.listRuns(taskId)).toHaveLength(0);
+  });
+
   it.each([undefined, 'invalid', '0'])('does not start credential work without a valid host timeout (%s)', async timeout => {
     const { store, taskId, event } = await parked();
     await store.completeCredentialAwaiting(event);
     const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };
-    await worker.fetch(new Request('https://cp.test/recover'), { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
-      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', ...{ RUN_SPEC_TIMEOUT_MS: timeout } });
+    await worker.scheduled({} as ScheduledEvent, { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
+      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', ...{ RUN_SPEC_TIMEOUT_MS: timeout } },
+    { waitUntil: () => {} } as unknown as ExecutionContext);
     expect(workflow.create).not.toHaveBeenCalled();
     expect(await store.listRuns(taskId)).toHaveLength(0);
   });

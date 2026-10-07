@@ -8,7 +8,7 @@ import { TaskStore } from '../src/taskstore';
 import { awaitRunnerResult, RunnerApiAdapter, stableAttemptKey } from '../src/runner-adapter';
 import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
 import type { StepCtx } from '../src/workflow-port/step-ctx';
-import { RunnerUnavailableError } from '../src/runner-adapter/errors';
+import { RunnerConflictError, RunnerUnavailableError } from '../src/runner-adapter/errors';
 import { describe, expect, it } from 'vitest';
 
 let seq = 0;
@@ -564,6 +564,30 @@ describe('Runner adapter: план с adapter\'ом (интеграция, fake 
     expect(run!.error_class).toBe('runner_unavailable');
     const events = await store.history(taskId);
     expect(events.some((e) => e.kind === 'error' && e.payload_json.includes('runner_unavailable'))).toBe(true);
+  });
+
+  it('definitive Runner 4xx rejection closes only its attempt; it is not a stop hold', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-plan-rejected');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'некорректный RunSpec' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const rejected: RunnerApiAdapter = {
+      submit: async () => { throw new RunnerConflictError('INVALID_REQUEST: rejected before admission'); },
+    } as unknown as RunnerApiAdapter;
+    const ctx: StepCtx = { step: async (_n, fn) => fn({ attempt: 1 }), sleep: async () => {}, waitFor: async () => { throw new Error('t'); } };
+
+    await expect(conversationPlan(ctx, store, { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id }, { adapter: rejected }))
+      .resolves.toMatchObject({ ok: false, reason: 'runner_rejected' });
+
+    const run = await store.getRun(attempt.id);
+    expect(run).toMatchObject({ status: 'failed', error_class: 'runner_rejected' });
+    expect(run?.finished_at).not.toBeNull();
+    expect(await store.runnerSubmitMayHaveStarted(taskId, attempt.id)).toBe(false);
+    expect((await store.requireTask(taskId)).status).toBe('failed');
+
+    const nextTaskId = nextId('ut-after-rejected');
+    await expect(store.admitTask({ id: nextTaskId, profileId: 'profile-1', goal: 'следующая задача' })).resolves.toBeDefined();
+    expect((await store.requireTask(nextTaskId)).status).toBe('active');
   });
 
   // Живая находка: недоступность Runner'а посреди отправки не должна оставлять

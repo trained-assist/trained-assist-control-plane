@@ -17,9 +17,11 @@ import {
   type AwaitingPurpose,
 } from '../taskstore';
 import { waitForAnswer } from '../awaiting/wait-for-answer';
+import { inputManifestForTask } from '../intake/input-artifact-manifest';
 import { awaitRunnerResult, type AwaitRunnerResult, type TaskArtifactManifest, type RunnerAnswer } from '../runner-adapter/await-runner-result';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 import { stableAttemptKey, type RunnerApiAdapter } from '../runner-adapter/runner-api-adapter';
-import { RunnerUnavailableError } from '../runner-adapter/errors';
+import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from '../runner-adapter/errors';
 import type { GtdService } from '../gtd/gtd-service';
 import type { ManagedGtdContext } from '../gtd/types';
 import { isWaitTimeout, type StepCtx, type StepAttempt } from './step-ctx';
@@ -80,8 +82,12 @@ export interface PlanParams {
   instructions?: string | null;
   /** Host-built, policy-pinned MCP descriptor; never accepted from user/model input. */
   mcpDescriptor?: McpSpec | null;
+  /** Manifest of the first Router call; only safe metadata is persisted. */
+  executionContext?: ExecutionContextManifest | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
+  /** Periodic same-run reconciliation while Runner is saving captured outputs. */
+  runnerPersistencePollSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
   runnerEngine?: string;
 }
@@ -125,12 +131,23 @@ const answerText = (raw: unknown): string | null => {
 function attachmentRefsOf(userValue: string | null): { ref: string; version?: string; snapshotId?: string }[] {
   if (!userValue) return [];
   try {
-    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; snapshotIds?: unknown };
+    const parsed = JSON.parse(userValue) as { artifactRefs?: unknown; inputArtifacts?: unknown; snapshotIds?: unknown };
     const refs = Array.isArray(parsed?.artifactRefs) ? parsed.artifactRefs : [];
     const snapshotIds = Array.isArray(parsed?.snapshotIds) ? parsed.snapshotIds : [];
+    const inputArtifacts = Array.isArray(parsed?.inputArtifacts) ? parsed.inputArtifacts : [];
+    const typedRefs = new Set(inputArtifacts.flatMap((value) => value && typeof value === 'object'
+      && typeof (value as { ref?: unknown }).ref === 'string' ? [(value as { ref: string }).ref] : []));
     const out: { ref: string; version?: string; snapshotId?: string }[] = refs
       .filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
+      .filter((ref) => !typedRefs.has(ref))
       .map((ref) => ({ ref }));
+    for (const value of inputArtifacts) {
+      if (!value || typeof value !== 'object') continue;
+      const artifact = value as { ref?: unknown; version?: unknown };
+      if (typeof artifact.ref === 'string' && artifact.ref.length > 0) {
+        out.push({ ref: artifact.ref, ...(typeof artifact.version === 'string' ? { version: artifact.version } : {}) });
+      }
+    }
     for (const id of snapshotIds) {
       if (typeof id === 'string' && id.length > 0) out.push({ ref: id, snapshotId: id });
     }
@@ -304,6 +321,7 @@ export interface EngineRun {
   /** Манифесты выходов (ссылка + размер + sha256), а не голые строки ссылок. */
   artifacts: TaskArtifactManifest[];
   persistence: string;
+  persistenceReason?: string | null;
   exitReason: string;
   runId: string;
   ownerGeneration: number;
@@ -506,6 +524,7 @@ export async function conversationPlan(
     }
     const runSpecPolicy = p.mcpDescriptor ? { ...baseRunSpecPolicy, mcp: p.mcpDescriptor } : baseRunSpecPolicy;
     const attemptKey = await stableAttemptKey(taskId, generation);
+    const inputManifest = current ? await inputManifestForTask(current) : null;
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
@@ -517,7 +536,11 @@ export async function conversationPlan(
         ownerGeneration: generation,
         engineName: p.runnerEngine ?? 'opencode',
         prompt: p.goal ?? current?.goal ?? '',
-        refs: attachmentRefsOf(current?.user_value ?? null),
+        refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
+        inputManifest: inputManifest ? {
+          manifestRef: inputManifest.manifestRef,
+          manifestVersion: inputManifest.manifestVersion,
+        } : null,
         instructions: p.instructions ?? null,
         attemptRunId: p.runId ?? null,
         timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
@@ -547,6 +570,7 @@ export async function conversationPlan(
       // Контракт submit не переносит часть полей RunSpec — факт виден, а не молчалив.
       mcpNotTransmitted: false,
       untransmitted: untransmittedRunSpecFields(runSpec.spec),
+      executionContext: p.executionContext ?? null,
     });
     const receipt = await ctx.step(
       'submit-runner',
@@ -559,12 +583,31 @@ export async function conversationPlan(
           });
           return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [] };
         } catch (e) {
-          // Любой отказ Runner на этапе submit — неизвестный исход попытки, а не
-          // «failed»: задача не теряется, авто-rerun нет, повтор с тем же ключом
-          // безопасен. Раньше сюда попадал только RunnerUnavailableError, и
-          // отказ контракта (403/400) оставлял попытку в running навсегда.
-          const errorClass = e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
+          // A definitive 4xx rejection means Runner did not admit this request;
+          // transport/5xx failures remain unknown because dispatch may have won.
+          const definitivelyRejected = e instanceof RunnerConflictError || e instanceof RunnerNotFoundError
+            || e instanceof RunnerStaleGenerationError;
+          const errorClass = definitivelyRejected ? 'runner_rejected'
+            : e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
           if (p.runId) {
+            if (definitivelyRejected) {
+              await store.finishRun(p.runId, 'failed', { errorClass, errorText: String((e as Error)?.message ?? e) }).catch(() => null);
+              await store.logEvent({
+                taskId,
+                kind: 'progress',
+                generation,
+                executionId: p.runId,
+                source: 'executor',
+                payload: { event: 'runner_submit_rejected', attemptId: p.runId, idempotencyKey: attemptKey },
+              });
+              const task = await store.requireTask(taskId);
+              if (!isTerminalStatus(task.status)) {
+                await store.commit(taskId, generation, { status: 'failed', stage: 'finished',
+                  executionId: p.runId, step: 'runner_submit', result: { ok: false, reason: 'runner_rejected' },
+                  payload: { errorClass } });
+              }
+              return { submitRejected: true as const };
+            }
             await store.markConnectionLost(p.runId, String((e as Error)?.message ?? e), errorClass).catch(() => null);
           }
           await store.logEvent({
@@ -579,6 +622,9 @@ export async function conversationPlan(
       },
       { limit: 8, delaySec: 3 },
     );
+    if ('submitRejected' in receipt && receipt.submitRejected) {
+      return { ok: false, reason: 'runner_rejected' };
+    }
     runnerRunId = receipt.runId;
     runnerDeclaredOutputs = receipt.declaredOutputPaths;
     // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
@@ -712,10 +758,49 @@ export async function conversationPlan(
       answerSource: outcome.answer?.answerSource ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
+      persistenceReason: runnerResult.persistenceReason ?? null,
       exitReason: runnerResult.exitReason,
       runId: runnerResult.runId,
       ownerGeneration: runnerResult.ownerGeneration,
     };
+  }
+
+  if (adapter && engine?.persistence === 'pending') {
+    // Deliver the captured engine answer immediately as a durable output event.
+    // The task remains non-terminal until Runner confirms custody; retries only
+    // inspect this accepted run and never submit a replacement engine attempt.
+    await ctx.step('publish-engine-answer', () => store.commit(taskId, generation, {
+      kind: 'result_ready', source: 'output', executionId: engine!.runId,
+      payload: { runId: engine!.runId, answer: engine!.text, outcome: engine!.ok ? 'succeeded' : 'failed',
+        persistence: 'pending', persistenceStatus: 'saving', reason: 'engine completed; data save is continuing' },
+    }));
+    let observation = 0;
+    for (;;) {
+      await ctx.sleep(`persistence-backoff-${observation}`, p.runnerPersistencePollSec ?? 10);
+      const persistence = await ctx.step(`runner-persistence-${observation}`, () => adapter!.result(engine!.runId),
+        { limit: 4, delaySec: 2, timeoutSec: 30 });
+      observation += 1;
+      if (persistence.persistence === 'pending') continue;
+      engine.persistence = persistence.persistence;
+      engine.persistenceReason = persistence.persistenceReason ?? null;
+      if (persistence.persistence === 'persisted') {
+        const manifests = await ctx.step(`runner-artifacts-final-${observation}`, () => adapter!.artifacts(engine!.runId),
+          { limit: 4, delaySec: 2, timeoutSec: 30 });
+        engine.artifacts = manifests.map(manifest => ({ ref: manifest.ref, name: manifest.name ?? null,
+          mime: manifest.mime ?? null, sizeBytes: manifest.size ?? null, sha256: manifest.sha256 ?? null }));
+        for (const artifact of engine.artifacts) await ctx.step(`record-final-artifact-${observation}-${artifact.ref}`, () => store.recordArtifact({
+          taskId, kind: 'file', artifactRef: artifact.ref, sizeBytes: artifact.sizeBytes,
+          checksum: artifact.sha256 ? `sha256:${artifact.sha256}` : null, runId: engine!.runId, generation,
+        }));
+      }
+      await ctx.step(`publish-persistence-${observation}`, () => store.commit(taskId, generation, {
+        kind: 'step_done', source: 'output', executionId: engine!.runId,
+        payload: { runId: engine!.runId, persistence: persistence.persistence,
+          persistenceStatus: persistence.persistence === 'persisted' ? 'saved' : 'failed_attention',
+          persistenceReason: persistence.persistenceReason ?? null, cleanup: persistence.cleanup },
+      }));
+      break;
+    }
   }
 
   return finalizeRun(ctx, store, p, engine, userAnswer);

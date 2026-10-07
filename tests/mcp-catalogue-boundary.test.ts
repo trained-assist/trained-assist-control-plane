@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { McpCatalogueAdapter } from '../src/router/mcp-catalogue';
+import { McpCatalogueAdapter, mcpReasonCode } from '../src/router/mcp-catalogue';
 import type { HostMcpCatalogueBinding, McpCatalogueScope } from '../src/router/mcp-catalogue-types';
 
 const scope: McpCatalogueScope = { taskId: 'accepted-task', generation: 1, profileId: 'integration-v1', principalId: 'bound-principal' };
 const metadata = (name: string) => ({ name, description: `Authoritative instruction for ${name}`, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } });
 
 function binding(names: string[], serverId = 'native-domain'): HostMcpCatalogueBinding {
-  return { scope: { ...scope }, discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/list'] }, serverId, bindingRef: `binding:${serverId}`, policyVersion: 'policy-v1', catalogueVersion: 'catalogue-v1', allowedTools: names,
+  return { scope: { ...scope }, discoveryAuthorization: { principalId: scope.principalId, profileId: scope.profileId, scope: 'mcp:discover', methods: ['tools/list'] },
+    url: 'https://mcp.fixture.test/mcp', serverId, bindingRef: `binding:${serverId}`, executionScope: 'fixture:read',
+    policyVersion: 'policy-v1', catalogueVersion: 'catalogue-v1', allowedTools: names,
     request: vi.fn(async message => ({ jsonrpc: '2.0', id: message.id, result: { tools: names.map(metadata) } })),
   };
 }
@@ -21,7 +23,8 @@ describe('host-authorized full MCP catalogue boundary', () => {
       expect(snapshot.decisionOptions).toEqual(names.map(id => ({ id })));
       expect(snapshot.readiness).toBe('not_verified');
       const selected = await adapter.selectedInstruction(scope, snapshot.catalogueId, names.at(-1)!);
-      expect(selected).toMatchObject({ name: names.at(-1), serverId: 'second', bindingRef: 'binding:second', policyVersion: 'policy-v1', catalogueVersion: 'catalogue-v1', scope, readiness: 'not_verified' });
+      expect(selected).toMatchObject({ name: names.at(-1), url: 'https://mcp.fixture.test/mcp', serverId: 'second', bindingRef: 'binding:second',
+        executionScope: 'fixture:read', policyVersion: 'policy-v1', catalogueVersion: 'catalogue-v1', scope, readiness: 'not_verified' });
       expect(selected.description).toBe(metadata(names.at(-1)!).description);
       expect(selected.inputSchema).toEqual(metadata(names.at(-1)!).inputSchema);
       for (const server of servers) expect(server.request).toHaveBeenCalledOnce();
@@ -69,12 +72,24 @@ describe('host-authorized full MCP catalogue boundary', () => {
     expect(server.request).toHaveBeenCalledOnce();
   });
 
-  it.each(['policyVersion', 'bindingRef'] as const)('refuses a changed host %s before execution handoff', async field => {
+  it.each(['url', 'bindingRef', 'executionScope', 'policyVersion', 'catalogueVersion', 'registryDigest', 'catalogueDigest', 'allowedTools'] as const)('refuses a changed host %s before execution handoff', async field => {
     const server = binding(['web_current_page']);
     const adapter = new McpCatalogueAdapter(async () => [server]);
     const snapshot = await adapter.discover(scope);
-    server[field] = 'changed';
+    if (field === 'allowedTools') server.allowedTools = ['different_tool'];
+    else if (field === 'registryDigest') server.registryDigest = 'f'.repeat(64);
+    else if (field === 'catalogueDigest') server.catalogueDigest = `sha256-${'f'.repeat(64)}`;
+    else server[field] = 'changed';
     await expect(adapter.selectedInstruction(scope, snapshot.catalogueId, 'web_current_page')).rejects.toMatchObject({ code: 'snapshot_stale' });
+  });
+
+  it('refuses a selected instruction altered after capability selection instead of rebuilding it', async () => {
+    const server = binding(['web_current_page']);
+    const adapter = new McpCatalogueAdapter(async () => [server]);
+    const snapshot = await adapter.discover(scope);
+    const selected = await adapter.selectedInstruction(scope, snapshot.catalogueId, 'web_current_page');
+    await expect(adapter.revalidateInstruction({ ...selected, catalogueVersion: 'new-version' })).rejects.toMatchObject({ code: 'snapshot_stale' });
+    expect(server.request).toHaveBeenCalledOnce();
   });
 
   it('refuses revoked tool grants and empty host bindings', async () => {
@@ -118,13 +133,24 @@ describe('host-authorized full MCP catalogue boundary', () => {
     expect(server.request).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    { jsonrpc: '2.0', id: 'wrong', result: { tools: [] } },
-    { jsonrpc: '2.0', id: 'wrong', error: { message: 'PRIVATE_PROVIDER_ERROR' } },
-  ])('sanitizes malformed protocol/provider failure without leaking raw errors', async reply => {
+  it('sanitizes malformed protocol responses without leaking raw errors', async () => {
     const server = binding(['web_current_page']);
-    server.request = async () => reply;
+    server.request = async () => ({ jsonrpc: '2.0', id: 'wrong', result: { tools: [] } });
     await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ message: 'discovery_malformed' });
+  });
+
+  it('classifies an MCP authorization error separately from malformed discovery', async () => {
+    const server = binding(['web_current_page']);
+    server.request = async message => ({ jsonrpc: '2.0', id: message.id, error: { code: -32001, message: 'Unauthorized' } });
+    await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ code: 'discovery_authorization_failed' });
+    expect(mcpReasonCode('discovery_authorization_failed')).toBe('MCP_DISCOVERY_INVALID');
+  });
+
+  it('sanitizes other valid MCP protocol errors without leaking provider text', async () => {
+    const server = binding(['web_current_page']);
+    server.request = async message => ({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'PRIVATE_PROVIDER_ERROR' } });
+    await expect(new McpCatalogueAdapter(async () => [server]).discover(scope)).rejects.toMatchObject({ code: 'discovery_rejected' });
+    expect(mcpReasonCode('discovery_rejected')).toBe('MCP_DISCOVERY_UNAVAILABLE');
   });
 
   it('sanitizes host credential failure', async () => {

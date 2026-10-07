@@ -23,11 +23,16 @@ export interface McpListRequest {
 export interface HostMcpCatalogueBinding {
   scope: McpCatalogueScope;
   discoveryAuthorization: McpDiscoveryAuthorization;
+  url: string;
   serverId: string;
   bindingRef: string;
+  /** Runner/Registry execution scope, distinct from pre-submit mcp:discover. */
+  executionScope: string;
   policyVersion: string;
   /** Stable host-pinned version, distinct from the per-request catalogueId. */
   catalogueVersion: string;
+  /** Registry configuration digest pinned by Host and checked again by Runner. */
+  registryDigest?: string;
   /** Optional pinned digest of the authorized tools/list metadata. */
   catalogueDigest?: string;
   allowedTools: readonly string[];
@@ -43,10 +48,13 @@ export interface McpCatalogueSnapshot {
 export interface SelectedMcpInstruction {
   catalogueId: string;
   scope: Readonly<McpCatalogueScope>;
+  url: string;
   serverId: string;
   bindingRef: string;
+  executionScope: string;
   policyVersion: string;
   catalogueVersion: string;
+  registryDigest?: string;
   catalogueDigest: string;
   name: string;
   description?: string;

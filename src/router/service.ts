@@ -30,6 +30,7 @@ import type { RecipeResult, ReplyOrRouteRunner } from './recipe/recipe';
 import { buildScopedBrief, logBrief, type BriefBuildResult, type BriefServiceDeps } from './brief/service';
 import { discoveryCapabilityIds } from './brief/compiler';
 import type { CatalogBrief } from './brief/brief-types';
+import { buildExecutionContext } from './brief/execution-context';
 import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
 import type { FastPathContinuationRequest } from '../output/continuation';
 import { routeCommunicationV1, type CommunicationV1Deps } from './communication-v1';
@@ -52,6 +53,8 @@ export interface RouteServiceDeps {
 
 export interface RouteResult {
   mcpInstruction?: SelectedMcpInstruction;
+  /** Host MCP refusal that must remain visible in task status and dispatch output. */
+  mcpRefusalCode?: string;
   agentInstructions?: string;
   rendering?: { source: 'communication_writer' | 'deterministic'; failure: string | null };
   decision: RoutingDecision;
@@ -205,6 +208,7 @@ export async function routeRequest(input: RoutingInput, deps: RouteServiceDeps =
       requiresExternalAction: decision.requiresExternalAction,
       hostConstraints: hostConstraintsOf(input.prepared.text),
       partialResultRef: null,
+      brief: briefForModel!,
       // Discovery-индекс исполнителя: только РАЗРЕШЁННЫЕ возможности (§12).
       discoveryIds: discoveryCapabilityIds(briefForModel, input),
     }));
@@ -377,6 +381,13 @@ interface EscalationParams {
   requiresExternalAction: boolean;
   hostConstraints: string[];
   partialResultRef: string | null;
+  /** Цель, возвращённая first-stage recipe; original input stays separate. */
+  nextGoal?: string;
+  /** Ограничения, которые first-stage recipe сохранил из запроса. */
+  modelPreservedConstraints?: string[];
+  /** Явно выбранные recipe capability IDs; не весь discovery index. */
+  selectedCapabilityIds?: string[];
+  brief: CatalogBrief;
   /** Возможности, названные решением; null — хост не знает ни одной (policy-эскалация). */
   requiredCapabilities?: string[] | null;
   /** Discovery-индекс: разрешённые возможности из brief'а (§12). */
@@ -396,13 +407,28 @@ function escalate(params: EscalationParams): { workOrder: AgentWorkOrder; contin
     params.requiredCapabilities && params.requiredCapabilities.length > 0
       ? params.requiredCapabilities
       : params.discoveryIds;
+  const selectedCapabilityIds = [...new Set(params.selectedCapabilityIds ?? [])];
+  const preservedConstraints = Array.from(new Set([...hostConstraints, ...(params.modelPreservedConstraints ?? [])]));
   const workOrder = agentWorkOrder({
     envelope: input.envelope,
     prepared: input.prepared,
+    goal: params.nextGoal,
+    preservedConstraints,
     reasonCode,
     requiresExternalAction,
     authorizationRef: input.authorization.snapshotRef,
     catalogCapabilityIds: requiredCapabilities,
+  });
+  const executionContext = buildExecutionContext({
+    decisionId: decision.decisionId,
+    suggestedGoal: workOrder.goal,
+    originalRequestRef: workOrder.originalRequestRef,
+    reasonCode,
+    hostConstraints,
+    modelPreservedConstraints: params.modelPreservedConstraints ?? [],
+    selectedCapabilityIds,
+    requiresConfirmation: requiresExternalAction,
+    catalogBrief: params.brief,
   });
   const continuation: FastPathContinuationRequest = {
     decisionId: decision.decisionId,
@@ -410,15 +436,17 @@ function escalate(params: EscalationParams): { workOrder: AgentWorkOrder; contin
     profileId: input.envelope.profileId,
     conversationId: input.envelope.conversationId,
     originalRequestRef: `task:${input.envelope.userTaskId}:request:${input.envelope.requestId ?? 'none'}`,
-    goal: input.prepared.text,
+    goal: workOrder.goal,
     // Ограничения из исходного текста не теряются при reformulation (§11.3).
-    preservedConstraints: Array.from(new Set([...hostConstraints, ...workOrder.preservedConstraints])),
+    preservedConstraints,
+    selectedCapabilityIds,
     requiredCapabilities,
     reasonCode: reasonCode as FastPathContinuationRequest['reasonCode'],
     partialResultRef,
     authorizationRef: input.authorization.snapshotRef,
     requiresConfirmation: requiresExternalAction,
     workOrder,
+    executionContext,
   };
   return { workOrder, continuation };
 }
@@ -532,7 +560,11 @@ async function applyRecipeResult(result: RecipeResult, state: RecipeApplyState):
         requiresExternalAction,
         hostConstraints: state.hostConstraints,
         partialResultRef: result.partialResultRef,
+        nextGoal: result.nextGoal,
+        modelPreservedConstraints: result.preservedConstraints,
+        selectedCapabilityIds: result.requiredCapabilities,
         requiredCapabilities: result.requiredCapabilities,
+        brief: state.briefForModel!,
         discoveryIds: discoveryCapabilityIds(state.briefForModel, state.input),
       });
       state.setEscalation({ workOrder, continuation });
@@ -638,6 +670,8 @@ async function executeCapability(
         hostConstraints: state.hostConstraints,
         partialResultRef: partialResultRefOf(data),
         requiredCapabilities: [entry.id],
+        selectedCapabilityIds: [entry.id],
+        brief: state.briefForModel!,
         discoveryIds: discoveryCapabilityIds(state.briefForModel, input),
       });
       state.setEscalation({ workOrder, continuation });

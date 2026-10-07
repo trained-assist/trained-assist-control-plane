@@ -9,6 +9,7 @@
  * контекст), нативные имена MCP не переименовываются.
  */
 export * from './brief-types';
+export * from './execution-context';
 export * from './summary';
 export * from './cache';
 export * from './compiler';

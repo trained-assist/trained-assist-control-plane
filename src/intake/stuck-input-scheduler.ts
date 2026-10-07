@@ -208,7 +208,8 @@ export async function resolveDeliveryAdapter(env: {
       secret: env.GATEWAY_DELIVERY_SECRET ?? null,
     });
   }
-  return localDeliveryAdapter();
+  if (mode === 'local') return localDeliveryAdapter();
+  throw new Error(`Неподдерживаемый DELIVERY_ADAPTER: ${mode}`);
 }
 
 /** Заглушка песочницы: искусственный providerMessageId, доставкой не является. */

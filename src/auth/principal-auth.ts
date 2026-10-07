@@ -3,16 +3,16 @@
  * доверяет x-principal»).
  *
  * Заголовок клиента — не доказательство личности: любой может прислать
- * `X-Principal: someone-else`. Поэтому личность подтверждается подписью, а
- * секрет живёт ТОЛЬКО в binding воркера (GCP SM / GitHub Secrets) и в запросе не
- * передаётся:
+ * `X-Principal: someone-else`. Поэтому личность подтверждается подписью.
+ * Секрет проверки находится в доверенном binding воркера, а его совпадающая
+ * копия — в secret store доверенного клиента; в запросе он не передаётся:
  *
  *   x-principal:     <principalId>
  *   x-principal-sig: <hex HMAC-SHA256(secret, principalId)>
  *
- * Секрет читается из binding `PRINCIPAL_SECRET`. Если он не задан — доступ
- * закрыт полностью (fail closed): нельзя «случайно» получить публичный
- * незащищённый endpoint.
+ * Основной секрет читается из binding `PRINCIPAL_SECRET`. Тестовый principal
+ * может иметь отдельный scoped binding, который заменяет основной только для
+ * этого principal. Если подходящий секрет не задан, доступ закрыт (fail closed).
  *
  * Подпись доказывает владение секретом, но не права: профиль и scope по-прежнему
  * берутся из `admission_principals` в Task Store (`resolvePrincipal` +
@@ -27,6 +27,8 @@ export const PRINCIPAL_SIGNATURE_HEADER = 'x-principal-sig';
 export interface PrincipalAuth {
   /** Секрет из binding; null = доступ закрыт (fail closed). */
   readonly secret: string | null;
+  /** Principal-scoped secrets take precedence over the shared compatibility secret. */
+  readonly secretOverrides?: Readonly<Record<string, string>>;
 }
 
 const PRINCIPAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -34,7 +36,17 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 
 export function principalAuthOf(env: Record<string, string | undefined>): PrincipalAuth {
   const secret = env.PRINCIPAL_SECRET?.trim();
-  return { secret: secret ? secret : null };
+  const telegramUxSecret = env.PRINCIPAL_SECRET_TELEGRAM_UX?.trim();
+  const integrationV1Secret = env.PRINCIPAL_SECRET_INTEGRATION_V1?.trim();
+  const codexSmokeSecret = env.PRINCIPAL_SECRET_CODEX_SMOKE?.trim();
+  return {
+    secret: secret ? secret : null,
+    ...(telegramUxSecret || integrationV1Secret || codexSmokeSecret ? { secretOverrides: {
+      ...(telegramUxSecret ? { 'integration-telegram-ux-v1': telegramUxSecret } : {}),
+      ...(integrationV1Secret ? { 'integration-v1': integrationV1Secret } : {}),
+      ...(codexSmokeSecret ? { 'sde-codex-smoke-v1': codexSmokeSecret } : {}),
+    } } : {}),
+  };
 }
 
 /** Подпись для клиента: HMAC-SHA256(secret, principalId) в hex. */
@@ -60,12 +72,13 @@ export async function verifyPrincipal(req: Request, auth: PrincipalAuth): Promis
   const principalId = req.headers.get(PRINCIPAL_HEADER)?.trim() ?? '';
   const signature = req.headers.get(PRINCIPAL_SIGNATURE_HEADER)?.trim() ?? '';
 
-  if (!auth.secret) {
-    logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'secret_not_configured' });
-    return null;
-  }
   if (!PRINCIPAL_ID.test(principalId)) {
     logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'principal_id_malformed' });
+    return null;
+  }
+  const secret = auth.secretOverrides?.[principalId] ?? auth.secret;
+  if (!secret) {
+    logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'secret_not_configured' });
     return null;
   }
   if (!HEX_64.test(signature)) {
@@ -73,7 +86,7 @@ export async function verifyPrincipal(req: Request, auth: PrincipalAuth): Promis
     return null;
   }
 
-  const expected = await signPrincipal(principalId, auth.secret);
+  const expected = await signPrincipal(principalId, secret);
   if (!timingSafeEqual(expected, signature)) {
     logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'signature_mismatch', principalId });
     return null;

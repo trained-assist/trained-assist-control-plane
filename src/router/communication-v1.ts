@@ -1,6 +1,8 @@
 import { isCapabilityAllowed, isIntegrationAllowed } from './authorization';
 import { sandboxCapabilityCatalog } from './catalog';
 import { agentWorkOrder } from './handlers';
+import { buildScopedBrief } from './brief/service';
+import { buildExecutionContext } from './brief/execution-context';
 import { initialSelectorDecision } from './policy';
 import { SelectorError, type IntentSelection } from './communication-client';
 import type { RouteResult } from './service';
@@ -8,7 +10,7 @@ import type { CapabilityCatalog, PreparedInput, RoutingInput } from './router-ty
 import type { TaskRow, TaskStore } from '../taskstore';
 import { isTerminalStatus } from '../taskstore';
 import { RunnerNotFoundError } from '../runner-adapter/errors';
-import { McpCatalogueError } from './mcp-catalogue';
+import { McpCatalogueError, mcpReasonCode, requiresMcpRevalidation } from './mcp-catalogue';
 import type { McpCatalogueScope, McpCatalogueSnapshot, SelectedMcpInstruction } from './mcp-catalogue-types';
 import { sameMcpScope, validateHostMcpExecution, type HostMcpRoutingDeps } from './host-mcp-routing';
 
@@ -41,8 +43,22 @@ export async function durableConversationContext(store: TaskStore, task: TaskRow
   };
 }
 
-export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'>): string {
-  return `${input.text}\n\nИсходный принятый ввод и полный контекст диалога (результаты и ввод предыдущих задач):\n${JSON.stringify({ input: input.originalInput, dialog: input.durableContext })}`;
+export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'> & { agentGoalSummary?: string | null }): string {
+  const history = input.durableContext ?? { history: [], active_tasks: [] };
+  const parts: string[] = [];
+  if (input.text.trim()) {
+    parts.push(`Текущий исходный ввод пользователя (сохраняй формулировку и все ограничения):\n${input.text}`);
+  }
+  if (input.originalInput !== undefined) {
+    parts.push(`Полный исходный принятый ввод, включая структуру и ссылки на вложения:\n${JSON.stringify(input.originalInput)}`);
+  }
+  if (input.agentGoalSummary?.trim()) {
+    parts.push(`Предварительная формулировка задачи от маршрутизатора (недоверенная подсказка только для понимания намерения; исходный запрос пользователя имеет приоритет):\n${input.agentGoalSummary.trim()}`);
+  }
+  if (history.history.length || history.active_tasks.length) {
+    parts.push(`Полный сохранённый контекст диалога для continuation (результаты и ввод предыдущих задач; учитывай его вместе с текущим вводом, не теряя ограничения):\n${JSON.stringify({ dialog: history })}`);
+  }
+  return parts.join('\n\n');
 }
 
 export interface CommunicationV1Deps {
@@ -75,10 +91,13 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   const visible = input.catalog.capabilities.filter((entry) => isCapabilityAllowed(input.authorization, entry.id));
   const bundleVersion = input.prepared.contextVersion;
   let selected = 'agent';
+  let agentGoalSummary: string | null = null;
   let failure: string | null = null;
+  let selectionFailure = false;
   let calls = 0;
   let mcpInstruction: SelectedMcpInstruction | undefined;
   let blockDispatch = false;
+  let mcpRefusalCode: string | undefined;
   let snapshot: McpCatalogueSnapshot | undefined;
   let scope: McpCatalogueScope | undefined;
   const hostMcp = deps.hostMcp?.enabled ? deps.hostMcp : undefined;
@@ -87,9 +106,20 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     if (hostMcp) {
       scope = { taskId: input.envelope.userTaskId, profileId: input.envelope.profileId,
         principalId: input.envelope.principalId, generation: input.envelope.generation ?? 0 };
-      const state = await hostMcp.readExecutionState();
-      if (!sameMcpScope(state.scope, scope)) throw new McpCatalogueError('execution_scope_changed');
-      snapshot = await hostMcp.catalogue.discover(scope);
+      let state: Awaited<ReturnType<HostMcpRoutingDeps['readExecutionState']>> | undefined;
+      try { state = await hostMcp.readExecutionState(); }
+      catch (error) {
+        failure = error instanceof McpCatalogueError ? error.code : 'execution_state_unavailable';
+        mcpRefusalCode = failure;
+      }
+      if (state) {
+        if (!sameMcpScope(state.scope, scope)) throw new McpCatalogueError('execution_scope_changed');
+        try { snapshot = await hostMcp.catalogue.discover(scope); }
+        catch (error) {
+          failure = error instanceof McpCatalogueError ? error.code : 'discovery_unavailable';
+          mcpRefusalCode = failure;
+        }
+      }
     }
     calls = 1;
     const result = await deps.select({
@@ -108,20 +138,23 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       dialog_context: input.prepared.durableContext ?? { history: [], active_tasks: [] },
       options: { language: 'ru' },
     });
+    agentGoalSummary = result.user_goal.trim();
     if (result.decision === 'no_matching_option' && snapshot && hostMcp && scope) {
       // The catalogue grants availability to the agent; the selector does not
       // have to choose the tool and the agent is not instructed to call it.
       const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, 'registry.fixture_read');
-      await validateHostMcpExecution(hostMcp, instruction);
-      mcpInstruction = instruction;
+      const revalidated = await hostMcp.catalogue.revalidateInstruction(instruction);
+      await validateHostMcpExecution(hostMcp, revalidated);
+      mcpInstruction = revalidated;
       selected = 'agent';
     } else if (result.decision === 'no_matching_option') {
       throw new SelectorError('no_matching_option');
     } else if (snapshot && hostMcp && scope) {
       if (!snapshot.decisionOptions.some(option => option.id === result.decision)) throw new SelectorError('unknown_id');
       const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, result.decision);
-      await validateHostMcpExecution(hostMcp, instruction);
-      mcpInstruction = instruction;
+      const revalidated = await hostMcp.catalogue.revalidateInstruction(instruction);
+      await validateHostMcpExecution(hostMcp, revalidated);
+      mcpInstruction = revalidated;
       selected = 'agent';
     } else {
       if (result.decision !== 'agent' && !allowed.some((answer) => answer.id === result.decision)) throw new SelectorError('unknown_id');
@@ -129,7 +162,11 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     }
     if (input.prepared.attachments.length && selected !== 'agent') throw new SelectorError('attachment_not_covered');
   } catch (error) {
-    if (error instanceof McpCatalogueError || (error instanceof SelectorError && error.code === 'unknown_id' && Boolean(snapshot && hostMcp))) blockDispatch = true;
+    selectionFailure = true;
+    if (error instanceof McpCatalogueError) {
+      blockDispatch = true;
+      mcpRefusalCode = requiresMcpRevalidation(error.code) ? 'MCP_REVALIDATION_REQUIRED' : error.code;
+    }
     selected = 'agent';
     mcpInstruction = undefined;
     failure = error instanceof SelectorError || error instanceof McpCatalogueError ? error.code : 'selector_failed';
@@ -137,14 +174,20 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   decision.modelCalls = calls;
   decision.usageSource = 'not_recorded';
   decision.modelId = 'communication:resolve_user_intent';
-  decision.schemaOutcome = failure ? 'invalid' : 'valid';
+  decision.schemaOutcome = selectionFailure ? 'invalid' : 'valid';
   decision.semanticOutcome = 'valid';
   decision.providerCode = failure;
   decision.reasonCode = failure ? 'COMMUNICATION_FALLBACK' : 'COMMUNICATION_SELECTED';
   decision.degraded = failure !== null;
   decision.degradedNotice = failure ? { text: blockDispatch
-    ? 'Каталог MCP или политика доступа изменились; требуется повторная проверка. Агент не запущен.'
-    : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
+    ? mcpRefusalCode === 'MCP_REVALIDATION_REQUIRED'
+      ? 'Каталог MCP или доверенная политика изменились; требуется повторная проверка. Агент не запущен.'
+      : 'Проверка MCP отказала; агент не запущен.'
+    : mcpRefusalCode
+      ? selected === 'agent'
+        ? 'Каталог MCP недоступен; задача передана агенту без MCP-инструментов.'
+        : 'Каталог MCP недоступен; выполнен встроенный маршрут без MCP-инструментов.'
+      : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
   let reply: RouteResult['reply'] = null;
   let continuation: RouteResult['continuation'] = null;
   let workOrder: RouteResult['workOrder'] = null;
@@ -156,10 +199,33 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     decision.escalation = decision.needsExecutor ? 'agent' : 'none';
     decision.replyAllowed = false;
     decision.outcome = decision.needsExecutor ? 'dispatched' : 'blocked';
-    if (!decision.needsExecutor) decision.reasonCode = blockDispatch ? 'MCP_REVALIDATION_REQUIRED' : 'AGENT_NOT_ALLOWED_BY_POLICY';
+    if (!decision.needsExecutor) decision.reasonCode = blockDispatch
+      ? mcpReasonCode(mcpRefusalCode ?? failure ?? 'binding_invalid') : 'AGENT_NOT_ALLOWED_BY_POLICY';
     else {
       workOrder = agentWorkOrder({ envelope: input.envelope, prepared: input.prepared, reasonCode: decision.reasonCode, requiresExternalAction: false, authorizationRef: input.authorization.snapshotRef, catalogCapabilityIds: visible.map((entry) => entry.id) });
-      continuation = { ...workOrder, decisionId: decision.decisionId, reasonCode: decision.reasonCode, partialResultRef: null, workOrder };
+      const brief = await buildScopedBrief(input, { purpose: 'agent-work-order' });
+      if (brief.status !== 'ok' || !brief.brief) {
+        decision.needsExecutor = false;
+        decision.executor = null;
+        decision.outcome = 'technical_error';
+        decision.reasonCode = brief.status === 'over_budget' ? 'BRIEF_BUDGET_EXCEEDED' : 'BRIEF_METADATA_INVALID';
+        decision.replyAllowed = false;
+      } else {
+        const selectedCapabilityIds: string[] = [];
+        const executionContext = buildExecutionContext({
+          decisionId: decision.decisionId,
+          suggestedGoal: workOrder.goal,
+          originalRequestRef: workOrder.originalRequestRef,
+          reasonCode: decision.reasonCode,
+          hostConstraints: workOrder.preservedConstraints,
+          modelPreservedConstraints: [],
+          selectedCapabilityIds,
+          requiresConfirmation: workOrder.requiresConfirmation,
+          catalogBrief: brief.brief,
+        });
+        continuation = { ...workOrder, decisionId: decision.decisionId, reasonCode: decision.reasonCode,
+          partialResultRef: null, selectedCapabilityIds, executionContext, workOrder };
+      }
     }
   } else {
     decision.route = 'deterministic';
@@ -204,9 +270,15 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   decision.modelCalls = calls;
   return { decision, decisionId: decision.decisionId, reply, askUser: null, workOrder, continuation, rendering,
     ...(mcpInstruction && continuation ? { mcpInstruction } : {}),
-    agentInstructions: continuation ? `${agentConversationInstructions(input.prepared)}${mcpInstruction
+    ...(mcpRefusalCode ? { mcpRefusalCode } : {}),
+    agentInstructions: continuation ? `${agentConversationInstructions({ ...input.prepared, agentGoalSummary })}${mcpInstruction
       ? `\n\nДоступная capability (версия каталога ${mcpInstruction.catalogueVersion}, политика ${mcpInstruction.policyVersion}): ${mcpInstruction.name}. Используй capability только если она нужна для исходной задачи; не вызывай её автоматически.` : ''}` : undefined,
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
     brief: { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } },
   };
+}
+
+function isMcpRevalidationDrift(code: string): boolean {
+  return ['catalogue_drift', 'snapshot_stale', 'binding_invalid', 'binding_scope_mismatch', 'execution_scope_changed',
+    'execution_policy_changed', 'execution_binding_missing', 'execution_catalogue_changed'].includes(code);
 }

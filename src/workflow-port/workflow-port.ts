@@ -16,9 +16,11 @@ import { AnswerRejectedError, isTerminalStatus } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 import type { McpSpec } from '../run-spec/run-spec';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
+import { withWorkStyleInstructions } from '../output/communication-v1';
 import type { RouteResult } from '../router/service';
 import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
@@ -58,6 +60,7 @@ export interface SubmitInput extends AdmitTaskInput {
   instructions?: string | null;
   /** Trusted Output-built descriptor for the Telegram UX test profile. */
   mcpDescriptor?: McpSpec | null;
+  executionContext?: ExecutionContextManifest | null;
   runnerPollSec?: number;
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
@@ -139,6 +142,7 @@ export interface WorkflowPortApi {
     opts?: {
       reason?: string;
       instructions?: string;
+      executionContext?: ExecutionContextManifest;
       previousRunId?: string | null;
       /** Движок новой попытки (P17): продолжение fast path фиксирует терминального исполнителя. */
       engine?: string | null;
@@ -247,6 +251,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       goal: task.goal,
       instructions: input.instructions ?? null,
       mcpDescriptor: input.mcpDescriptor ?? null,
+      executionContext: input.executionContext ?? null,
       runnerPollSec: input.runnerPollSec,
       runnerTimeoutSec: input.runnerTimeoutSec,
       runnerEngine: input.runnerEngine,
@@ -690,6 +695,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
     opts: {
       reason?: string;
       instructions?: string;
+      executionContext?: ExecutionContextManifest;
       previousRunId?: string | null;
       awaitingPurpose?: AwaitingPurpose | null;
       awaitingOptions?: { id: string; label: string }[] | null;
@@ -710,6 +716,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // поколением (A3 §3.2.5: сверка и отзыв прав прежнего процесса до нового
     // запуска).
     const { run, generation } = await this.store.resumeRun(taskId, opts);
+    if (opts.executionContext) {
+      await this.store.logEvent({ taskId, kind: 'progress', generation, source: 'router',
+        payload: { event: 'execution_context.attached', ...opts.executionContext } });
+    }
 
     // Остановка прежнего экземпляра и запуск нового с новым поколением.
     // terminate и delete — РАЗНЫЕ шаги: упавший/завершённый экземпляр нельзя
@@ -755,6 +765,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
         question: opts.instructions ? `Продолжить после обрыва: ${opts.instructions}` : undefined,
         goal: task.goal,
         instructions: opts.instructions ?? null,
+        executionContext: opts.executionContext ?? null,
         runnerPollSec: opts.runnerPollSec,
         runnerTimeoutSec: opts.runnerTimeoutSec,
       },
@@ -816,7 +827,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
             originalInput: task.user_value ? JSON.parse(task.user_value) : undefined,
             durableContext: await durableConversationContext(this.store, task) });
         await this.submit({ id: task.id, profileId: task.profile_id, goal: task.goal,
-          instructions, awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
+          instructions: withWorkStyleInstructions(instructions, task), awaitingInputId: record.awaiting_input_id, idempotentRun: true, ...execution });
         await this.store.markCredentialContinuation(record, 'woken');
         return true;
       } catch {

@@ -22,9 +22,10 @@
  * тела запроса: `profileId` приходит из `durable_tasks.profile_id`.
  */
 import { logStructured } from '../logging/structured-log';
+import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v3';
+export const RUN_SPEC_VERSION = 'run-spec-v4';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -72,9 +73,12 @@ export interface RemoteMcpServerSpec {
   transport: 'remote';
   url: string;
   bindingRef: string;
+  /** Trusted Registry execution scope; CP never accepts it from task/model data. */
+  scope?: string;
   allowedTools: string[];
   catalogueVersion?: string;
   policyVersion?: string;
+  registryDigest?: string;
   toolTimeoutMs?: number;
 }
 
@@ -94,6 +98,21 @@ export interface CredentialBinding {
 export interface RepositorySpec {
   fullName: string;
   token?: string;
+}
+
+export interface InputManifestPin {
+  manifestRef: string;
+  manifestVersion: string;
+}
+
+export interface IngressManifestRef {
+  contractVersion: 1;
+  manifestRef: string;
+  manifestVersion: string;
+  userTaskId: string;
+  profileId: string;
+  runId: string;
+  ownerGeneration: number;
 }
 
 export interface ResultPolicy {
@@ -121,6 +140,9 @@ export interface RunSpec {
   envAllowlist: string[];
   limits: RunLimits;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  /** Bounded task-level launch brief; Runner appends it to the accepted prompt. */
+  instructions?: string;
+  ingressManifest?: IngressManifestRef;
   outputs?: OutputSpec[];
   mcp?: McpSpec;
   credentialBindings?: CredentialBinding[];
@@ -153,6 +175,7 @@ export interface SubmitRequest {
   conversationId?: string;
   engine: EngineSpec;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
+  ingressManifest?: { contractVersion: 1; manifestRef: string; manifestVersion: string };
   envAllowlist: string[];
   limits: RunLimits;
   deadline?: string;
@@ -184,6 +207,12 @@ export function toSubmitRequest(spec: RunSpec): SubmitRequest {
   if (spec.userTaskId) body.userTaskId = spec.userTaskId;
   if (spec.conversationId) body.conversationId = spec.conversationId;
   if (spec.input) body.input = spec.input;
+  if (spec.instructions) body.instructions = spec.instructions;
+  if (spec.ingressManifest) body.ingressManifest = {
+    contractVersion: spec.ingressManifest.contractVersion,
+    manifestRef: spec.ingressManifest.manifestRef,
+    manifestVersion: spec.ingressManifest.manifestVersion,
+  };
   if (spec.outputs) body.outputs = spec.outputs;
   if (spec.repository) body.repository = spec.repository;
   if (spec.result) body.result = spec.result;
@@ -217,6 +246,7 @@ export interface RunSpecInput {
   prompt: string;
   /** Разрешённые вложения: `artifactRefs` из envelope приёма. */
   refs: InputRef[];
+  inputManifest?: InputManifestPin | null;
   instructions: string | null;
   /** Внутренний runId попытки control plane — корреляция (traceId). */
   attemptRunId: string | null;
@@ -281,10 +311,12 @@ const REMOTE_MCP_SERVER_KEYS = new Set([
   'transport',
   'url',
   'bindingRef',
+  'scope',
   'allowedTools',
   'toolTimeoutMs',
   'catalogueVersion',
   'policyVersion',
+  'registryDigest',
 ]);
 
 function readJson<T>(raw: string | undefined, fallback: T, field: string): T {
@@ -402,11 +434,12 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if (!Number.isInteger(input.ownerGeneration) || input.ownerGeneration < 0) fail('ownerGeneration', 'ownerGeneration: expected a non-negative integer');
   if (input.engineName.length === 0 || input.engineName.length > 100) fail('engineName', 'engineName: expected 1..100 chars');
   if (input.prompt.trim().length === 0) fail('prompt', 'prompt: must not be empty');
-  const inlinePrompt = input.instructions === null || input.instructions === ''
-    ? input.prompt
-    : `${input.prompt}\n\nAdditional instructions:\n${input.instructions}`;
-  if (inlinePrompt.length > 100_000) fail('prompt', 'prompt and instructions: longer than 100000');
-  if (PROMPT_CONTROL_CHARS.test(inlinePrompt)) fail('prompt', 'prompt and instructions: unsupported control characters');
+  const inlinePrompt = input.prompt;
+  if (inlinePrompt.length > 100_000) fail('prompt', 'prompt: longer than 100000');
+  if (PROMPT_CONTROL_CHARS.test(inlinePrompt)) fail('prompt', 'prompt: unsupported control characters');
+  const instructions = input.instructions?.trim() || undefined;
+  if (instructions && instructions.length > 10_000) fail('instructions', 'instructions: longer than Runner limit 10000');
+  if (instructions && PROMPT_CONTROL_CHARS.test(instructions)) fail('instructions', 'instructions: unsupported control characters');
   if (!Number.isInteger(input.timeoutMs) || input.timeoutMs <= 0) fail('timeoutMs', 'timeoutMs: expected a positive integer');
 
   // Разрешённые вложения: только строковые ref'ы, без версионирования со стороны
@@ -437,6 +470,11 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   const runId = `run_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}_${input.ownerGeneration}`;
   const jobId = `job_${input.userTaskId.replace(/[^A-Za-z0-9._:-]/g, '_')}`;
   const operationId = `op_${input.attemptRunId ?? runId}`;
+  if (input.inputManifest) {
+    if (refs.length > 0) fail('inputManifest', 'ingress manifest cannot be combined with other input refs');
+    if (input.inputManifest.manifestRef !== `cp-input-manifest:${input.userTaskId}`) fail('inputManifest.manifestRef', 'expected the task-scoped Control Plane manifest ref');
+    if (!/^[0-9a-f]{64}$/.test(input.inputManifest.manifestVersion)) fail('inputManifest.manifestVersion', 'expected lowercase sha256');
+  }
 
   const spec: RunSpec = {
     contractVersion: RUN_SPEC_CONTRACT_VERSION,
@@ -459,6 +497,16 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
       ...(inlinePrompt ? { inlinePrompt } : {}),
       ...(refs.length ? { refs } : {}),
     },
+    ...(instructions ? { instructions } : {}),
+    ...(input.inputManifest ? { ingressManifest: {
+      contractVersion: 1,
+      manifestRef: input.inputManifest.manifestRef,
+      manifestVersion: input.inputManifest.manifestVersion,
+      userTaskId: input.userTaskId,
+      profileId: input.profileId,
+      runId,
+      ownerGeneration: input.ownerGeneration,
+    } } : {}),
     ...(policy.outputs.length ? { outputs: policy.outputs } : {}),
     ...(policy.mcp ? { mcp: policy.mcp } : {}),
     ...(policy.repository ? { repository: policy.repository } : {}),
@@ -577,6 +625,24 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
     }
   }
 
+  if (spec.ingressManifest !== undefined) {
+    const manifest = spec.ingressManifest;
+    if (manifest.contractVersion !== 1) errors.push('spec.ingressManifest.contractVersion: expected 1');
+    if (manifest.manifestRef !== `cp-input-manifest:${spec.userTaskId}`) errors.push('spec.ingressManifest.manifestRef: expected task-scoped manifest ref');
+    if (!/^[0-9a-f]{64}$/.test(manifest.manifestVersion)) errors.push('spec.ingressManifest.manifestVersion: expected lowercase sha256');
+    if (manifest.userTaskId !== spec.userTaskId) errors.push('spec.ingressManifest.userTaskId: must match spec.userTaskId');
+    if (manifest.profileId !== spec.profileId) errors.push('spec.ingressManifest.profileId: must match spec.profileId');
+    if (manifest.runId !== spec.runId) errors.push('spec.ingressManifest.runId: must match spec.runId');
+    if (manifest.ownerGeneration !== spec.ownerGeneration) errors.push('spec.ingressManifest.ownerGeneration: must match spec.ownerGeneration');
+    if ((spec.input?.refs?.length ?? 0) > 0) errors.push('spec.input.refs: cannot be combined with spec.ingressManifest');
+  }
+
+  if (spec.instructions !== undefined) {
+    if (typeof spec.instructions !== 'string' || spec.instructions.length === 0) errors.push('spec.instructions: expected a non-empty string');
+    else if (spec.instructions.length > 10_000) errors.push('spec.instructions: longer than 10000');
+    else if (PROMPT_CONTROL_CHARS.test(spec.instructions)) errors.push('spec.instructions: unsupported control characters');
+  }
+
   if (spec.outputs !== undefined) {
     if (!Array.isArray(spec.outputs)) {
       errors.push('spec.outputs: expected an array');
@@ -641,8 +707,10 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
         }
 
         if (server.transport === 'remote') {
+          if (server.scope !== undefined && (typeof server.scope !== 'string' || !SAFE_ID.test(server.scope))) errors.push(`${path}.scope: expected a safe scope identifier`);
           if (server.catalogueVersion !== undefined && (typeof server.catalogueVersion !== 'string' || !SAFE_ID.test(server.catalogueVersion))) errors.push(`${path}.catalogueVersion: expected a safe version identifier`);
           if (server.policyVersion !== undefined && (typeof server.policyVersion !== 'string' || !SAFE_ID.test(server.policyVersion))) errors.push(`${path}.policyVersion: expected a safe version identifier`);
+          if (server.registryDigest !== undefined && (typeof server.registryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(server.registryDigest))) errors.push(`${path}.registryDigest: expected a lowercase SHA-256 hex digest`);
           if (!isSafeBindingRef(server.bindingRef)) {
             errors.push(`${path}.bindingRef: expected 1..${MAX_MCP_BINDING_REF_CHARS} chars without control characters`);
           }
@@ -738,6 +806,8 @@ export function logRunSpecBuilt(fields: {
   mcpNotTransmitted?: boolean;
   /** Поля RunSpec, которые Runner выводит сам и в submit не передаются. */
   untransmitted?: string[];
+  /** Safe launch manifest only; no user prompt or brief text. */
+  executionContext?: ExecutionContextManifest | null;
   reason?: string;
 }): void {
   logStructured({
@@ -753,5 +823,6 @@ export function logRunSpecBuilt(fields: {
     mcpServers: fields.mcpServers,
     ...(fields.mcpNotTransmitted === undefined ? {} : { mcpNotTransmitted: fields.mcpNotTransmitted }),
     ...(fields.untransmitted ? { untransmitted: fields.untransmitted } : {}),
+    ...(fields.executionContext ? { executionContext: fields.executionContext } : {}),
   });
 }
