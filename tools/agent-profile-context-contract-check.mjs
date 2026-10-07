@@ -37,12 +37,12 @@ assert.deepEqual(cpIdentity.agentProfileAuthority, {
   sourcePath: source.contractPath,
   contextSchemaPath: 'contracts/agent-profile-context-v1/profile-context.schema.json',
   contextFields: schema.required,
-  runtimeStatus: 'opt_in_cp_hosted_bootstrap_prototype',
+  runtimeStatus: 'opt_in_agent_authority_candidate',
 });
 
-const cpModule = await readFile(new URL('../src/connected-app/session-service.ts', import.meta.url), 'utf8');
+const cpModule = await readFile(new URL('../src/agent-profile-authority/contract.ts', import.meta.url), 'utf8');
 const contextType = cpModule.match(/export type AgentProfileContext = \{([^}]+)\}/s)?.[1];
-assert.ok(contextType, 'CP must expose the typed AgentProfileContext port');
+assert.ok(contextType, 'Agent profile authority must expose the typed AgentProfileContext port');
 const contextFields = [...contextType.matchAll(/\b(\w+)\s*:/g)].map(match => match[1]);
 assert.deepEqual(contextFields, schema.required);
 assert.match(cpModule, /resolveBrowserSession\(request: Request\): Promise<AgentProfileContext \| null>/);
