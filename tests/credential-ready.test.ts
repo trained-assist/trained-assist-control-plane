@@ -163,10 +163,14 @@ describe('verified credential completion', () => {
     const { store, taskId, event, awaitingInputId } = await parked();
     await store.completeCredentialAwaiting(event);
     const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn(async () => ({})) };
+    const principal = 'credential-recovery-operator';
+    const secret = 'credential-recovery-test-secret';
+    await store.upsertPrincipal({ principalId: principal, profileId: event.profileId, scopes: ['tasks:control'] });
     const bindings = { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
-      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000', DELIVERY_ADAPTER: 'local' };
+      PRINCIPAL_SECRET: secret, ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000', DELIVERY_ADAPTER: 'local' };
     if (entrypoint === 'http') {
       expect((await worker.fetch(new Request('https://cp.test/recover', { method: 'POST',
+        headers: { 'x-principal': principal, 'x-principal-sig': await signPrincipal(principal, secret) },
         body: JSON.stringify({ runnerEngine: 'opencode', runnerTimeoutSec: 1 }),
       }), bindings)).status).toBe(200);
     } else {
@@ -177,12 +181,26 @@ describe('verified credential completion', () => {
     }) });
   });
 
+  it('rejects anonymous HTTP recovery without starting credential work', async () => {
+    const { store, taskId, event } = await parked();
+    await store.completeCredentialAwaiting(event);
+    const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };
+    const response = await worker.fetch(new Request('https://cp.test/recover', { method: 'POST' }), {
+      DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
+      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', RUN_SPEC_TIMEOUT_MS: '600000',
+    });
+    expect(response.status).toBe(401);
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await store.listRuns(taskId)).toHaveLength(0);
+  });
+
   it.each([undefined, 'invalid', '0'])('does not start credential work without a valid host timeout (%s)', async timeout => {
     const { store, taskId, event } = await parked();
     await store.completeCredentialAwaiting(event);
     const workflow = { get: vi.fn(async () => { throw new Error('not started'); }), create: vi.fn() };
-    await worker.fetch(new Request('https://cp.test/recover'), { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
-      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', ...{ RUN_SPEC_TIMEOUT_MS: timeout } });
+    await worker.scheduled({} as ScheduledEvent, { DB: env.DB, TASK_WORKFLOW: workflow as unknown as Workflow,
+      ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', ...{ RUN_SPEC_TIMEOUT_MS: timeout } },
+    { waitUntil: () => {} } as unknown as ExecutionContext);
     expect(workflow.create).not.toHaveBeenCalled();
     expect(await store.listRuns(taskId)).toHaveLength(0);
   });
