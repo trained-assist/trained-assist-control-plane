@@ -29,7 +29,7 @@ import {
  * Триггер идёт раз в минуту; 30 минут без отметки = планировщик умер молча.
  */
 const WATCHDOG_STALE_MS = 30 * 60_000;
-import { logStructured } from './logging/structured-log';
+import { logError, logStructured, resolveErrorPublisher, setErrorPublisher } from './logging';
 import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedError } from './intake/errors';
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
@@ -114,6 +114,12 @@ export interface Env {
   GATEWAY_DELIVERY_URL?: string;
   /** Секрет шлюза для реального адаптера доставки. */
   GATEWAY_DELIVERY_SECRET?: string;
+  /**
+   * Error Watcher push intake (I2): URL и ключ источника. Без пары
+   * ERROR_WATCHER_URL+ERROR_WATCHER_KEY публикация error-событий выключена.
+   */
+  ERROR_WATCHER_URL?: string;
+  ERROR_WATCHER_KEY?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
@@ -1144,6 +1150,7 @@ async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: st
  */
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    setErrorPublisher(resolveErrorPublisher(env));
     const url = new URL(req.url);
 const store = new TaskStore(env.DB);
      const port = workflowPortOf(env, store);
@@ -1745,6 +1752,7 @@ const startResult = await port.submit(input);
    * её и алертит, если отметка устарела — иначе планировщик может умереть молча.
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    setErrorPublisher(resolveErrorPublisher(env));
     if (env.PREVIEW_ONLY === 'true') return;
     const store = new TaskStore(env.DB);
 
@@ -1782,13 +1790,13 @@ const startResult = await port.submit(input);
     // смешанный с «просроченный вход»: у них разные владельцы и разные действия.
     const last = await store.lastWatchdogRun();
     if (!last || Date.now() - last.last_run_at > WATCHDOG_STALE_MS) {
-      console.error(JSON.stringify({
+      logError({
         event: 'intake.watchdog_scheduler_stale',
         level: 'error',
         reason: 'scheduler_not_running',
         lastAt: last?.last_run_at ?? null,
         ageMs: last ? Date.now() - last.last_run_at : null,
-      }));
+      });
     }
 
     if (scheduleError !== undefined) throw scheduleError;
