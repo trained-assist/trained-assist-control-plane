@@ -16,13 +16,17 @@ const profile = 'profile_telegram_001';
 let nextUpdate = 800000;
 async function provision() {
   await env.DB.prepare(`INSERT INTO agent_telegram_bindings
-    (bot_id,telegram_user_id,principal_id,enabled,updated_at) VALUES(?,?,?,1,1)
+    (bot_id,telegram_user_id,principal_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+    VALUES(?,?,?,1,1,'reviewer_test','receipt_test_telegram_binding',2)
     ON CONFLICT(bot_id,telegram_user_id) DO UPDATE SET principal_id=excluded.principal_id,
-    enabled=1,updated_at=updated_at+1`)
+    enabled=1,updated_at=updated_at+1,reviewer_ref=excluded.reviewer_ref,
+    receipt_ref=excluded.receipt_ref,reviewed_at=excluded.reviewed_at`)
     .bind(bot, user, principal).run();
   await env.DB.prepare(`INSERT INTO agent_profile_memberships
-    (principal_id,profile_id,enabled,updated_at) VALUES(?,?,1,1)
-    ON CONFLICT(principal_id,profile_id) DO UPDATE SET enabled=1,updated_at=updated_at+1`)
+    (principal_id,profile_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+    VALUES(?,?,1,1,'reviewer_test','receipt_test_primary_profile',2)
+    ON CONFLICT(principal_id,profile_id) DO UPDATE SET enabled=1,updated_at=updated_at+1,
+    reviewer_ref=excluded.reviewer_ref,receipt_ref=excluded.receipt_ref,reviewed_at=excluded.reviewed_at`)
     .bind(principal, profile).run();
   await env.DB.prepare(`INSERT INTO connected_app_memberships
     (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)
@@ -131,6 +135,37 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
       WHERE principal_id=? AND profile_id=? AND audience='crm-web'`).bind(principal, profile).run();
   });
 
+  it('requires private review provenance and retains append-only audit on grant revocation', async () => {
+    await expect(env.DB.prepare(`INSERT INTO agent_telegram_bindings
+      (bot_id,telegram_user_id,principal_id,enabled,updated_at) VALUES('bot_audit','123456700','human_audit',1,1)`)
+      .run()).rejects.toThrow(/review provenance/);
+    await env.DB.prepare(`INSERT INTO agent_telegram_bindings
+      (bot_id,telegram_user_id,principal_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+      VALUES('bot_audit','123456700','human_audit',1,1,'owner_review','private_receipt_a1',2)`).run();
+    await env.DB.prepare(`INSERT INTO agent_profile_memberships
+      (principal_id,profile_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+      VALUES('human_audit','profile_audit',1,1,'owner_review','private_receipt_a2',2)`).run();
+    await expect(env.DB.prepare(`DELETE FROM agent_profile_memberships
+      WHERE principal_id='human_audit' AND profile_id='profile_audit'`).run())
+      .rejects.toThrow(/disable Agent profile membership/);
+    await env.DB.prepare(`UPDATE agent_profile_memberships SET enabled=0,updated_at=3,
+      reviewer_ref='owner_review',receipt_ref='private_receipt_a3',reviewed_at=3
+      WHERE principal_id='human_audit' AND profile_id='profile_audit'`).run();
+    const audit = await env.DB.prepare(`SELECT subject_kind,action,reviewer_ref,receipt_ref,recorded_at
+      FROM agent_profile_authority_audit WHERE principal_id='human_audit' ORDER BY audit_id`).all<{
+        subject_kind: string; action: string; reviewer_ref: string; receipt_ref: string; recorded_at: number }>();
+    expect(audit.results).toEqual([
+      { subject_kind: 'telegram_binding', action: 'insert', reviewer_ref: 'owner_review',
+        receipt_ref: 'private_receipt_a1', recorded_at: 2 },
+      { subject_kind: 'profile_membership', action: 'insert', reviewer_ref: 'owner_review',
+        receipt_ref: 'private_receipt_a2', recorded_at: 2 },
+      { subject_kind: 'profile_membership', action: 'update', reviewer_ref: 'owner_review',
+        receipt_ref: 'private_receipt_a3', recorded_at: 3 },
+    ]);
+    await expect(env.DB.prepare(`DELETE FROM agent_profile_authority_audit WHERE audit_id=1`).run())
+      .rejects.toThrow(/append-only/);
+  });
+
   it('does not consume a preview, requires CSRF POST and atomically rejects replay', async () => {
     await provision();
     const link = await linkFor();
@@ -205,7 +240,9 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const page = await preview(link);
     const csrf = csrfFrom(await page.text());
     const csrfCookie = page.headers.get('set-cookie')?.split(';')[0] ?? '';
-    await env.DB.prepare('UPDATE agent_telegram_bindings SET enabled=0,updated_at=updated_at+1 WHERE bot_id=? AND telegram_user_id=?')
+    await env.DB.prepare(`UPDATE agent_telegram_bindings SET enabled=0,updated_at=updated_at+1,
+      reviewer_ref='reviewer_test',receipt_ref='receipt_test_revoke_binding',reviewed_at=reviewed_at+1
+      WHERE bot_id=? AND telegram_user_id=?`)
       .bind(bot, user).run();
     expect((await redeem(link, csrf, csrfCookie)).status).toBe(403);
   });
@@ -280,7 +317,8 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     await provision();
     const second = 'profile_telegram_002';
     await env.DB.prepare(`INSERT INTO agent_profile_memberships
-      (principal_id,profile_id,enabled,updated_at) VALUES(?,?,1,1)`)
+      (principal_id,profile_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+      VALUES(?,?,1,1,'reviewer_test','receipt_test_secondary_profile',2)`)
       .bind(principal, second).run();
     await env.DB.prepare(`INSERT INTO connected_app_memberships
       (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)`)
@@ -306,10 +344,12 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     const otherBot = 'bot_other_user'; const otherUser = '987654321';
     const otherPrincipal = 'human_telegram_002'; const otherProfile = 'profile_telegram_003';
     await env.DB.prepare(`INSERT INTO agent_telegram_bindings
-      (bot_id,telegram_user_id,principal_id,enabled,updated_at) VALUES(?,?,?,1,1)`)
+      (bot_id,telegram_user_id,principal_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+      VALUES(?,?,?,1,1,'reviewer_test','receipt_test_secondary_binding',2)`)
       .bind(otherBot, otherUser, otherPrincipal).run();
     await env.DB.prepare(`INSERT INTO agent_profile_memberships
-      (principal_id,profile_id,enabled,updated_at) VALUES(?,?,1,1)`)
+      (principal_id,profile_id,enabled,updated_at,reviewer_ref,receipt_ref,reviewed_at)
+      VALUES(?,?,1,1,'reviewer_test','receipt_test_other_profile',2)`)
       .bind(otherPrincipal, otherProfile).run();
     await env.DB.prepare(`INSERT INTO connected_app_memberships
       (principal_id,profile_id,audience,scopes_json,enabled,updated_at) VALUES(?,?,?,?,1,1)`)
@@ -341,11 +381,13 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     await env.DB.prepare(`UPDATE connected_app_memberships SET enabled=0,updated_at=updated_at+1
       WHERE principal_id=? AND profile_id=? AND audience='recruiting-web'`).bind(principal, second).run();
     expect(await authority.resolveBrowserSession(request())).not.toBeNull();
-    await env.DB.prepare(`UPDATE agent_profile_memberships SET enabled=0,updated_at=updated_at+1
+    await env.DB.prepare(`UPDATE agent_profile_memberships SET enabled=0,updated_at=updated_at+1,
+      reviewer_ref='reviewer_test',receipt_ref='receipt_test_revoke_membership',reviewed_at=reviewed_at+1
       WHERE principal_id=? AND profile_id=?`).bind(principal, second).run();
     expect(await authority.resolveBrowserSession(request())).toBeNull();
     expect(await authority.resolveCurrentSession(first!.sessionId)).toBeNull();
-    await env.DB.prepare(`UPDATE agent_profile_memberships SET enabled=1,updated_at=updated_at+1
+    await env.DB.prepare(`UPDATE agent_profile_memberships SET enabled=1,updated_at=updated_at+1,
+      reviewer_ref='reviewer_test',receipt_ref='receipt_test_restore_membership',reviewed_at=reviewed_at+1
       WHERE principal_id=? AND profile_id=?`).bind(principal, second).run();
     expect(await authority.resolveBrowserSession(request())).toBeNull();
   });
