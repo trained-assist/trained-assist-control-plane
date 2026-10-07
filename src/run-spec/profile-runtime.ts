@@ -39,8 +39,10 @@ export function resolveProfileRuntime(
       if (entry.hostMcpBinding !== undefined && entry.hostMcpBinding !== 'registry-mcp-test-160-read') return fail();
     }
   }
-  const policy = runSpecPolicyOf(env);
+  const basePolicy = runSpecPolicyOf(env);
+  const policy = { ...basePolicy, budget: basePolicy.budgetPolicies?.[durableProfileId] ?? null };
   if (durableProfileId !== TELEGRAM_UX_PROFILE) return { policy, adapter: runnerAdapterOf(env) };
+  if (!policy.budget) return fail();
   if (!Object.hasOwn(overrides, durableProfileId) || !env.RUNNER_API_URL
     || !env.RUNNER_API_KEY_TELEGRAM_UX?.trim()
     || env.RUNNER_API_KEY_TELEGRAM_UX === env.RUNNER_API_KEY) return fail();

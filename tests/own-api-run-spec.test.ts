@@ -145,6 +145,8 @@ describe('run-spec: хостовая политика из bindings', () => {
       resultDestinationRef: null,
       maxOutputBytes: null,
       inputRefs: [],
+      budget: null,
+      budgetPolicies: {},
     });
   });
 
@@ -179,6 +181,27 @@ describe('run-spec: хостовая политика из bindings', () => {
   it('envAllowlist принимает только имена переменных, не значения', () => {
     expect(() => runSpecPolicyOf({ RUN_SPEC_ENV_ALLOWLIST: 'A=1' })).toThrow(RunSpecMappingError);
     expect(runSpecPolicyOf({ RUN_SPEC_ENV_ALLOWLIST: 'A, B_C' }).envAllowlist).toEqual(['A', 'B_C']);
+  });
+
+  it('parses a strict host-owned token budget policy and rejects caller attempts to replace it', () => {
+    const enforcement = { provider: 'ladder', policyId: 'sandbox-test-v1', maxInputTokens: 12000, maxOutputTokens: 2000, maxTotalTokens: 20000 };
+    const hostPolicy = runSpecPolicyOf({ RUN_SPEC_BUDGET_POLICIES: JSON.stringify({ 'profile-1': enforcement }) });
+    const selectedPolicy = { ...hostPolicy, budget: hostPolicy.budgetPolicies?.['profile-1'] };
+    const built = buildRunSpec(baseInput, selectedPolicy);
+    expect(built.spec.budget).toEqual({ correlationRef: baseInput.userTaskId, approved: true, enforcement });
+    expect(toSubmitRequest(built.spec).budget).toEqual(built.spec.budget);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+
+    const injected = { ...baseInput, budget: { correlationRef: 'attacker', approved: true, enforcement } } as unknown as RunSpecInput;
+    expect(() => buildRunSpec(injected, selectedPolicy)).toThrow(/host-owned field/);
+  });
+
+  it.each([
+    { provider: 'ladder', policyId: 'sandbox-test-v1', maxInputTokens: 0, maxOutputTokens: 2000, maxTotalTokens: 10000 },
+    { provider: 'ladder', policyId: 'sandbox-test-v1', maxInputTokens: 12000, maxOutputTokens: 2000, maxTotalTokens: 1000 },
+    { provider: 'ladder', policyId: 'sandbox-test-v1', maxInputTokens: 12000, maxOutputTokens: 2000, maxTotalTokens: 20000, approved: true },
+  ])('rejects malformed or caller-extended host budget configuration', enforcement => {
+    expect(() => runSpecPolicyOf({ RUN_SPEC_BUDGET_POLICIES: JSON.stringify({ 'profile-1': enforcement }) })).toThrow(RunSpecMappingError);
   });
 
   it('uses explicit host repository, input refs and runtime limits with no project inference', () => {
@@ -344,7 +367,7 @@ describe('run-spec: удалённый MCP (transport remote)', () => {
   it('хостовая политика RUN_SPEC_MCP собирает remote-сервер и проходит локальную проверку контракта', () => {
     const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
 
-    expect(built.version).toBe('run-spec-v4');
+    expect(built.version).toBe('run-spec-v5');
     expect(built.spec.mcp).toEqual({ servers: [remoteServer()] });
     expect(validateRunSpec(built.spec).ok).toBe(true);
     expect(built.spec.credentialBindings).toBeUndefined();

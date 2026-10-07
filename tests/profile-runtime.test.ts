@@ -16,6 +16,7 @@ const bindings = {
   RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: {
     policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX',
   } }),
+  RUN_SPEC_BUDGET_POLICIES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { provider: 'ladder', policyId: 'sandbox-test-v1', maxInputTokens: 12000, maxOutputTokens: 2000, maxTotalTokens: 20000 } }),
   RUN_SPEC_OUTPUTS: JSON.stringify([{ path: 'outputs/category-results.csv', name: 'Category totals', mime: 'text/csv' }]),
   RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'fixture/runner' }),
   RUN_SPEC_TIMEOUT_MS: '300000',
@@ -29,6 +30,11 @@ const bindings = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('trusted profile runtime', () => {
+  it('refuses the Telegram sandbox runtime when no profile-specific budget is configured', () => {
+    const { RUN_SPEC_BUDGET_POLICIES: _unused, ...withoutBudget } = bindings;
+    expect(() => resolveProfileRuntime(withoutBudget, TELEGRAM_UX_PROFILE)).toThrow(ProfileRuntimeConfigurationError);
+  });
+
   it('preserves the complete global CSV policy and historical defaults', () => {
     expect(resolveProfileRuntime(bindings, 'integration-v1').policy).toEqual(runSpecPolicyOf(bindings));
     expect(resolveProfileRuntime({}, 'historical-profile').policy).toEqual(runSpecPolicyOf({}));
