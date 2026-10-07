@@ -372,9 +372,22 @@ describe('opt-in Telegram private-chat browser bootstrap', () => {
     await env.DB.prepare(`INSERT INTO connected_app_sessions
       (session_id,principal_id,profile_id,enabled,generation,updated_at,agent_generation) VALUES(?,?,?,1,1,1,?)`)
       .bind(first!.sessionId, principal, profile, first!.profileGeneration).run();
+    await env.DB.prepare(`INSERT INTO durable_tasks(id,profile_id,goal,status,created_at,updated_at)
+      VALUES('task_before_profile_switch',?,'continue admitted work','active',1,1)`)
+      .bind(profile).run();
+    await env.DB.prepare(`INSERT INTO schedules
+      (schedule_id,profile_id,cron_expr,timezone,goal,enabled,next_due_at,created_at,updated_at)
+      VALUES('schedule_before_profile_switch',?,'0 9 * * *','Europe/Moscow','morning search',1,2000000000000,1,1)`)
+      .bind(profile).run();
     expect((await selectProfile(browserCookie, second)).status).toBe(303);
     expect((await authority.resolveBrowserSession(request()))).toMatchObject({ profileId: second,
       profileGeneration: first!.profileGeneration + 1 });
+    expect(await env.DB.prepare(`SELECT profile_id,status FROM durable_tasks
+      WHERE id='task_before_profile_switch'`).first()).toEqual({ profile_id: profile, status: 'active' });
+    expect(await env.DB.prepare(`SELECT profile_id,enabled,next_due_at FROM schedules
+      WHERE schedule_id='schedule_before_profile_switch'`).first()).toEqual({
+        profile_id: profile, enabled: 1, next_due_at: 2000000000000,
+      });
     const prior = await env.DB.prepare('SELECT enabled,generation FROM connected_app_sessions WHERE session_id=?')
       .bind(first!.sessionId).first<{ enabled: number; generation: number }>();
     expect(prior).toMatchObject({ enabled: 1, generation: 1 });
