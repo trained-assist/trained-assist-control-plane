@@ -69,6 +69,7 @@ import { communicationV1Catalog, durableConversationContext, probeRunnerHealth }
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
 import { observeHealthCatalogue, parseHealthCatalogue } from './diagnostics/health-catalogue';
+import { traceTask } from './diagnostics/trace';
 import type { RouteResult } from './router/service';
 import {
   continueFastPathEscalation,
@@ -1621,6 +1622,14 @@ const store = new TaskStore(env.DB);
         const limit = Number(url.searchParams.get('limit') ?? '100');
         const history = await reportHistory(store, taskId, after ? Number(after) : null, Number.isFinite(limit) ? limit : 100);
         return json(history);
+      }
+      if (url.pathname.startsWith('/trace/')) {
+        const parts = url.pathname.split('/').filter(Boolean);
+        const traceTaskId = parts[1] ?? null;
+        if (!traceTaskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, traceTaskId, 'tasks:read', auth);
+        const trace = await traceTask(store, traceTaskId);
+        return json(trace);
       }
 
       if (!taskId) return json({ error: 'taskId is required' }, 400);
