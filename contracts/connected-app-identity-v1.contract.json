@@ -29,7 +29,7 @@
     "sourcePath": "contracts/agent-profile-context-v1/contract.json",
     "contextSchemaPath": "contracts/agent-profile-context-v1/profile-context.schema.json",
     "contextFields": ["principalId", "profileId", "sessionId", "profileGeneration"],
-    "runtimeStatus": "opt_in_cp_hosted_bootstrap_prototype"
+    "runtimeStatus": "opt_in_agent_authority_candidate"
   },
   "audiences": {
     "recruiting-web": ["recruiting.responses.read", "recruiting.reports.read", "recruiting.reports.create",

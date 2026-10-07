@@ -42,7 +42,7 @@ describe('connected app identity v1 offline contract', () => {
       owner: 'trained-assist-agent',
       sourceRevision: '3cc6358b052a466410c3b45e3355ec3f7548dd30',
       contextFields: ['principalId', 'profileId', 'sessionId', 'profileGeneration'],
-      runtimeStatus: 'opt_in_cp_hosted_bootstrap_prototype',
+      runtimeStatus: 'opt_in_agent_authority_candidate',
     });
     expect(schema.oneOf[1]?.required).toEqual(contract.introspection.activeResponseFields);
   });

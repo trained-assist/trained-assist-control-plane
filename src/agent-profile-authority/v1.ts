@@ -1,4 +1,4 @@
-import type { AgentProfileAuthority, AgentProfileContext } from '../connected-app/session-service';
+import type { AgentProfileAuthority, AgentProfileContext } from './contract';
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HEX = /^[a-f0-9]{64}$/;

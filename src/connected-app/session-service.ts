@@ -1,13 +1,9 @@
 import contract from '../../contracts/connected-app-identity-v1.contract.json';
+import type { AgentProfileAuthority, AgentProfileContext } from '../agent-profile-authority/contract';
+export type { AgentProfileAuthority, AgentProfileContext } from '../agent-profile-authority/contract';
 
 type Audience = keyof typeof contract.audiences;
 type Config = { enabled?: string; hostKey?: string; serviceKeys?: string; issuer?: string; redirectUris?: string };
-export type AgentProfileContext = { principalId: string; profileId: string; sessionId: string;
-  profileGeneration: number };
-export type AgentProfileAuthority = {
-  resolveBrowserSession(request: Request): Promise<AgentProfileContext | null>;
-  resolveCurrentSession(sessionId: string): Promise<AgentProfileContext | null>;
-};
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_AGE = contract.token.maxLifetimeSeconds;
