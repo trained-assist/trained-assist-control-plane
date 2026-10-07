@@ -65,7 +65,7 @@ import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
 import { communicationSelector, communicationWriter } from './router/communication-client';
-import { communicationV1Catalog, durableConversationContext, probeRunnerHealth } from './router/communication-v1';
+import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth } from './router/communication-v1';
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
 import { observeHealthCatalogue, parseHealthCatalogue } from './diagnostics/health-catalogue';
@@ -491,6 +491,17 @@ async function handleRouteRoute(
     env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
   const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
   const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
+  const systemHealth = async () => {
+    const [runner, watcher] = await Promise.all([probeRunnerHealth(runtime.adapter), probeWatcherHealth(env)]);
+    return {
+      ...runner,
+      watcher: watcher.watcher,
+      watcherAlarmId: watcher.watcherAlarmId,
+      watcherReasons: watcher.watcherReasons,
+      openIncidents: watcher.watcherOpenIncidents,
+      staleSources: watcher.watcherStaleSources,
+    };
+  };
 
   let result = saved ?? await routeRequest(
     {
@@ -538,7 +549,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: () => probeRunnerHealth(runtime.adapter), hostMcp } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: systemHealth, hostMcp } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({
