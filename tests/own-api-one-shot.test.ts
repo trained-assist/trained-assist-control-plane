@@ -125,7 +125,8 @@ describe('one-shot с движком: результат = текст движк
     await conversationPlan(ctx, store, params, { adapter: { ...adapter, submit } as unknown as RunnerApiAdapter, runSpecPolicy });
 
     expect(submit).toHaveBeenCalledTimes(1);
-    expect(submit.mock.calls[0]?.[0].runSpec?.budget).toEqual({ correlationRef: taskId, approved: true, enforcement });
+    const submitted = submit.mock.calls[0]?.[0] as unknown as { runSpec?: { budget?: unknown } };
+    expect(submitted.runSpec?.budget).toEqual({ correlationRef: taskId, approved: true, enforcement });
   });
 
   it('без awaitingPurpose план закрывает задачу текстом движка, без ожидания', async () => {
