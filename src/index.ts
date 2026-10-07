@@ -1230,10 +1230,14 @@ const store = new TaskStore(env.DB);
           ],
         });
       }
-      if (url.pathname === '/recover') return json(await port.recover());
+      if (url.pathname === '/recover') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
+        return json(await port.recover());
+      }
 
       // Маршруты попытки исполняются по runId, а не по taskId.
       if (url.pathname === '/connection-lost') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
         const run = await port.markConnectionLost(
           body.runId as string,
           (body.reason as string | undefined) ?? 'connection_lost',
@@ -1241,6 +1245,7 @@ const store = new TaskStore(env.DB);
         return json({ runId: run.id, status: run.status, errorClass: run.error_class, taskId: run.task_id });
       }
       if (url.pathname === '/heartbeat') {
+        await authorizePrincipalScope(store, req, 'tasks:control', auth);
         const run = await port.heartbeat(body.runId as string, body.leaseSec as number | undefined);
         return json({ runId: run.id, status: run.status, leaseUntil: run.lease_until });
       }
@@ -1358,8 +1363,15 @@ const store = new TaskStore(env.DB);
       }
       if (url.pathname === '/deliveries/deliver') {
         await authorizePrincipalScope(store, req, 'tasks:control', auth);
-        const adapter = await resolveDeliveryAdapter(env);
-        if (!adapter) return json({ error: 'delivery adapter not configured' }, 503);
+        if (!String(env.DELIVERY_ADAPTER ?? '').trim()) {
+          return json({ error: 'delivery adapter not configured' }, 503);
+        }
+        let adapter: DeliveryAdapter;
+        try {
+          adapter = await resolveDeliveryAdapter(env);
+        } catch {
+          return json({ error: 'delivery adapter not configured' }, 503);
+        }
         const owner = (body.owner as string | undefined) ?? 'local-worker';
         const result = await deliverOnce(store, owner, adapter, {
           taskId: (body.taskId as string | undefined) ?? null,
@@ -1571,6 +1583,7 @@ const store = new TaskStore(env.DB);
         return json({ error: 'method not allowed' }, 405);
       }
       if (url.pathname === '/runner/health') {
+        await authorizePrincipalScope(store, req, 'tasks:read', auth);
         const adapter = runnerAdapterOf(env);
         if (!adapter) return json({ configured: false });
         try {
@@ -1618,6 +1631,7 @@ const store = new TaskStore(env.DB);
 
       if (url.pathname === '/receipt') {
         if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
         const receipt = await store.acceptReceipt(taskId);
         if (!receipt) return json({ error: 'receipt not found' }, 404);
         return json({ ...receipt, durable: true });
