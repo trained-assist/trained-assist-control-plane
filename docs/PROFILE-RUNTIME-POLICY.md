@@ -59,8 +59,8 @@ and creates one Runner admission record, but no CP task or Workflow. A shared
 Telegram lane readiness check is intentionally not a gate for this isolated
 principal; it does not participate in this test pass.
 
-Before the first run, create a GitHub Actions environment named `sandbox`,
-restrict deployments to protected `main`, and require an authorized reviewer.
+Before the first run, create a GitHub Actions environment named `sandbox` and
+restrict deployments to protected `main`.
 Set these four protected environment secrets once; do not put their values in
 the repository or workflow inputs. Generate the Runner seed directly into the
 secret store with
