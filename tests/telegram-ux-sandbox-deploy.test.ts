@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
-import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, telegramUxPrincipalSignature, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
+import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, telegramUxPrincipalSignature, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
 
 const config = {
   name: TELEGRAM_UX_SANDBOX.workerName,
@@ -17,6 +17,13 @@ const config = {
 };
 
 describe('Telegram UX sandbox deploy guard', () => {
+  it('pins sandbox deployment evidence to a full git commit SHA', () => {
+    expect(validateSandboxBuildSha('A'.repeat(40))).toBe('a'.repeat(40));
+    for (const invalid of ['', 'main', 'a'.repeat(39), 'g'.repeat(40)]) {
+      expect(() => validateSandboxBuildSha(invalid)).toThrow('sandbox_build_sha_invalid');
+    }
+  });
+
   it('recognizes both 404 and the exact legacy response for an undeployed readiness endpoint', () => {
     expect(isSandboxReadinessEndpointMissing(404, { error: 'not found' })).toBe(true);
     expect(isSandboxReadinessEndpointMissing(400, { error: 'taskId is required' })).toBe(true);

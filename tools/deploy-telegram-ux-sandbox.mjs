@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
+import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
 
 const configPath = 'wrangler.telegram-ux-v1.jsonc';
 function run(command, args, options = {}) {
@@ -27,7 +27,7 @@ async function validateAccount() {
   }
 }
 
-async function livenessProbe() {
+async function livenessProbe(expectedBuildSha = null) {
   let response;
   try {
     response = await fetch('https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev/healthz', {
@@ -40,7 +40,9 @@ async function livenessProbe() {
   if (!response.ok || body.service !== 'trained-assist-control-plane' || body.check !== 'liveness') {
     throw new Error('sandbox_worker_liveness_failed');
   }
-  return { status: 'PASS', buildSha: typeof body.buildSha === 'string' ? body.buildSha : null };
+  const buildSha = typeof body.buildSha === 'string' ? body.buildSha : null;
+  if (expectedBuildSha && buildSha !== expectedBuildSha) throw new Error('sandbox_worker_build_sha_mismatch');
+  return { status: 'PASS', buildSha };
 }
 
 async function readinessProbe(secret, { allowBlocked = false, allowMissing = false } = {}) {
@@ -71,6 +73,7 @@ async function main(args = process.argv.slice(2)) {
   }
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   validateTelegramUxSandboxConfig(config);
+  const sourceSha = validateSandboxBuildSha(run('git', ['rev-parse', 'HEAD']).trim());
   await validateAccount();
   const secret = await keychainSecret();
   if (args[0] === '--preflight') {
@@ -90,10 +93,11 @@ async function main(args = process.argv.slice(2)) {
     maxBuffer: 1024 * 1024,
   });
   if (secretPut.error || secretPut.status !== 0) throw new Error('sandbox_secret_sync_failed');
-  run('npx', ['wrangler', 'deploy', '--config', configPath], { stdio: 'inherit' });
+  run('npx', ['wrangler', 'deploy', '--config', configPath, '--var', `BUILD_SHA:${sourceSha}`], { stdio: 'inherit' });
+  const liveness = await livenessProbe(sourceSha);
   const readiness = await readinessProbe(secret);
   console.log(JSON.stringify({ ok: true, mode: 'deploy', worker: TELEGRAM_UX_SANDBOX.workerName,
-    secretName: 'PRINCIPAL_SECRET_TELEGRAM_UX', ...readiness }));
+    sourceSha, secretName: 'PRINCIPAL_SECRET_TELEGRAM_UX', liveness, ...readiness }));
 
   // The legacy smoke admits a new durable task, so it stays an explicit post-readiness check.
   const smoke = spawnSync(process.execPath, ['tools/integration-v1-smoke.mjs'], {
