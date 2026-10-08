@@ -408,7 +408,7 @@ npm run check:evidence                     # негативные проверк
 
 Control Plane имеет отдельные конфиги `wrangler.staging.jsonc` и `wrangler.production.jsonc`; каждый использует свою D1 и Workflow. Production target создан пустым в WEUR и не связан с Telegram, Agent, Runner или пользовательскими данными. До отдельного принятого сценария cutover он не заменяет живой legacy сервис.
 
-После merge в защищённый `main` CI применяет миграции, деплоит staging и проверяет точный `BUILD_SHA` и анонимный отказ приватного health-read (`401`), затем выполняет те же шаги для production. GitHub `workflow_dispatch` доступен только на `main`, выключен по умолчанию и служит повтором этого же gate. В production smoke ошибка блокирует зелёный релиз. Rollback возвращает Worker на прошлую версию, но не откатывает D1 миграции:
+После merge в защищённый `main` CI применяет миграции, деплоит staging и проверяет точный `BUILD_SHA` и анонимный отказ приватного health-read (`401`), затем выполняет те же шаги для production. GitHub environments доступны только с protected branches (сейчас это `main`), без ручной reviewer-паузы. `workflow_dispatch` доступен только на `main`, выключен по умолчанию и служит повтором этого же gate. В production smoke ошибка блокирует зелёный релиз. Rollback возвращает Worker на прошлую версию, но не откатывает D1 миграции:
 
 ```bash
 npx wrangler deployments list --name trained-assist-cp-production
