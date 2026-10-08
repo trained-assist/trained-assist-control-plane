@@ -25,7 +25,7 @@ let body;
 try { body = await response.json(); } catch { body = {}; }
 const task = body?.taskStore;
 const result = task?.result && typeof task.result === 'object' && !Array.isArray(task.result) ? task.result : {};
-const reasonCode = typeof result.reasonCode === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(result.reasonCode)
+const reasonCode = typeof result.reasonCode === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(result.reasonCode)
   ? result.reasonCode : null;
 const output = {
   httpStatus: response.status,
