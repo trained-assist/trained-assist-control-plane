@@ -10,6 +10,12 @@ export const TELEGRAM_UX_SANDBOX = {
   runnerMockTestUrl: 'https://169-58-15-230.sslip.io/runner-mcp-test',
 } as const;
 
+export function validateSandboxBuildSha(value: unknown): string {
+  const sha = String(value ?? '').trim();
+  if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error('sandbox_build_sha_invalid');
+  return sha.toLowerCase();
+}
+
 export function validateTelegramUxSandboxConfig(config: Record<string, any>): true {
   if (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true) {
     throw new Error('sandbox_worker_mismatch');
