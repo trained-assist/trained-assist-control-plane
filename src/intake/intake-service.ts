@@ -21,6 +21,8 @@ import { defaultPilotRouter, type PilotRouter } from '../pilot';
 export interface AdmitIdentity {
   /** Проверенный principalId (из аутентификации, не из тела запроса). */
   principalId: string;
+  /** CP-resolved Telegram profile after validating the registered account mapping. */
+  resolvedProfileId?: string;
 }
 
 export interface AdmitResult {
@@ -68,9 +70,13 @@ export class IntakeService {
       });
       throw e;
     }
-    const profileId = declaredProfile ?? principal.profileId;
+    const profileId = identity.resolvedProfileId ?? declaredProfile ?? principal.profileId;
     try {
-      requirePermission(principal, profileId, 'tasks:intake');
+      if (identity.resolvedProfileId) {
+        if (!principal.scopes.includes('identity:provision') || !principal.scopes.includes('tasks:intake') || declaredProfile !== identity.resolvedProfileId) {
+          throw new PrincipalForbiddenError(principal.principalId, profileId, 'tasks:intake', 'profile_mismatch');
+        }
+      } else requirePermission(principal, profileId, 'tasks:intake');
     } catch (e) {
       logStructured({
         event: 'intake.forbidden',

@@ -16,6 +16,9 @@ export interface ProfileRuntimeBindings {
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
   MCP_TEST_AUTH_TOKEN?: string;
+  RUNNER_PROFILE_DELEGATION_SECRET?: string;
+  RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
+  RUNNER_API_PROFILE_TENANT_ID?: string;
 }
 
 export function resolveProfileRuntime(
@@ -25,6 +28,20 @@ export function resolveProfileRuntime(
   const fail = (): never => {
     throw new ProfileRuntimeConfigurationError();
   };
+  const delegatedProfile = /^prof-[0-9a-f-]{36}$/.test(durableProfileId);
+  if (delegatedProfile) {
+    if (!env.RUNNER_PROFILE_DELEGATION_SECRET?.trim() || !env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?.trim()
+      || !env.RUNNER_API_PROFILE_TENANT_ID?.trim()) return fail();
+    const base = resolveProfileRuntime(env, TELEGRAM_UX_PROFILE);
+    return {
+      policy: { ...base.policy, repository: null },
+      adapter: runnerAdapterOf({ RUNNER_API_URL: env.RUNNER_API_URL, RUNNER_API_KEY: env.RUNNER_API_KEY_TELEGRAM_UX,
+        RUNNER_PROFILE_DELEGATION_SECRET: env.RUNNER_PROFILE_DELEGATION_SECRET,
+        RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
+        RUNNER_PROFILE_DELEGATION_TENANT_ID: env.RUNNER_API_PROFILE_TENANT_ID,
+        RUNNER_PROFILE_DELEGATED_ID: durableProfileId }),
+    };
+  }
   let overrides: Record<string, unknown> = {};
   if (env.RUN_SPEC_PROFILE_OVERRIDES !== undefined) {
     let parsed: unknown;
