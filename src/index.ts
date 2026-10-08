@@ -272,25 +272,37 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
 const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
 const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-v1';
 
-function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; bindingIssue: string | null } {
+function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
   const baseUrl = env.RUNNER_API_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
-  if (!baseUrl) return { adapter: null, bindingIssue: 'runner_url_missing' };
-  if (!apiKey) return { adapter: null, bindingIssue: 'mock_key_missing' };
+  if (!baseUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_missing' };
+  if (!apiKey) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
   let parsed: URL;
   try {
     parsed = new URL(baseUrl);
   } catch {
-    return { adapter: null, bindingIssue: 'runner_url_invalid' };
+    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_invalid' };
   }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    return { adapter: null, bindingIssue: 'runner_url_unsafe' };
+    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_unsafe' };
   }
   const configuredPath = parsed.pathname.replace(/\/+$/, '') || '/';
   if (configuredPath !== '/' && configuredPath !== '/runner-mcp-test') {
-    return { adapter: null, bindingIssue: 'runner_url_route_mismatch' };
+    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_route_mismatch' };
   }
-  return { adapter: new RunnerApiAdapter(`${parsed.origin}/runner-mcp-test`, apiKey), bindingIssue: null };
+  const runnerBaseUrl = `${parsed.origin}/runner-mcp-test`;
+  return { adapter: new RunnerApiAdapter(runnerBaseUrl, apiKey), runnerBaseUrl, bindingIssue: null };
+}
+
+async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outcome: string; httpStatus: number | null }> {
+  try {
+    const response = await fetch(`${runnerBaseUrl}/v1/capabilities`, {
+      method: 'GET', headers: { 'cache-control': 'no-store' }, signal: AbortSignal.timeout(5000),
+    });
+    return { outcome: response.status === 401 ? 'reachable_auth_required' : 'http_response', httpStatus: response.status };
+  } catch {
+    return { outcome: 'fetch_failed', httpStatus: null };
+  }
 }
 
 async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
@@ -1277,7 +1289,11 @@ const store = new TaskStore(env.DB);
             buildSha: env.BUILD_SHA ?? null,
           }, ok ? 200 : 502);
         } catch {
+          const runnerReachability = binding.runnerBaseUrl
+            ? await sandboxRunnerReachability(binding.runnerBaseUrl)
+            : { outcome: 'not_checked', httpStatus: null };
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
+            runnerReachability,
             sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true },
             buildSha: env.BUILD_SHA ?? null,
           }, 503);

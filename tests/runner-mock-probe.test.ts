@@ -125,4 +125,32 @@ describe('sandbox CP to Runner mock-test probe', () => {
     expect(await missingKey.json()).toMatchObject({ bindingIssue: 'mock_key_missing' });
     expect(fake.fetchMock).not.toHaveBeenCalled();
   });
+
+  it('reports only an unauthenticated reachability result when the Runner fetch fails', async () => {
+    const database = env.DB;
+    const secret = 'sandbox-readiness-test-secret';
+    await database.prepare(`INSERT OR REPLACE INTO admission_principals
+      (principal_id, profile_id, scopes, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 1, 1)`).bind(TELEGRAM_UX_SANDBOX.principalId, TELEGRAM_UX_SANDBOX.principalId,
+      JSON.stringify(['tasks:read'])).run();
+    const fetchMock = vi.fn(async () => { throw new TypeError('outbound network failure'); });
+    vi.stubGlobal('fetch', fetchMock);
+    const signature = await telegramUxPrincipalSignature(secret);
+    const response = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
+        'x-principal-sig': signature }, body: '{}',
+    }), {
+      DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
+      PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
+      RUNNER_API_URL: 'https://runner-sandbox.example/',
+      RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
+    } as unknown as Env);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
+      runnerReachability: { outcome: 'fetch_failed', httpStatus: null },
+      sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
