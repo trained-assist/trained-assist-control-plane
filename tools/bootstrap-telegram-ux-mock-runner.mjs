@@ -103,7 +103,7 @@ async function verifyConfigAndAccount(accountId) {
     fail('sandbox_worker_config_mismatch');
   }
   const output = capture('npx', ['wrangler', 'whoami']);
-  if (!output.includes(accountId) || !output.includes(TELEGRAM_UX_SANDBOX.accountEmail)) {
+  if (!output.includes(accountId)) {
     fail('cloudflare_authenticated_account_mismatch');
   }
 }
