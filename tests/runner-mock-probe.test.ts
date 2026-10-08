@@ -32,6 +32,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
     const baseEnv = { DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW,
       PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
+      PILOT_ENABLED: 'true', PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
       RUNNER_API_URL_TELEGRAM_UX_MOCK_TEST: 'https://runner-sandbox.example/runner-mcp-test',
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env;
@@ -69,6 +70,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
     const fake = runnerFetch();
     const baseEnv = { DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW,
       PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      PILOT_ENABLED: 'true', PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
       RUNNER_API_URL_TELEGRAM_UX_MOCK_TEST: 'https://runner-sandbox.example/runner-mcp-test',
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env;
@@ -80,7 +82,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
     } as unknown as Env);
     expect(unauthorized.status).toBe(401);
     const productionGuard = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', body), {
-      ...baseEnv, SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PREVIEW_ONLY: 'false',
+      ...baseEnv, SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false',
     } as unknown as Env);
     expect(productionGuard.status).toBe(404);
     expect(fake.fetchMock).not.toHaveBeenCalled();

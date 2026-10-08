@@ -86,6 +86,8 @@ export interface Env {
   HEALTH_PROBE_TIMEOUT_MS?: string;
   HEALTH_CACHE_TTL_MS?: string;
   SANDBOX_READINESS_ENABLED?: string;
+  PILOT_ENABLED?: string;
+  PILOT_COHORT_PROFILE_IDS?: string;
   NATIVE_CANCEL_CONFIRMATION?: string;
   ROUTER_SELECTOR_NAMES_ONLY?: string;
   ROUTER_SELECTOR?: string;
@@ -1243,7 +1245,8 @@ const store = new TaskStore(env.DB);
       }
       if (url.pathname === '/internal/sandbox/runner-mock-probe') {
         if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true'
-          || env.PREVIEW_ONLY === 'false') {
+          || env.PREVIEW_ONLY === 'true' || env.PILOT_ENABLED !== 'true'
+          || !String(env.PILOT_COHORT_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes('integration-telegram-ux-v1')) {
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_unavailable' }, 404);
         }
         if (Object.keys(body).length !== 0) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_body_not_supported' }, 400);
