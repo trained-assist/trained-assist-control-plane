@@ -66,7 +66,7 @@ values in this repository or workflow inputs.
 
 | Environment secret | Purpose |
 | --- | --- |
-| `CF_API_TOKEN` | Cloudflare token scoped to the exact sandbox Worker secret |
+| `CF_API_TOKEN` | Cloudflare token for the trained-assist test account with Workers Scripts and D1 permissions needed by the pinned sandbox config |
 | `CP_TELEGRAM_UX_PRINCIPAL_SECRET` | Existing test principal credential used only to authenticate the CP probe; must already match `PRINCIPAL_SECRET_TELEGRAM_UX` on the sandbox Worker |
 | `RUNNER_MOCK_KEY_SEED` | At least 32 bytes; derives the stable dedicated mock API key |
 | `VM2_SSH_PRIVATE_KEY` | SSH identity allowed to run only the installed root provisioner via `sudo -n` |
