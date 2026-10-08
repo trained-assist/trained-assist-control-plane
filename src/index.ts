@@ -35,7 +35,7 @@ import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerApiAdapter } from './runner-adapter/runner-api-adapter';
-import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
+import { RunnerConflictError, RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
@@ -295,6 +295,15 @@ async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outco
   } catch {
     return { outcome: 'fetch_failed', httpStatus: null };
   }
+}
+
+function sandboxRunnerProbeErrorCode(error: unknown): string {
+  if (error instanceof RunnerConflictError) {
+    return error.apiCode ?? /^([A-Z][A-Z0-9_]{1,63}):/.exec(error.message)?.[1] ?? 'runner_request_rejected';
+  }
+  if (error instanceof RunnerNotFoundError) return 'runner_resource_not_found';
+  if (error instanceof RunnerUnavailableError) return 'runner_unavailable';
+  return 'probe_internal_error';
 }
 
 async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
@@ -1280,12 +1289,13 @@ const store = new TaskStore(env.DB);
             sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionPersisted: true },
             buildSha: env.BUILD_SHA ?? null,
           }, ok ? 200 : 502);
-        } catch {
+        } catch (error) {
           const runnerReachability = binding.runnerBaseUrl
             ? await sandboxRunnerReachability(binding.runnerBaseUrl)
             : { outcome: 'not_checked', httpStatus: null };
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
-            runnerReachability,
+            runnerErrorCode: sandboxRunnerProbeErrorCode(error),
+            runnerErrorFields: error instanceof RunnerConflictError ? error.fieldPaths : [], runnerReachability,
             sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true },
             buildSha: env.BUILD_SHA ?? null,
           }, 503);

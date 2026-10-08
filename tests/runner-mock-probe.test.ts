@@ -153,4 +153,37 @@ describe('sandbox CP to Runner mock-test probe', () => {
       sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true } });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('returns a Runner error code without exposing its response message', async () => {
+    const database = env.DB;
+    const secret = 'sandbox-readiness-test-secret';
+    await database.prepare(`INSERT OR REPLACE INTO admission_principals
+      (principal_id, profile_id, scopes, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 1, 1)`).bind(TELEGRAM_UX_SANDBOX.principalId, TELEGRAM_UX_SANDBOX.principalId,
+      JSON.stringify(['tasks:read'])).run();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/v1/capabilities')
+      ? Response.json({ error: { code: 'UNAUTHENTICATED' } }, { status: 401 })
+      : Response.json({ error: { code: 'INVALID_REQUEST', message: 'secret-shaped private detail', details: {
+        errors: ['request.limits.timeoutMs: expected a positive integer', 'private value: secret-shaped detail'],
+      } } }, { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const signature = await telegramUxPrincipalSignature(secret);
+    const response = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
+        'x-principal-sig': signature }, body: '{}',
+    }), {
+      DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
+      PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+      RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
+    } as unknown as Env);
+
+    const body = await response.text();
+    expect(response.status).toBe(503);
+    expect(JSON.parse(body)).toMatchObject({ runnerErrorCode: 'INVALID_REQUEST', runnerErrorFields: ['request.limits.timeoutMs'],
+      runnerReachability: { outcome: 'reachable_auth_required', httpStatus: 401 } });
+    expect(body).not.toContain('secret-shaped private detail');
+    expect(body).not.toContain('private value');
+  });
 });
