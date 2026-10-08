@@ -35,12 +35,13 @@ import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerApiAdapter } from './runner-adapter/runner-api-adapter';
-import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
+import { RunnerConflictError, RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
+import { TELEGRAM_UX_SANDBOX } from './deployment/telegram-ux-sandbox';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { connectedAppRequest } from './connected-app/session-service';
 import { telegramBootstrapRequest } from './connected-app/telegram-bootstrap';
@@ -130,6 +131,7 @@ export interface Env {
   ERROR_WATCHER_KEY?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
+  SANDBOX_RUNNER_MOCK_TEST_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   /** Separate disposable credential for the sandbox-only mock-test probe. */
@@ -284,18 +286,36 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
 const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
 const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-v1';
 
-function sandboxMockProbeAdapter(env: Env): RunnerApiAdapter | null {
-  const baseUrl = env.RUNNER_API_URL?.trim();
+function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
+  const baseUrl = env.SANDBOX_RUNNER_MOCK_TEST_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
-  if (!baseUrl || !apiKey) return null;
-  try {
-    const parsed = new URL(baseUrl);
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash
-      || parsed.pathname !== '/runner-mcp-test') return null;
-    return new RunnerApiAdapter(`${parsed.origin}${parsed.pathname}`, apiKey);
-  } catch {
-    return null;
+  if (!baseUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_missing' };
+  if (!apiKey) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
+  if (baseUrl !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
   }
+  return { adapter: new RunnerApiAdapter(TELEGRAM_UX_SANDBOX.runnerMockTestUrl, apiKey),
+    runnerBaseUrl: TELEGRAM_UX_SANDBOX.runnerMockTestUrl, bindingIssue: null };
+}
+
+async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outcome: string; httpStatus: number | null }> {
+  try {
+    const response = await fetch(`${runnerBaseUrl}/v1/capabilities`, {
+      method: 'GET', headers: { 'cache-control': 'no-store' }, signal: AbortSignal.timeout(5000),
+    });
+    return { outcome: response.status === 401 ? 'reachable_auth_required' : 'http_response', httpStatus: response.status };
+  } catch {
+    return { outcome: 'fetch_failed', httpStatus: null };
+  }
+}
+
+function sandboxRunnerProbeErrorCode(error: unknown): string {
+  if (error instanceof RunnerConflictError) {
+    return error.apiCode ?? /^([A-Z][A-Z0-9_]{1,63}):/.exec(error.message)?.[1] ?? 'runner_request_rejected';
+  }
+  if (error instanceof RunnerNotFoundError) return 'runner_resource_not_found';
+  if (error instanceof RunnerUnavailableError) return 'runner_unavailable';
+  return 'probe_internal_error';
 }
 
 async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
@@ -1293,18 +1313,24 @@ const store = new TaskStore(env.DB);
         } catch {
           return diagnosticsJson({ ok: false, reasonCode: 'principal_scope_unavailable' }, 403);
         }
-        const adapter = sandboxMockProbeAdapter(env);
-        if (!adapter) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable' }, 503);
+        const binding = sandboxMockProbeAdapter(env);
+        if (!binding.adapter) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable',
+          bindingIssue: binding.bindingIssue }, 503);
         try {
-          const probe = await sandboxRunnerMockProbe(adapter);
+          const probe = await sandboxRunnerMockProbe(binding.adapter);
           const ok = probe.state === 'succeeded' && probe.answer === 'pong' && probe.outcome === 'succeeded';
           return diagnosticsJson({ ok, check: 'authenticated_runner_mock_test', principalId,
             runId: probe.runId, runnerState: probe.state, answer: probe.answer, runnerOutcome: probe.outcome,
             sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionPersisted: true },
             buildSha: env.BUILD_SHA ?? null,
           }, ok ? 200 : 502);
-        } catch {
+        } catch (error) {
+          const runnerReachability = binding.runnerBaseUrl
+            ? await sandboxRunnerReachability(binding.runnerBaseUrl)
+            : { outcome: 'not_checked', httpStatus: null };
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
+            runnerErrorCode: sandboxRunnerProbeErrorCode(error),
+            runnerErrorFields: error instanceof RunnerConflictError ? error.fieldPaths : [], runnerReachability,
             sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true },
             buildSha: env.BUILD_SHA ?? null,
           }, 503);

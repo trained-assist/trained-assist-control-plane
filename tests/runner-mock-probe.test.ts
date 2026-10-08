@@ -33,7 +33,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
       PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
       PILOT_ENABLED: 'true', PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/runner-mcp-test',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env;
     await database.prepare(`INSERT OR REPLACE INTO admission_principals
@@ -54,7 +54,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
       sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionPersisted: true } });
     expect(fake.calls).toHaveLength(3);
     const submitCall = fake.calls[0]!;
-    expect(submitCall.url).toBe('https://runner-sandbox.example/runner-mcp-test/v1/runs');
+    expect(submitCall.url).toBe(`${TELEGRAM_UX_SANDBOX.runnerMockTestUrl}/v1/runs`);
     expect(new Headers(submitCall.init?.headers).get('authorization')).toBe('Bearer dedicated-mock-key');
     expect(new Headers(submitCall.init?.headers).get('idempotency-key')).toBe('sandbox-bootstrap-runner-mock-probe-v1');
     expect(JSON.parse(String(submitCall.init?.body))).toMatchObject({
@@ -71,7 +71,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
     const baseEnv = { DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW,
       PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       PILOT_ENABLED: 'true', PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/runner-mcp-test',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env;
     const body = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
@@ -104,12 +104,86 @@ describe('sandbox CP to Runner mock-test probe', () => {
       DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
       PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/api',
+      SANDBOX_RUNNER_MOCK_TEST_URL: 'https://runner-sandbox.example/api',
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env);
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable' });
+    expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable',
+      bindingIssue: 'runner_url_target_mismatch' });
+    const missingKey = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
+        'x-principal-sig': signature }, body: '{}',
+    }), {
+      DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
+      PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+      RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: undefined,
+    } as unknown as Env);
+    expect(missingKey.status).toBe(503);
+    expect(await missingKey.json()).toMatchObject({ bindingIssue: 'mock_key_missing' });
     expect(fake.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports only an unauthenticated reachability result when the Runner fetch fails', async () => {
+    const database = env.DB;
+    const secret = 'sandbox-readiness-test-secret';
+    await database.prepare(`INSERT OR REPLACE INTO admission_principals
+      (principal_id, profile_id, scopes, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 1, 1)`).bind(TELEGRAM_UX_SANDBOX.principalId, TELEGRAM_UX_SANDBOX.principalId,
+      JSON.stringify(['tasks:read'])).run();
+    const fetchMock = vi.fn(async () => { throw new TypeError('outbound network failure'); });
+    vi.stubGlobal('fetch', fetchMock);
+    const signature = await telegramUxPrincipalSignature(secret);
+    const response = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
+        'x-principal-sig': signature }, body: '{}',
+    }), {
+      DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
+      PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+      RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
+    } as unknown as Env);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
+      runnerReachability: { outcome: 'fetch_failed', httpStatus: null },
+      sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a Runner error code without exposing its response message', async () => {
+    const database = env.DB;
+    const secret = 'sandbox-readiness-test-secret';
+    await database.prepare(`INSERT OR REPLACE INTO admission_principals
+      (principal_id, profile_id, scopes, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 1, 1)`).bind(TELEGRAM_UX_SANDBOX.principalId, TELEGRAM_UX_SANDBOX.principalId,
+      JSON.stringify(['tasks:read'])).run();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/v1/capabilities')
+      ? Response.json({ error: { code: 'UNAUTHENTICATED' } }, { status: 401 })
+      : Response.json({ error: { code: 'INVALID_REQUEST', message: 'secret-shaped private detail', details: {
+        errors: ['request.limits.timeoutMs: expected a positive integer', 'private value: secret-shaped detail'],
+      } } }, { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const signature = await telegramUxPrincipalSignature(secret);
+    const response = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
+        'x-principal-sig': signature }, body: '{}',
+    }), {
+      DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
+      PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+      RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
+    } as unknown as Env);
+
+    const body = await response.text();
+    expect(response.status).toBe(503);
+    expect(JSON.parse(body)).toMatchObject({ runnerErrorCode: 'INVALID_REQUEST', runnerErrorFields: ['request.limits.timeoutMs'],
+      runnerReachability: { outcome: 'reachable_auth_required', httpStatus: 401 } });
+    expect(body).not.toContain('secret-shaped private detail');
+    expect(body).not.toContain('private value');
   });
 });
