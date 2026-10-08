@@ -12,7 +12,7 @@ export const REGISTRY_FIXTURE_TOOL = 'registry.fixture_read';
 export const REGISTRY_FIXTURE_POLICY = 'registry-fixture-policy-v1';
 export const REGISTRY_FIXTURE_CATALOGUE = 'registry-fixture-catalogue-v1';
 export const REGISTRY_FIXTURE_DIGEST = 'sha256-f88f1d0502220618f596906d27a671e8d086c4be0eff2da6fd77b4f160f9f07d';
-export const REGISTRY_FIXTURE_URL = 'https://registry-test.trainedassist.store/mcp';
+export const REGISTRY_FIXTURE_URL = 'https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp';
 
 export function registryFixtureMcpSpec(): McpSpec {
   return { servers: [{ serverId: REGISTRY_FIXTURE_SERVER, transport: 'remote', url: REGISTRY_FIXTURE_URL,
