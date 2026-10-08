@@ -26,3 +26,21 @@ test('isolated staging and production targets stay distinct and execution-disabl
       assert.equal(target.vars.ROUTER_AGENT_ALLOWED, 'false');
     }
 });
+
+test('sandbox-3 target uses only its existing isolated D1 and remains execution-disabled', () => {
+    const sandbox3 = config('wrangler.sandbox3.jsonc');
+
+    assert.equal(sandbox3.name, 'trained-assist-cp-sandbox3');
+    assert.equal(sandbox3.d1_databases.length, 1);
+    assert.equal(sandbox3.d1_databases[0].binding, 'DB');
+    assert.equal(sandbox3.d1_databases[0].database_name, 'ta-sandbox3-taskstore');
+    assert.equal(sandbox3.d1_databases[0].database_id, '1e1b8108-9186-43e2-8e50-436598233165');
+    assert.equal(sandbox3.workflows.length, 1);
+    assert.equal(sandbox3.workflows[0].name, 'ta-cp-sandbox3-task-workflow');
+    assert.deepEqual(sandbox3.services ?? [], []);
+    assert.deepEqual(sandbox3.r2_buckets ?? [], []);
+    assert.equal(sandbox3.vars.DEPLOYMENT_ENV, 'sandbox3');
+    assert.equal(sandbox3.vars.PREVIEW_ONLY, 'true');
+    assert.equal(sandbox3.vars.PILOT_ENABLED, 'false');
+    assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'false');
+});
