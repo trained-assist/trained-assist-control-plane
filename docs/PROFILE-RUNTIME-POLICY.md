@@ -47,16 +47,17 @@ readback fails.
 The regular Telegram UX deploy command does not generate or rotate credentials.
 The separate workflow
 [`sandbox-runner-credentials.yml`](../.github/workflows/sandbox-runner-credentials.yml)
-bootstraps only the isolated `mock-test` identity. It derives a stable Runner
-API key from the protected `RUNNER_MOCK_KEY_SEED`, sends only its SHA-256 hash
-over SSH to the root-owned Runner provisioner, writes the key directly to the
-exact sandbox Worker secret `RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST`, and calls
-the authenticated CP mock probe. The normal Telegram UX key, URL, D1, Workflow,
-and collector are not changed. The fixed mock probe is idempotent and creates
-one Runner admission record, but no CP task or Workflow. A shared Telegram lane
-readiness check is intentionally not a gate for this isolated principal; it
-currently reports unrelated nonterminal tasks and must not be cleared to run
-the mock probe.
+is the one-click sandbox test pass: it verifies the account/config, applies
+only the named sandbox D1 migrations, deploys the current `main` revision to
+the exact CP sandbox Worker, then bootstraps the isolated `mock-test` identity
+and requires the authenticated CP probe to return `succeeded / pong`. It
+derives a stable Runner API key from the protected `RUNNER_MOCK_KEY_SEED`, sends
+only its SHA-256 hash over SSH to the root-owned Runner provisioner, and writes
+the key directly to `RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST`. The normal Telegram
+UX key, URL, and collector are not changed. The fixed mock probe is idempotent
+and creates one Runner admission record, but no CP task or Workflow. A shared
+Telegram lane readiness check is intentionally not a gate for this isolated
+principal; it does not participate in this test pass.
 
 Before the first run, create a GitHub Actions environment named `sandbox`,
 restrict deployments to protected `main`, and require an authorized reviewer.
@@ -78,9 +79,11 @@ values in this repository or workflow inputs.
 | `VM2_SSH_KNOWN_HOSTS` | Pinned SSH host key entry; strict host key checking is enabled |
 
 The workflow verifies the exact sandbox Wrangler config, authenticated
-Cloudflare account, and Worker liveness before it changes credentials. It then
-registers the key hash at Runner, updates only the dedicated mock-key binding,
-and requires `succeeded / pong` from CP. It never reads back secret values.
+Cloudflare account, and Worker liveness before it changes sandbox state. It
+applies migrations and deploys only the pinned sandbox config, verifies the
+deployed build SHA, registers the key hash at Runner, updates only the dedicated
+mock-key binding, and requires `succeeded / pong` from CP. It never reads back
+secret values.
 The `sandbox-bootstrap-evidence.json` artifact contains resource and secret
 names, revisions, boundary outcomes, and the synthetic Runner run ID only. It
 contains neither the derived key nor the CP principal secret. Changing the key

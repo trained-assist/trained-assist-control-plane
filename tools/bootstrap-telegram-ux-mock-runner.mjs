@@ -36,7 +36,10 @@ const evidence = {
   boundaries: {
     sourceAndConfig: 'NOT_RUN',
     cloudflareAccount: 'NOT_RUN',
-    sandboxLiveness: 'NOT_RUN',
+    sandboxPreDeployLiveness: 'NOT_RUN',
+    sandboxMigrations: 'NOT_RUN',
+    sandboxDeploy: 'NOT_RUN',
+    sandboxPostDeployLiveness: 'NOT_RUN',
     runnerPrincipalProvisioning: 'NOT_RUN',
     cpMockKeySync: 'NOT_RUN',
     authenticatedCpToRunnerProbe: 'NOT_RUN',
@@ -114,7 +117,7 @@ async function verifyConfigAndAccount(accountId) {
   }
 }
 
-async function verifySandboxLiveness() {
+async function verifySandboxLiveness(expectedBuildSha = null) {
   let response;
   try {
     response = await fetch(`${CP_URL}/healthz`, { signal: AbortSignal.timeout(15_000) });
@@ -125,6 +128,16 @@ async function verifySandboxLiveness() {
   if (!response.ok || body.service !== 'trained-assist-control-plane' || body.check !== 'liveness') {
     fail('sandbox_worker_liveness_failed');
   }
+  if (expectedBuildSha && body.buildSha !== expectedBuildSha) fail('sandbox_worker_build_sha_mismatch');
+}
+
+function applySandboxMigrations() {
+  capture('npx', ['wrangler', 'd1', 'migrations', 'apply', TELEGRAM_UX_SANDBOX.databaseName,
+    '--remote', '--config', 'wrangler.telegram-ux-v1.jsonc']);
+}
+
+function deploySandbox(sourceSha) {
+  capture('npx', ['wrangler', 'deploy', '--config', 'wrangler.telegram-ux-v1.jsonc', '--var', `BUILD_SHA:${sourceSha}`]);
 }
 
 async function provisionRunnerPrincipal(input) {
@@ -214,9 +227,21 @@ async function main() {
     await verifyConfigAndAccount(input.accountId);
     evidence.boundaries.cloudflareAccount = 'PASS';
 
-    stage = 'sandboxLiveness';
+    stage = 'sandboxPreDeployLiveness';
     await verifySandboxLiveness();
-    evidence.boundaries.sandboxLiveness = 'PASS';
+    evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
+
+    stage = 'sandboxMigrations';
+    applySandboxMigrations();
+    evidence.boundaries.sandboxMigrations = 'PASS';
+
+    stage = 'sandboxDeploy';
+    deploySandbox(input.sourceSha);
+    evidence.boundaries.sandboxDeploy = 'PASS';
+
+    stage = 'sandboxPostDeployLiveness';
+    await verifySandboxLiveness(input.sourceSha);
+    evidence.boundaries.sandboxPostDeployLiveness = 'PASS';
 
     stage = 'runnerPrincipalProvisioning';
     await provisionRunnerPrincipal(input);
