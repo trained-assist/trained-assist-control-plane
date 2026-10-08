@@ -1,0 +1,53 @@
+name: Deploy isolated CP sandbox-3
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_sandbox3:
+        description: Deploy the disabled sandbox-3 Worker from protected main
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-sandbox3-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-sandbox3:
+    if: github.ref == 'refs/heads/main' && inputs.deploy_sandbox3 == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify Cloudflare account
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "d740a05e9442c1d0feacae2dfc673e93"
+          npx wrangler whoami 2>&1 | tee /tmp/whoami.txt
+          grep -F "d740a05e9442c1d0feacae2dfc673e93" /tmp/whoami.txt
+          grep -F "typeformowner@gmail.com" /tmp/whoami.txt
+      - name: Deploy disabled sandbox-3 Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.sandbox3.jsonc --var BUILD_SHA:${GITHUB_SHA}
+      - name: Verify read-only liveness and exact source SHA
+        run: node tools/deployment-smoke.mjs https://trained-assist-cp-sandbox3.skillset-apply.workers.dev "$GITHUB_SHA"
