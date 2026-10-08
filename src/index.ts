@@ -133,6 +133,8 @@ export interface Env {
   RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?: string;
   /** Runner API base URL paired with the mock-test-only credential. */
   RUNNER_API_URL_TELEGRAM_UX_MOCK_TEST?: string;
+  /** Exact host allowed for the mock-only Runner credential; stored as a secret binding. */
+  RUNNER_API_HOST_TELEGRAM_UX_MOCK_TEST?: string;
   SANDBOX_RUNNER_MOCK_PROBE_ENABLED?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
   /** Test-only Bearer used only by the pinned tools/list discovery binding. */
@@ -277,11 +279,12 @@ const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-
 function sandboxMockProbeAdapter(env: Env): RunnerApiAdapter | null {
   const baseUrl = env.RUNNER_API_URL_TELEGRAM_UX_MOCK_TEST?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
-  if (!baseUrl || !apiKey) return null;
+  const expectedHost = env.RUNNER_API_HOST_TELEGRAM_UX_MOCK_TEST?.trim().toLowerCase();
+  if (!baseUrl || !apiKey || !expectedHost) return null;
   try {
     const parsed = new URL(baseUrl);
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash
-      || parsed.pathname !== '/runner-mcp-test') return null;
+      || parsed.pathname !== '/runner-mcp-test' || parsed.host.toLowerCase() !== expectedHost) return null;
     return new RunnerApiAdapter(`${parsed.origin}${parsed.pathname}`, apiKey);
   } catch {
     return null;
