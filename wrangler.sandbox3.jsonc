@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trained-assist-cp-sandbox3",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "ta-sandbox3-taskstore",
+    "database_id": "1e1b8108-9186-43e2-8e50-436598233165",
+    "migrations_dir": "migrations"
+  }],
+  "workflows": [{
+    "name": "ta-cp-sandbox3-task-workflow",
+    "binding": "TASK_WORKFLOW",
+    "class_name": "TaskWorkflow"
+  }],
+  "vars": {
+    "DEPLOYMENT_ENV": "sandbox3",
+    "PREVIEW_ONLY": "true",
+    "PILOT_ENABLED": "false",
+    "ROUTER_AGENT_ALLOWED": "false"
+  }
+}
