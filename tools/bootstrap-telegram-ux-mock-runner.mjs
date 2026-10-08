@@ -85,24 +85,15 @@ function deriveRunnerMockApiKey(seed) {
 
 function validateInputs() {
   const sourceSha = validateSandboxBuildSha(requiredEnv('GITHUB_SHA'));
-  const accountId = requiredEnv('CF_ACCOUNT_ID');
-  if (accountId !== TELEGRAM_UX_SANDBOX.accountId) fail('cloudflare_account_variable_mismatch');
+  const accountId = TELEGRAM_UX_SANDBOX.accountId;
   process.env.CLOUDFLARE_API_TOKEN = requiredEnv('CF_API_TOKEN');
   process.env.CLOUDFLARE_ACCOUNT_ID = accountId;
   const principalSecret = requiredEnv('CP_TELEGRAM_UX_PRINCIPAL_SECRET');
   if (new TextEncoder().encode(principalSecret).length < 32) fail('cp_principal_secret_invalid');
   const key = deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
-  const host = requiredEnv('VM2_SSH_HOST');
-  const user = requiredEnv('VM2_SSH_USER');
-  if (!/^[A-Za-z0-9.-]+$/.test(host) || host.startsWith('-')) fail('vm2_ssh_host_invalid');
-  if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(user)) fail('vm2_ssh_user_invalid');
-  const knownHosts = requiredEnv('VM2_SSH_KNOWN_HOSTS');
-  if (!knownHosts.split('\n').some(line => line.trim() && !line.trim().startsWith('#'))) {
-    fail('vm2_ssh_known_hosts_invalid');
-  }
   const privateKey = requiredEnv('VM2_SSH_PRIVATE_KEY');
   if (!privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
-  return { sourceSha, accountId, principalSecret, key, host, user, knownHosts, privateKey };
+  return { sourceSha, accountId, principalSecret, key, privateKey };
 }
 
 async function verifyConfigAndAccount(accountId) {
@@ -146,13 +137,13 @@ async function provisionRunnerPrincipal(input) {
     const keyPath = join(directory, 'id_ed25519');
     const knownHostsPath = join(directory, 'known_hosts');
     await writeFile(keyPath, input.privateKey.endsWith('\n') ? input.privateKey : `${input.privateKey}\n`, { mode: 0o600 });
-    await writeFile(knownHostsPath, input.knownHosts.endsWith('\n') ? input.knownHosts : `${input.knownHosts}\n`, { mode: 0o600 });
+    await writeFile(knownHostsPath, `${TELEGRAM_UX_SANDBOX_CREDENTIALS.vm2SshKnownHostEntry}\n`, { mode: 0o600 });
     const request = JSON.stringify({ schemaVersion: 1, target: 'agent-runner-api-mcp-test',
       keyHash: createHash('sha256').update(input.key).digest('hex') });
     const stdout = capture('ssh', [
       '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
       '-o', `UserKnownHostsFile=${knownHostsPath}`, '-o', 'ConnectTimeout=10',
-      '-i', keyPath, `${input.user}@${input.host}`,
+      '-i', keyPath, `${TELEGRAM_UX_SANDBOX_CREDENTIALS.vm2SshUser}@${TELEGRAM_UX_SANDBOX_CREDENTIALS.vm2SshHost}`,
       `sudo -n ${TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerMockProvisioner}`,
     ], { input: request });
     let result;

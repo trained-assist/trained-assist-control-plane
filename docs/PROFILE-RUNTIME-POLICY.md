@@ -71,12 +71,9 @@ values in this repository or workflow inputs.
 | `RUNNER_MOCK_KEY_SEED` | At least 32 bytes; derives the stable dedicated mock API key |
 | `VM2_SSH_PRIVATE_KEY` | SSH identity allowed to run only the installed root provisioner via `sudo -n` |
 
-| Environment variable | Purpose |
-| --- | --- |
-| `CF_ACCOUNT_ID` | Must equal the trained-assist test account ID pinned in the deployment config |
-| `VM2_SSH_HOST` | SSH address of France VM2; the installed provisioner independently verifies its host and test service |
-| `VM2_SSH_USER` | SSH account with narrowly scoped passwordless sudo for the provisioner |
-| `VM2_SSH_KNOWN_HOSTS` | Pinned SSH host key entry; strict host key checking is enabled |
+Cloudflare account ID, VM2 SSH host/user, and the verified VM2 SSH host key are
+pinned in the deployment module. Host key checking is strict; there are no
+workflow variables to maintain.
 
 The workflow verifies the exact sandbox Wrangler config, authenticated
 Cloudflare account, and Worker liveness before it changes sandbox state. It

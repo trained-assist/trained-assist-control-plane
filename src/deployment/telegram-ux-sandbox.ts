@@ -17,9 +17,9 @@ export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
   cloudflareApiTokenSecret: 'CF_API_TOKEN',
   cloudflareAccountIdVariable: 'CF_ACCOUNT_ID',
   vm2SshPrivateKeySecret: 'VM2_SSH_PRIVATE_KEY',
-  vm2SshHostVariable: 'VM2_SSH_HOST',
-  vm2SshUserVariable: 'VM2_SSH_USER',
-  vm2SshKnownHostsVariable: 'VM2_SSH_KNOWN_HOSTS',
+  vm2SshHost: '169.58.15.230',
+  vm2SshUser: 'root',
+  vm2SshKnownHostEntry: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqY97L/HqL+EjcMNau36t5E2BgVprJsPu18ZsGztv/f',
   runnerMockKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST',
   runnerMockProvisioner: '/usr/local/sbin/runner-api-mcp-test-provision-principal',
 } as const;
