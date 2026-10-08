@@ -8,6 +8,7 @@ const config = {
   workers_dev: true,
   d1_databases: [{ database_name: TELEGRAM_UX_SANDBOX.databaseName, database_id: TELEGRAM_UX_SANDBOX.databaseId }],
   workflows: [{ name: TELEGRAM_UX_SANDBOX.workflowName }],
+  vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true' },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },
@@ -33,6 +34,11 @@ describe('Telegram UX sandbox deploy guard', () => {
   it('refuses service bindings outside the reviewed sandbox', () => {
     const wrongService = { ...config, services: [{ binding: 'COMMUNICATION_SERVICE', service: 'production' }] };
     expect(() => validateTelegramUxSandboxConfig(wrongService)).toThrow('sandbox_service_binding_mismatch');
+  });
+
+  it('refuses a deployment config without the explicit sandbox mock-probe gate', () => {
+    expect(() => validateTelegramUxSandboxConfig({ ...config, vars: {} }))
+      .toThrow('sandbox_mock_probe_gate_mismatch');
   });
 
   it('derives the same HMAC signature for the configured principal deterministically', async () => {

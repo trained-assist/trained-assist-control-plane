@@ -22,6 +22,9 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
     || config.workflows[0].name !== TELEGRAM_UX_SANDBOX.workflowName) {
     throw new Error('sandbox_workflow_mismatch');
   }
+  if (config.vars?.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true') {
+    throw new Error('sandbox_mock_probe_gate_mismatch');
+  }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();
   const expectedServices = [
