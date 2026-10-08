@@ -24,6 +24,9 @@ const elapsedMs = Math.round(performance.now() - startedAt);
 let body;
 try { body = await response.json(); } catch { body = {}; }
 const task = body?.taskStore;
+const result = task?.result && typeof task.result === 'object' && !Array.isArray(task.result) ? task.result : {};
+const reasonCode = typeof result.reasonCode === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(result.reasonCode)
+  ? result.reasonCode : null;
 const output = {
   httpStatus: response.status,
   elapsedMs,
@@ -31,6 +34,8 @@ const output = {
   ...(task?.id === taskId ? {
     taskStatus: typeof task.status === 'string' ? task.status : null,
     stage: typeof task.stage === 'string' ? task.stage : null,
+    resultStatus: typeof result.status === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(result.status) ? result.status : null,
+    reasonCode,
     generation: Number.isInteger(task.generation) ? task.generation : null,
     runCount: Array.isArray(body.runs) ? body.runs.length : null,
     deliveryCount: Array.isArray(body.deliveries) ? body.deliveries.length : null,
