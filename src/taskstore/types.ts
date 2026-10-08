@@ -275,7 +275,7 @@ export interface PrincipalRow {
  * Scope приёма (P04 «scope»). Только владение и изменение задач; выбор движка,
  * региона и квоты — это C04/placement policy и вне control plane.
  */
-export const ADMISSION_SCOPES = ['tasks:intake', 'tasks:read', 'tasks:signal', 'tasks:control'] as const;
+export const ADMISSION_SCOPES = ['tasks:intake', 'tasks:read', 'tasks:signal', 'tasks:control', 'identity:provision'] as const;
 export type AdmissionScope = (typeof ADMISSION_SCOPES)[number];
 
 /** Попытка исполнения (runId): строка executions (A2 §6). */

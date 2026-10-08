@@ -202,6 +202,17 @@ interface EventSpec {
 export class TaskStore {
   constructor(private readonly db: D1Database) {}
 
+  async getRegisteredTelegramProfile(botIdentity: string, telegramUserId: string): Promise<string | null> {
+    const row = await this.db.prepare(`SELECT profile_id FROM telegram_accounts WHERE bot_identity=? AND telegram_user_id=? AND deleted_at IS NULL`)
+      .bind(botIdentity, telegramUserId).first<{ profile_id: string }>();
+    return row?.profile_id ?? null;
+  }
+
+  async telegramUserOwnsProfile(botIdentity: string, telegramUserId: string, profileId: string): Promise<boolean> {
+    return !!await this.db.prepare(`SELECT 1 FROM telegram_accounts WHERE bot_identity=? AND telegram_user_id=? AND profile_id=? AND deleted_at IS NULL`)
+      .bind(botIdentity, telegramUserId, profileId).first();
+  }
+
   // ---------------------------------------------------------------- задачи
 
   /**

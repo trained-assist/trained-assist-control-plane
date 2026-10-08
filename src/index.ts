@@ -79,6 +79,7 @@ import {
   taskStoreContinuationStore,
   CONTINUATION_EVENT,
 } from './output';
+import { TelegramRegistrationService } from './registration/telegram-registration';
 
 export interface Env {
   BUILD_SHA?: string;
@@ -160,6 +161,11 @@ export interface Env {
   PRINCIPAL_SECRET_INTEGRATION_V1?: string;
   /** Dedicated HMAC credential for the test-only Telegram UX sandbox smoke principal. */
   PRINCIPAL_SECRET_CODEX_SMOKE?: string;
+  ENVIRONMENT?: string;
+  /** Must be set only after atomic reserve/settle/release is wired through the execution path. */
+  TELEGRAM_STARTER_QUOTA_ENFORCEMENT?: string;
+  RUNNER_PROFILE_DELEGATION_SECRET?: string;
+  RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
@@ -386,7 +392,12 @@ const authorizeTaskRoute = async (
   const task = await store.getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
-  requirePermission(principal, task.profile_id, scope);
+  try { requirePermission(principal, task.profile_id, scope); }
+  catch (error) {
+    const telegramUserId = req.headers.get('x-telegram-user-id')?.trim();
+    if (!telegramUserId || !principal.scopes.includes('identity:provision') || !principal.scopes.includes(scope)) throw error;
+    if (!await store.telegramUserOwnsProfile('sandbox3', telegramUserId, task.profile_id)) throw error;
+  }
   return task;
 };
 
@@ -1261,6 +1272,43 @@ const store = new TaskStore(env.DB);
           ...(env.BUILD_SHA ? { buildSha: env.BUILD_SHA } : {}),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
       }
+      if (url.pathname === '/registration/telegram/test-update') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        const principalId = await principalOf(req, auth);
+        if (principalId !== 'integration-telegram-ux-v1' || env.ENVIRONMENT !== 'sandbox') return json({ error: 'sandbox test gateway required' }, 403);
+        const principal = await resolvePrincipal(store, { principalId });
+        if (!principal.enabled || !principal.scopes.includes('identity:provision')) return json({ error: 'registration scope required' }, 403);
+        const test = body as Record<string, unknown>;
+        if (test.chatType !== 'private' || typeof test.telegramUserId !== 'string' || typeof test.chatId !== 'string'
+          || typeof test.updateId !== 'number' || typeof test.text !== 'string') return json({ error: 'invalid_synthetic_update' }, 400);
+        const result = await new TelegramRegistrationService(env.DB).handle({
+          botIdentity: 'sandbox3-test', telegramUserId: test.telegramUserId, chatId: test.chatId,
+          chatType: 'private', updateId: test.updateId, text: test.text,
+          ...(test.profileNameSkipped === true ? { profileNameSkipped: true } : {}),
+        });
+        return json(result, result.step === 'complete' ? 200 : 202);
+      }
+      if (url.pathname === '/registration/telegram/update') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        const principalId = await principalOf(req, auth);
+        if (principalId !== 'integration-telegram-ux-v1') return json({ error: 'registration gateway required' }, 403);
+        const principal = await resolvePrincipal(store, { principalId });
+        if (!principal.enabled || !principal.scopes.includes('identity:provision')) return json({ error: 'registration scope required' }, 403);
+        const update = body.update as Record<string, unknown> | undefined;
+        const message = (update?.message ?? (update?.callback_query as Record<string, unknown> | undefined)?.message) as Record<string, unknown> | undefined;
+        const chat = message?.chat as Record<string, unknown> | undefined;
+        const sender = ((update?.callback_query as Record<string, unknown> | undefined)?.from ?? message?.from) as Record<string, unknown> | undefined;
+        const callbackData = (update?.callback_query as Record<string, unknown> | undefined)?.data;
+        const text = typeof message?.text === 'string' ? message.text : callbackData === 'registration_skip' ? '/skip' : '';
+        if (!update || !message || !chat || !sender || typeof update.update_id !== 'number'
+          || typeof chat.id !== 'number' || typeof sender.id !== 'number'
+          || typeof chat.type !== 'string' || !text) return json({ error: 'invalid_telegram_update' }, 400);
+        const result = await new TelegramRegistrationService(env.DB).handle({
+          botIdentity: 'sandbox3', telegramUserId: String(sender.id), chatId: String(chat.id),
+          chatType: chat.type, updateId: update.update_id, text,
+        });
+        return json(result, result.step === 'complete' ? 200 : 202);
+      }
       if (url.pathname === '/internal/sandbox/runner-mock-probe') {
         if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true'
           || env.PREVIEW_ONLY === 'true' || env.PILOT_ENABLED !== 'true'
@@ -1475,10 +1523,25 @@ const store = new TaskStore(env.DB);
          return json({ ok: true, batchId, reason }, 200);
        }
 
-       if (url.pathname === '/intake') {
-         if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
- const result = await intake.admit({ principalId: await principalOf(req, auth) }, {
+      if (url.pathname === '/intake') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        const principalId = await principalOf(req, auth);
+        const principal = await resolvePrincipal(store, { principalId });
+        const telegramUserId = req.headers.get('x-telegram-user-id')?.trim() ?? '';
+        let resolvedProfileId: string | undefined;
+        if (principal.scopes.includes('identity:provision')) {
+          if (!telegramUserId) return json({ error: 'telegram identity required' }, 401);
+          resolvedProfileId = await store.getRegisteredTelegramProfile('sandbox3', telegramUserId) ?? undefined;
+          if (!resolvedProfileId) return json({ error: 'telegram account is not registered' }, 403);
+          if (env.TELEGRAM_STARTER_QUOTA_ENFORCEMENT !== 'enabled') return json({ error: 'starter quota execution is not enabled', code: 'STARTER_QUOTA_NOT_ENFORCED' }, 503);
+          if (!env.RUNNER_PROFILE_DELEGATION_SECRET?.trim() || !env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?.trim()) {
+            return json({ error: 'profile workspace delegation is not configured', code: 'PROFILE_WORKSPACE_DELEGATION_UNAVAILABLE' }, 503);
+          }
+          if (typeof body.profileId === 'string' && body.profileId !== resolvedProfileId) return json({ error: 'registered profile mismatch' }, 403);
+        }
+        const result = await intake.admit({ principalId, ...(resolvedProfileId ? { resolvedProfileId } : {}) }, {
            ...body,
+           ...(resolvedProfileId ? { profileId: resolvedProfileId } : {}),
            projectId: (body.projectId as string | undefined) ?? null,
            audienceId: (body.audienceId as string | undefined) ?? null,
            destinationId: (body.destinationId as string | undefined) ?? null,

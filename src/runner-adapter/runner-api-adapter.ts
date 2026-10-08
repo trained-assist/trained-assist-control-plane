@@ -133,6 +133,7 @@ export class RunnerApiAdapter {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly delegatedProfile?: { profileId: string; principalId: string; tenantId: string; secret: string },
   ) {}
 
   /**
@@ -146,13 +147,25 @@ export class RunnerApiAdapter {
   private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
     let res: Response;
     try {
+      const headers: Record<string, string> = {
+        authorization: `Bearer ${this.apiKey}`,
+        'content-type': 'application/json',
+        ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
+      };
+      if (this.delegatedProfile) {
+        const expiresAt = String(Date.now() + 60_000);
+        const message = `${this.delegatedProfile.principalId}\0${this.delegatedProfile.tenantId}\0${this.delegatedProfile.profileId}\0${expiresAt}`;
+        const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(this.delegatedProfile.secret),
+          { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+        headers['x-agent-profile-id'] = this.delegatedProfile.profileId;
+        headers['x-agent-profile-tenant'] = this.delegatedProfile.tenantId;
+        headers['x-agent-profile-exp'] = expiresAt;
+        headers['x-agent-profile-sig'] = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      }
       res = await this.doFetch(`${this.baseUrl}${path}`, {
         method,
-        headers: {
-          authorization: `Bearer ${this.apiKey}`,
-          'content-type': 'application/json',
-          ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
-        },
+        headers,
         ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
       });
     } catch (e) {
@@ -276,9 +289,17 @@ export class RunnerApiAdapter {
 export function runnerAdapterOf(env: {
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  RUNNER_PROFILE_DELEGATION_SECRET?: string;
+  RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
+  RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
+  RUNNER_PROFILE_DELEGATED_ID?: string;
 }): RunnerApiAdapter | null {
   return env.RUNNER_API_URL && env.RUNNER_API_KEY
-    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY)
+    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY, fetch,
+      env.RUNNER_PROFILE_DELEGATION_SECRET && env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID && env.RUNNER_PROFILE_DELEGATION_TENANT_ID && env.RUNNER_PROFILE_DELEGATED_ID
+        ? { profileId: env.RUNNER_PROFILE_DELEGATED_ID, principalId: env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
+          tenantId: env.RUNNER_PROFILE_DELEGATION_TENANT_ID, secret: env.RUNNER_PROFILE_DELEGATION_SECRET }
+        : undefined)
     : null;
 }
 
