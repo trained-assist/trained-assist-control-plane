@@ -88,11 +88,12 @@ seed derives a new key; the Runner provisioner intentionally retains old hashes
 until an operator explicitly removes them, so seed replacement alone is not a
 revocation procedure.
 
-The CP principal secret is an externally provisioned prerequisite, not rotated
-by this workflow: it may also be held by the sandbox Telegram ingress. If it is
-missing or does not match the Worker, the authenticated probe fails before any
-ordinary task is created. Do not clear shared D1, Workflow, or collector state
-to make readiness pass. The workflow is dispatch-only from `main`, targets
+The existing CP principal ID remains fixed; its HMAC secret is a separate,
+replaceable credential. This workflow reads that credential from the protected
+environment to authenticate the probe and does not change the principal ID or
+secret. If the secret is reset, keep the protected environment and CP sandbox
+Worker copies in sync. Do not clear shared D1, Workflow, or collector state to
+make readiness pass. The workflow is dispatch-only from `main`, targets
 Cloudflare sandbox and `agent-runner-api-mcp-test.service`, and is not a
 production promotion path.
 This procedure does not deploy Telegram Worker secrets; the gateway's
