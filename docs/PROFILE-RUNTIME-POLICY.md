@@ -46,7 +46,7 @@ readback fails.
 
 The regular Telegram UX deploy command does not generate or rotate credentials.
 The separate workflow
-[`sandbox-runner-credentials.yml`](../.github/workflows/sandbox-runner-credentials.yml)
+[`telegram-ux-sandbox-test-pass.yml`](../.github/workflows/telegram-ux-sandbox-test-pass.yml)
 is the one-click sandbox test pass: it verifies the account/config, applies
 only the named sandbox D1 migrations, deploys the current `main` revision to
 the exact CP sandbox Worker, then bootstraps the isolated `mock-test` identity
@@ -61,8 +61,10 @@ principal; it does not participate in this test pass.
 
 Before the first run, create a GitHub Actions environment named `sandbox`,
 restrict deployments to protected `main`, and require an authorized reviewer.
-Set the following protected environment secrets and variables; do not put their
-values in this repository or workflow inputs.
+Set these four protected environment secrets once; do not put their values in
+the repository or workflow inputs. Generate the Runner seed directly into the
+secret store with
+`openssl rand -base64 48 | gh secret set --env sandbox RUNNER_MOCK_KEY_SEED`.
 
 | Environment secret | Purpose |
 | --- | --- |

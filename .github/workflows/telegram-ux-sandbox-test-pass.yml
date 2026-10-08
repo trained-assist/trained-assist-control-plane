@@ -38,7 +38,7 @@ jobs:
         if: always() && hashFiles('sandbox-bootstrap-evidence.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: telegram-ux-sandbox-runner-credentials-${{ github.run_id }}
+          name: telegram-ux-sandbox-test-pass-${{ github.run_id }}
           path: sandbox-bootstrap-evidence.json
           if-no-files-found: error
           retention-days: 30

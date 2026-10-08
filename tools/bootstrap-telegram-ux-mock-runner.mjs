@@ -65,7 +65,7 @@ function capture(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,
-    timeout: 60_000,
+    timeout: 180_000,
     ...options,
   });
   if (result.error || result.status !== 0) fail(`command_failed:${command}`);
