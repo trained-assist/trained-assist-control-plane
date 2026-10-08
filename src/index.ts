@@ -34,6 +34,7 @@ import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedEr
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
+import { RunnerApiAdapter } from './runner-adapter/runner-api-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
@@ -87,6 +88,9 @@ export interface Env {
   HEALTH_CATALOGUE_JSON?: string;
   HEALTH_PROBE_TIMEOUT_MS?: string;
   HEALTH_CACHE_TTL_MS?: string;
+  SANDBOX_READINESS_ENABLED?: string;
+  PILOT_ENABLED?: string;
+  PILOT_COHORT_PROFILE_IDS?: string;
   NATIVE_CANCEL_CONFIRMATION?: string;
   ROUTER_SELECTOR_NAMES_ONLY?: string;
   ROUTER_SELECTOR?: string;
@@ -128,6 +132,9 @@ export interface Env {
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
+  /** Separate disposable credential for the sandbox-only mock-test probe. */
+  RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?: string;
+  SANDBOX_RUNNER_MOCK_PROBE_ENABLED?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
   /** Test-only Bearer used only by the pinned tools/list discovery binding. */
   MCP_TEST_AUTH_TOKEN?: string;
@@ -273,6 +280,55 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
   status,
   headers: { 'content-type': 'application/json', 'cache-control': 'private, no-store' },
 });
+
+const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
+const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-v1';
+
+function sandboxMockProbeAdapter(env: Env): RunnerApiAdapter | null {
+  const baseUrl = env.RUNNER_API_URL?.trim();
+  const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
+  if (!baseUrl || !apiKey) return null;
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash
+      || parsed.pathname !== '/runner-mcp-test') return null;
+    return new RunnerApiAdapter(`${parsed.origin}${parsed.pathname}`, apiKey);
+  } catch {
+    return null;
+  }
+}
+
+async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
+  runId: string;
+  state: string;
+  answer: string | null;
+  outcome: string;
+}> {
+  const receipt = await adapter.submit({
+    userTaskId: SANDBOX_MOCK_PROBE_TASK_ID,
+    conversationId: SANDBOX_MOCK_PROBE_TASK_ID,
+    engineName: 'mock-test',
+    inputText: 'Return exactly pong.',
+    idempotencyKey: SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY,
+    timeoutMs: 5000,
+  });
+  let status = await adapter.status(receipt.runId);
+  for (let attempt = 0; attempt < 4 && !['succeeded', 'failed', 'cancelled'].includes(status.state); attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    status = await adapter.status(receipt.runId);
+  }
+  if (status.runId !== receipt.runId || status.userTaskId !== SANDBOX_MOCK_PROBE_TASK_ID || status.state !== 'succeeded'
+    || status.answer !== 'pong') {
+    return { runId: receipt.runId, state: status.state, answer: status.answer ?? null, outcome: 'not_accepted' };
+  }
+  const result = await adapter.result(receipt.runId);
+  if (result.runId !== receipt.runId || result.userTaskId !== SANDBOX_MOCK_PROBE_TASK_ID
+    || result.outcome !== 'succeeded' || result.text !== 'pong' || result.persistence !== 'not_required'
+    || result.cleanup !== 'completed') {
+    return { runId: receipt.runId, state: status.state, answer: status.answer ?? null, outcome: 'contract_mismatch' };
+  }
+  return { runId: receipt.runId, state: status.state, answer: status.answer, outcome: result.outcome };
+}
 
 const diagnosticsTokenMatches = (request: Request, configured: string | undefined): boolean => {
   const expected = configured?.trim() ?? '';
@@ -1219,6 +1275,69 @@ const store = new TaskStore(env.DB);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
           ...(env.BUILD_SHA ? { buildSha: env.BUILD_SHA } : {}),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
+      }
+      if (url.pathname === '/internal/sandbox/runner-mock-probe') {
+        if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true'
+          || env.PREVIEW_ONLY === 'true' || env.PILOT_ENABLED !== 'true'
+          || !String(env.PILOT_COHORT_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes('integration-telegram-ux-v1')) {
+          return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_unavailable' }, 404);
+        }
+        if (Object.keys(body).length !== 0) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_body_not_supported' }, 400);
+        const principalId = await principalOf(req, auth);
+        if (principalId !== 'integration-telegram-ux-v1') {
+          return diagnosticsJson({ ok: false, reasonCode: principalId ? 'principal_not_allowed' : 'authentication_failed' }, principalId ? 403 : 401);
+        }
+        try {
+          const principal = await resolvePrincipal(store, { principalId });
+          requirePermission(principal, 'integration-telegram-ux-v1', 'tasks:read');
+        } catch {
+          return diagnosticsJson({ ok: false, reasonCode: 'principal_scope_unavailable' }, 403);
+        }
+        const adapter = sandboxMockProbeAdapter(env);
+        if (!adapter) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable' }, 503);
+        try {
+          const probe = await sandboxRunnerMockProbe(adapter);
+          const ok = probe.state === 'succeeded' && probe.answer === 'pong' && probe.outcome === 'succeeded';
+          return diagnosticsJson({ ok, check: 'authenticated_runner_mock_test', principalId,
+            runId: probe.runId, runnerState: probe.state, answer: probe.answer, runnerOutcome: probe.outcome,
+            sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionPersisted: true },
+            buildSha: env.BUILD_SHA ?? null,
+          }, ok ? 200 : 502);
+        } catch {
+          return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
+            sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true },
+            buildSha: env.BUILD_SHA ?? null,
+          }, 503);
+        }
+      }
+      if (url.pathname === '/internal/sandbox/readiness') {
+        if (req.method !== 'GET' || env.SANDBOX_READINESS_ENABLED !== 'true'
+          || env.PREVIEW_ONLY === 'false') {
+          return diagnosticsJson({ ok: false, reasonCode: 'sandbox_readiness_unavailable' }, 404);
+        }
+        const principalId = await principalOf(req, auth);
+        if (principalId !== 'integration-telegram-ux-v1') {
+          return diagnosticsJson({ ok: false, reasonCode: principalId ? 'principal_not_allowed' : 'authentication_failed' }, principalId ? 403 : 401);
+        }
+        let principal;
+        try {
+          principal = await resolvePrincipal(store, { principalId });
+          requirePermission(principal, 'integration-telegram-ux-v1', 'tasks:read');
+          requirePermission(principal, 'integration-telegram-ux-v1', 'tasks:intake');
+        } catch {
+          return diagnosticsJson({ ok: false, reasonCode: 'principal_scope_unavailable' }, 403);
+        }
+        const profileState = await env.DB.prepare(`SELECT count(*) AS total,
+          sum(CASE WHEN status NOT IN ('done','failed','cancelled') THEN 1 ELSE 0 END) AS nonterminal
+          FROM durable_tasks WHERE profile_id = ?`).bind('integration-telegram-ux-v1')
+          .first<{ total: number; nonterminal: number | null }>();
+        const nonterminal = Number(profileState?.nonterminal ?? 0);
+        return diagnosticsJson({ ok: nonterminal === 0, check: 'authenticated_sandbox_readiness',
+          principalId, profileId: principal.profileId, scopes: principal.scopes,
+          taskCount: Number(profileState?.total ?? 0), nonterminalTaskCount: nonterminal,
+          reasonCode: nonterminal === 0 ? null : 'sandbox_lane_has_nonterminal_task',
+          buildSha: env.BUILD_SHA ?? null,
+        }, nonterminal === 0 ? 200 : 409);
       }
       if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
