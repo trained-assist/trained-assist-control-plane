@@ -35,13 +35,8 @@ if (!lastResponse?.ok || health?.service !== 'trained-assist-control-plane'
   process.exit(1);
 }
 
-const anonymous = await fetch(`${baseUrl.replace(/\/$/, '')}/start`, {
-  method: 'POST',
-  headers: {
-    'content-type': 'application/json',
-    'user-agent': 'trained-assist-cp-release-smoke/1',
-  },
-  body: JSON.stringify({ taskId: `release-probe-${expectedSha.slice(0, 12)}`, profileId: 'release-probe', goal: 'anonymous auth probe' }),
+const anonymous = await fetch(`${baseUrl.replace(/\/$/, '')}/internal/health/catalogue`, {
+  headers: { 'user-agent': 'trained-assist-cp-release-smoke/1' },
 });
 
 if (anonymous.status !== 401) {
@@ -54,5 +49,5 @@ console.log(JSON.stringify({
   service: health.service,
   buildSha: health.buildSha,
   liveness: health.status,
-  anonymousRequestStatus: anonymous.status,
+  anonymousPrivateReadStatus: anonymous.status,
 }));

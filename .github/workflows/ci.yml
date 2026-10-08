@@ -32,8 +32,8 @@ jobs:
       - run: npm test
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
-      - name: Read-only credential boundary verifier
-        run: node --test tools/credential-boundary-verify.test.mjs
+      - name: Deployment and credential boundary verifiers
+        run: node --test tools/deployment-config-verify.test.mjs tools/credential-boundary-verify.test.mjs
 
   deploy-staging:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy))

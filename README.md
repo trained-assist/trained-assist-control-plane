@@ -404,7 +404,19 @@ npm run check:evidence                     # негативные проверк
 - Схема и контракты: [TASK-STORE-SCHEMA-V1](https://github.com/trained-assist/trained-agent-architecture/blob/main/TASK-STORE-SCHEMA-V1.md), [CONVERSATIONAL-SESSION-CONTRACT](https://github.com/trained-assist/trained-agent-architecture/blob/main/CONVERSATIONAL-SESSION-CONTRACT.md).
 - Стартовый код: пилот `pilots/p-db/cf-workflows` в архитектурном репо (логика порта и стора перенесена оттуда, сам пилот не менялся).
 
-Живой сервис этим репозиторием не меняется: реализация идёт параллельно, в собственных sandbox-развёртываниях.
+### Изолированный staging и production target
+
+Control Plane имеет отдельные конфиги `wrangler.staging.jsonc` и `wrangler.production.jsonc`; каждый использует свою D1 и Workflow. Production target создан пустым в WEUR и не связан с Telegram, Agent, Runner или пользовательскими данными. До отдельного принятого сценария cutover он не заменяет живой legacy сервис.
+
+После merge в защищённый `main` CI применяет миграции, деплоит staging и проверяет точный `BUILD_SHA` и анонимный отказ приватного health-read (`401`), затем выполняет те же шаги для production. GitHub `workflow_dispatch` доступен только на `main`, выключен по умолчанию и служит повтором этого же gate. В production smoke ошибка блокирует зелёный релиз. Rollback возвращает Worker на прошлую версию, но не откатывает D1 миграции:
+
+```bash
+npx wrangler deployments list --name trained-assist-cp-production
+npx wrangler rollback <previous-version-id> --name trained-assist-cp-production --message 'Rollback after failed release smoke' --yes
+node tools/deployment-smoke.mjs https://trained-assist-cp-production.skillset-apply.workers.dev <previous-build-sha>
+```
+
+Данные D1 в WEUR остаются пустыми до решения по data residency. Нынешние deploy smoke подтверждают только живость Worker, revision и fail-closed anonymous access; они не утверждают готовность профиля, Runner или Telegram.
 
 ## Контекст репозитория
 

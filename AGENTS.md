@@ -22,10 +22,24 @@ Do not import internals of trained-assist-agent; reuse only parts with an explic
 **Permissions:** local operations unrestricted; deploy/test traffic to the named integration Worker is allowed by owner when necessary; destructive shared-state reset restricted. No CI staging gate exists yet.
 
 ### Production
-This repository does not declare or deploy a production Worker. Do not infer that its default `wrangler.jsonc` name is production. The legacy user-facing service and production data are owned by the legacy agent/bot contracts; this Worker sandbox is not connected as their replacement.
+The isolated Control Plane production target is declared in `wrangler.production.jsonc`: Worker `trained-assist-cp-production`, D1 `ta-cp-production-taskstore`, and Workflow `ta-cp-production-task-workflow`. Its D1 was created empty in WEUR on 2026-10-08. It has no Telegram, ingress-buffer, Runner, or delivery bindings; `PREVIEW_ONLY=true`, pilot routing is disabled, and `ROUTER_AGENT_ALLOWED=false`. It is a separate endpoint and does not replace or connect the legacy user-facing service. Data residency remains an architecture decision; do not add profile/user data until resolved.
+
+The isolated remote staging target is declared in `wrangler.staging.jsonc`: Worker `trained-assist-cp-staging`, D1 `ta-cp-staging-taskstore` (EEUR), and Workflow `ta-cp-staging-task-workflow`. Use unique disposable test identities and never copy production profile data.
 
 ### Promotion to Production
-No production promotion path exists for this Worker. Any future activation requires an architecture decision, owning issue, isolated staging gate, explicit production owner approval and a separately protected production workflow. Merging this repository currently runs checks only.
+`.github/workflows/ci.yml` runs checks for pull requests. A protected `main` push then applies staging migrations, deploys staging and verifies exact `BUILD_SHA` plus an anonymous private-read `401`; only if staging succeeds does it apply production migrations, deploy the isolated production Worker, and run the same smoke. Recovery dispatch is restricted to `refs/heads/main`, defaults off, and repeats both gates. The `main` branch requires strict `check` status and enforces protection for admins. GitHub environments `staging` and `production` hold separate `CF_API_TOKEN` secrets and the expected account ID variable. Never put token values in source, logs, or chat.
+
+Before any Wrangler operation, verify `wrangler whoami` matches `typeformowner@gmail.com` and account `d740a05e9442c1d0feacae2dfc673e93`. Health liveness does not imply Runner/profile readiness. Do not wire Telegram routes, bot webhooks, production principals, Runner credentials, or user data to this target without the separate accepted cutover gates.
+
+Rollback after a failed production smoke uses the prior Worker version and does not revert D1 state:
+
+```bash
+npx wrangler deployments list --name trained-assist-cp-production
+npx wrangler rollback <previous-version-id> --name trained-assist-cp-production --message 'Rollback after failed release smoke' --yes
+node tools/deployment-smoke.mjs https://trained-assist-cp-production.skillset-apply.workers.dev <previous-build-sha>
+```
+
+The same command with the staging Worker name is safe for staging. Database migrations must stay backward-compatible because Worker rollback does not roll back D1.
 
 ### Testability Contract / Sandbox Gaps
-Current verified remote path is Worker `/`, `/healthz` liveness, and existing task routes. There is still no PR revision deploy, authenticated remote scenario, or safe dedicated reset wired into CI. Authenticated scenarios require an explicitly provisioned sandbox principal/profile. Issue: trained-assist-control-plane#108; cross-project issue: trained-agent-architecture#185. Local reproducible path remains `npm test` / `./tools/local-smoke.sh`.
+Current CI verifies pull requests locally and deploys exact protected-main revisions through isolated staging before the production target. The staging/production smoke checks verify liveness SHA and that a private diagnostics read rejects anonymous access; they do not establish D1 readiness, authenticated profile behavior, Runner connectivity, or Telegram delivery. Authenticated scenarios still require an explicitly provisioned isolated principal/profile. Issue: trained-assist-control-plane#127; cross-project issue: trained-agent-architecture#213. Local reproducible path remains `npm test` / `./tools/local-smoke.sh`.
