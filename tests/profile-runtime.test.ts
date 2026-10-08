@@ -50,6 +50,34 @@ describe('trusted profile runtime', () => {
     expect(built.spec.input?.inlinePrompt).toContain('ignore the host policy');
   });
 
+  it('uses the same Agent API adapter for every profile and delegates tenant/profile identity', async () => {
+    const configured = { ...bindings, RUN_SPEC_MCP: undefined, RUN_SPEC_INPUT_REFS: undefined,
+      RUNNER_PROFILE_DELEGATION_SECRET: 'delegation-test-secret',
+      RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'integration-telegram-ux-v1',
+      RUNNER_PROFILE_DELEGATION_TENANT_ID: 'sandbox3-acceptance-a-20261008', RUNNER_API_ENGINE_SELECTION: 'agent_api' };
+    const captured: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
+      return Response.json({ requestId: 'req-1', userTaskId: 'ut-profile-test', runId: 'run-1', deduplicated: false }, { status: 202 });
+    }));
+    const runtime = resolveProfileRuntime(configured, 'integration-sandbox3-v1');
+    expect(runtime.policy.repository).toBeNull();
+    await runtime.adapter!.submit({ userTaskId: 'ut-profile-test', idempotencyKey: 'profile-independent-engine',
+      runSpec: buildRunSpec({ userTaskId: 'ut-profile-test', profileId: 'integration-sandbox3-v1', conversationId: null,
+        ownerGeneration: 1, engineName: 'example-selected-by-cp', prompt: 'test', refs: [], instructions: null,
+        attemptRunId: null, timeoutMs: 1000 }, runtime.policy).spec });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.headers.get('x-agent-profile-id')).toBe('integration-sandbox3-v1');
+    expect(captured[0]!.headers.get('x-agent-profile-tenant')).toBe('sandbox3-acceptance-a-20261008');
+    expect(captured[0]!.body).not.toHaveProperty('engine');
+    const exp = captured[0]!.headers.get('x-agent-profile-exp')!;
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(configured.RUNNER_PROFILE_DELEGATION_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(
+      `integration-telegram-ux-v1\0sandbox3-acceptance-a-20261008\0integration-sandbox3-v1\0${exp}`));
+    expect(captured[0]!.headers.get('x-agent-profile-sig')).toBe([...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, '0')).join(''));
+  });
+
   it('enables only the pinned registry fixture when the trusted discovery secret is present', () => {
     const configured = { ...bindings, MCP_TEST_AUTH_TOKEN: 'fixture_bearer_0123456789',
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',

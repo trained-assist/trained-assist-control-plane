@@ -125,6 +125,10 @@ export interface Env {
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
+  RUNNER_API_ENGINE_SELECTION?: string;
+  RUNNER_PROFILE_DELEGATION_SECRET?: string;
+  RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
+  RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
   /** Test-only Bearer used only by the pinned tools/list discovery binding. */
   MCP_TEST_AUTH_TOKEN?: string;

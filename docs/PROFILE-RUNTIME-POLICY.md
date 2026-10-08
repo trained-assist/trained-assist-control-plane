@@ -1,23 +1,38 @@
 # Trusted profile runtime policy
 
-This opt-in host policy isolates ordinary Telegram text tasks from the existing
-integration CSV acceptance policy. It changes no deployed binding, principal,
-Runner registry, Google session or delivery-owner manifest.
+This opt-in host policy separates profile identity from Agent API execution. A
+durable task profile identifies the tenant workspace; the Control Plane
+authenticates as its service principal and signs a short-lived tenant/profile
+capability. The Agent API validates that capability and selects an allowed
+engine from its own `AGENT_API_ENGINE_CHAIN`. CP omits `engine` from the submit
+body when `RUNNER_API_ENGINE_SELECTION=agent_api`; no profile chooses a VM, GHA,
+or other executor.
 
-`integration-v1` and historical profiles retain the complete existing global
-RunSpec policy and `RUNNER_API_KEY`. The special profile
-`integration-telegram-ux-v1` is unavailable until the host configures:
+Enable delegated routing in a sandbox Worker with these bindings:
 
-```json
-{
-  "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-telegram-ux-v1\":{\"policy\":\"generic_text_v1\",\"runnerKeyBinding\":\"RUNNER_API_KEY_TELEGRAM_UX\"}}"
-}
-```
+- `RUNNER_API_URL`: trusted Agent API endpoint.
+- `RUNNER_API_KEY_TELEGRAM_UX`: API service-principal key. It authenticates CP
+  to the Agent API; it does not select a profile or executor.
+- `RUNNER_PROFILE_DELEGATION_SECRET`: matches the Agent API delegation secret.
+- `RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID`: principal represented by that API key.
+- `RUNNER_PROFILE_DELEGATION_TENANT_ID`: sandbox tenant for the test profile.
+- `RUNNER_API_ENGINE_SELECTION=agent_api`: asks the API to select from its own
+  configured engine chain.
 
-Provision `RUNNER_API_KEY_TELEGRAM_UX` separately as a Worker secret. It must
-be nonempty and distinct from the global Runner key. The URL remains the existing
-trusted `RUNNER_API_URL`. Never place a credential in the override JSON, task
-input, Workflow payload or model prompt.
+The resolved durable profile ID is signed per request with the tenant and
+principal, expires after one minute, and is never accepted from caller text. The
+Agent API resolves the repository from the signed profile route. Keep
+`RUN_SPEC_REPOSITORY` unset in this mode. The profile override may still declare
+a host-owned policy or MCP fixture; it must not select a Runner key or engine.
+This path is enabled only when the complete delegation configuration exists; an
+incomplete delegation fails closed. Without delegation, the historical
+profile-specific policy behavior remains for compatibility.
+
+The sandbox3 config uses tenant
+`sandbox3-acceptance-a-20261008` and principal
+`integration-telegram-ux-v1`. Production needs a trusted tenant mapping derived
+from the authenticated account; this sandbox constant must not be reused for
+production tenants.
 
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for
@@ -62,13 +77,13 @@ closed. Historical profiles are unchanged when no override mapping exists.
 
 ## Provisioning gate
 
-Before enabling the gateway adapter, the parent must provision a CP principal
-whose authorized profile equals `integration-telegram-ux-v1`, and a dedicated
-Runner registry principal/key bound to that same profile and permitted native
-engine. Runner derives the execution profile from the authenticated key, not
-from the submit body; selecting a distinct key in CP cannot prove its registry
-binding. Verify that binding before any model submission. CP principal/profile
-authorization is unchanged.
+Before enabling delegated routing, provision one Runner API service principal
+with the required run scopes and a sandbox tenant route. The API key authenticates
+the Control Plane; the signed short-lived capability supplies the trusted tenant
+and profile. Configure the Agent API engine chain and principal engine permissions
+at the API boundary. Verify the key, delegation secret, tenant route and allowed
+engine inventory before a sandbox task. A profile identifier does not select an
+engine or API endpoint.
 
 Gateway collector snapshots, conversation/index identity, discovery, client
 authentication and delivery-owner scope must consistently select the new trusted

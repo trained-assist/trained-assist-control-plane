@@ -173,7 +173,8 @@ export interface BudgetSpec {
 export interface SubmitRequest {
   userTaskId?: string;
   conversationId?: string;
-  engine: EngineSpec;
+  /** Omitted when the authenticated Agent API selects from its configured engine chain. */
+  engine?: EngineSpec;
   input?: { refs?: InputRef[]; inlinePrompt?: string };
   ingressManifest?: { contractVersion: 1; manifestRef: string; manifestVersion: string };
   envAllowlist: string[];
@@ -198,12 +199,12 @@ export interface SubmitRequest {
  * а не enforcement. Значений секретов в remote metadata нет. Поля,
  * которые Runner выводит сам, перечислены в `untransmittedRunSpecFields`.
  */
-export function toSubmitRequest(spec: RunSpec): SubmitRequest {
+export function toSubmitRequest(spec: RunSpec, options: { engineSelection?: 'caller' | 'agent_api' } = {}): SubmitRequest {
   const body: SubmitRequest = {
-    engine: spec.engine,
     envAllowlist: spec.envAllowlist,
     limits: spec.limits,
   };
+  if (options.engineSelection !== 'agent_api') body.engine = spec.engine;
   if (spec.userTaskId) body.userTaskId = spec.userTaskId;
   if (spec.conversationId) body.conversationId = spec.conversationId;
   if (spec.input) body.input = spec.input;
