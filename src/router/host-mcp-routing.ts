@@ -22,9 +22,15 @@ export async function runMcpDescriptor(deps: HostMcpRoutingDeps | undefined, ins
   if (server.bindingRef !== verified.bindingRef || server.url !== verified.url || server.scope !== verified.executionScope
       || server.catalogueVersion !== verified.catalogueVersion || server.policyVersion !== verified.policyVersion
       || server.registryDigest !== verified.registryDigest) throw new McpCatalogueError('execution_policy_changed');
-  return { servers: [{ ...structuredClone(server), allowedTools: [verified.name],
-    scope: verified.executionScope, catalogueVersion: verified.catalogueVersion,
-    policyVersion: verified.policyVersion, registryDigest: verified.registryDigest }] };
+  // `scope` and `registryDigest` are host-side pins used above to revalidate
+  // the selected instruction. They are not fields in Runner's public RunSpec:
+  // Runner resolves scope and registry identity from its own trusted policy.
+  // Sending them across the API boundary makes Runner reject the whole submit.
+  return { servers: [{ serverId: server.serverId, transport: 'remote', url: server.url,
+    bindingRef: server.bindingRef, allowedTools: [verified.name],
+    ...(server.policyVersion ? { policyVersion: server.policyVersion } : {}),
+    ...(server.catalogueVersion ? { catalogueVersion: server.catalogueVersion } : {}),
+    ...(server.toolTimeoutMs ? { toolTimeoutMs: server.toolTimeoutMs } : {}) }] };
 }
 
 export function sameMcpScope(first: McpCatalogueScope, second: McpCatalogueScope): boolean {

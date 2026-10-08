@@ -83,8 +83,15 @@ configuration digest. The descriptor carries `catalogueVersion`
 scope `registry:fixture-read`, and pinned `registryDigest`
 `129ab5033964c3ed5be47414711026cc2469b3d9af90ce83ee071cba7f005ea9`.
 Output rechecks the original selected instruction against the current trusted
-policy and discovery metadata immediately before submit, then passes that
-unchanged descriptor through Workflow params and RunSpec.
+policy and discovery metadata immediately before submit. Workflow params retain
+the trusted descriptor, including its internal execution scope and Registry
+digest, for this check. The Runner API projection emits only its accepted
+remote-server fields (`serverId`, `transport`, `url`, `bindingRef`,
+`allowedTools`, and optional policy/catalogue versions and timeout). CP does
+not send the internal `scope` or `registryDigest`: Runner resolves execution
+scope and Registry identity from its own trusted policy after admission.
+The Telegram UX test principal is also bound to its isolated repository by
+Runner, so CP omits `repository` instead of attempting to override that binding.
 The selected capability is presented to the agent as available; instructions
 say to use it only when needed for the accepted task.
 Normal agent work is not required to call it. The end-to-end fixture task must
@@ -113,6 +120,17 @@ keep their own reason codes and are not relabeled as drift.
 - **CP:** pinned discovery adapter, trusted profile-policy composition, Output
   → RunSpec descriptor handoff. Runtime activation requires the exact profile
   override plus `MCP_TEST_AUTH_TOKEN` in the sandbox Worker secret store.
+
+### 2026-10-08 Runner contract reconciliation
+
+Live sandbox traces exposed two fields rejected by the current Runner API:
+internal MCP `scope`/`registryDigest`, followed by `repository`, which is
+Runner-selected for the authenticated test profile. CP now keeps the MCP pins
+for its pre-submit revalidation but omits them from the public RunSpec; the
+Telegram UX profile likewise omits repository selection. Focused tests cover
+both boundaries. The latest live CP→Runner fixture result is recorded in the
+architecture acceptance issue; this section does not claim a successful tool
+invocation until that evidence is present.
 
 ### Validation and remaining boundary
 
