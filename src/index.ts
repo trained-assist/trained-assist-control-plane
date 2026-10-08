@@ -272,18 +272,22 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
 const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
 const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-v1';
 
-function sandboxMockProbeAdapter(env: Env): RunnerApiAdapter | null {
+function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; bindingIssue: string | null } {
   const baseUrl = env.RUNNER_API_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
-  if (!baseUrl || !apiKey) return null;
+  if (!baseUrl) return { adapter: null, bindingIssue: 'runner_url_missing' };
+  if (!apiKey) return { adapter: null, bindingIssue: 'mock_key_missing' };
+  let parsed: URL;
   try {
-    const parsed = new URL(baseUrl);
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash
-      || parsed.pathname !== '/runner-mcp-test') return null;
-    return new RunnerApiAdapter(`${parsed.origin}${parsed.pathname}`, apiKey);
+    parsed = new URL(baseUrl);
   } catch {
-    return null;
+    return { adapter: null, bindingIssue: 'runner_url_invalid' };
   }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    return { adapter: null, bindingIssue: 'runner_url_unsafe' };
+  }
+  if (parsed.pathname !== '/runner-mcp-test') return { adapter: null, bindingIssue: 'runner_url_route_mismatch' };
+  return { adapter: new RunnerApiAdapter(`${parsed.origin}${parsed.pathname}`, apiKey), bindingIssue: null };
 }
 
 async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
@@ -1258,10 +1262,11 @@ const store = new TaskStore(env.DB);
         } catch {
           return diagnosticsJson({ ok: false, reasonCode: 'principal_scope_unavailable' }, 403);
         }
-        const adapter = sandboxMockProbeAdapter(env);
-        if (!adapter) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable' }, 503);
+        const binding = sandboxMockProbeAdapter(env);
+        if (!binding.adapter) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable',
+          bindingIssue: binding.bindingIssue }, 503);
         try {
-          const probe = await sandboxRunnerMockProbe(adapter);
+          const probe = await sandboxRunnerMockProbe(binding.adapter);
           const ok = probe.state === 'succeeded' && probe.answer === 'pong' && probe.outcome === 'succeeded';
           return diagnosticsJson({ ok, check: 'authenticated_runner_mock_test', principalId,
             runId: probe.runId, runnerState: probe.state, answer: probe.answer, runnerOutcome: probe.outcome,

@@ -109,7 +109,20 @@ describe('sandbox CP to Runner mock-test probe', () => {
     } as unknown as Env);
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable' });
+    expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable',
+      bindingIssue: 'runner_url_route_mismatch' });
+    const missingKey = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
+        'x-principal-sig': signature }, body: '{}',
+    }), {
+      DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+      SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
+      PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
+      RUNNER_API_URL: 'https://runner-sandbox.example/runner-mcp-test',
+      RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: undefined,
+    } as unknown as Env);
+    expect(missingKey.status).toBe(503);
+    expect(await missingKey.json()).toMatchObject({ bindingIssue: 'mock_key_missing' });
     expect(fake.fetchMock).not.toHaveBeenCalled();
   });
 });
