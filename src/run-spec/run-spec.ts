@@ -194,11 +194,41 @@ export interface SubmitRequest {
 /**
  * Проекция RunSpec → тело `POST /v1/runs`.
  *
- * `mcp` переносится дословно: объявление MCP-серверов — хостовая политика, и
- * Runner разрешает opaque bindingRef в scoped runAuth; allowedTools — декларация,
- * а не enforcement. Значений секретов в remote metadata нет. Поля,
- * которые Runner выводит сам, перечислены в `untransmittedRunSpecFields`.
+ * MCP-серверы проецируются в закрытый API-контракт. CP-only metadata (`scope`,
+ * `registryDigest`) остаётся в host policy и не уходит в Agent API; там remote
+ * binding разрешается по trusted `bindingRef` и API-side конфигурации. Значения
+ * секретов в request не передаются. Поля, которые Runner выводит сам, перечислены
+ * в `untransmittedRunSpecFields`.
  */
+function mcpSubmitSpecOf(mcp: McpSpec): McpSpec {
+  return {
+    servers: mcp.servers.map((server) => server.transport === 'remote'
+      ? {
+          serverId: server.serverId,
+          transport: 'remote',
+          url: server.url,
+          bindingRef: server.bindingRef,
+          allowedTools: server.allowedTools,
+          ...(server.policyVersion !== undefined ? { policyVersion: server.policyVersion } : {}),
+          ...(server.catalogueVersion !== undefined ? { catalogueVersion: server.catalogueVersion } : {}),
+          ...(server.toolTimeoutMs !== undefined ? { toolTimeoutMs: server.toolTimeoutMs } : {}),
+        }
+      : {
+          serverId: server.serverId,
+          transport: 'stdio',
+          command: server.command,
+          ...(server.args !== undefined ? { args: server.args } : {}),
+          ...(server.envAllowlist !== undefined ? { envAllowlist: server.envAllowlist } : {}),
+          ...(server.bindingRef !== undefined ? { bindingRef: server.bindingRef } : {}),
+          allowedTools: server.allowedTools,
+          ...(server.catalogueVersion !== undefined ? { catalogueVersion: server.catalogueVersion } : {}),
+          ...(server.policyVersion !== undefined ? { policyVersion: server.policyVersion } : {}),
+          ...(server.readinessTimeoutMs !== undefined ? { readinessTimeoutMs: server.readinessTimeoutMs } : {}),
+          ...(server.toolTimeoutMs !== undefined ? { toolTimeoutMs: server.toolTimeoutMs } : {}),
+        }),
+  };
+}
+
 export function toSubmitRequest(spec: RunSpec, options: { engineSelection?: 'caller' | 'agent_api' } = {}): SubmitRequest {
   const body: SubmitRequest = {
     envAllowlist: spec.envAllowlist,
@@ -217,7 +247,7 @@ export function toSubmitRequest(spec: RunSpec, options: { engineSelection?: 'cal
   if (spec.outputs) body.outputs = spec.outputs;
   if (spec.repository) body.repository = spec.repository;
   if (spec.result) body.result = spec.result;
-  if (spec.mcp) body.mcp = spec.mcp;
+  if (spec.mcp) body.mcp = mcpSubmitSpecOf(spec.mcp);
   if (spec.traceId) body.traceId = spec.traceId;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
   return body;
