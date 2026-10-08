@@ -33,7 +33,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
       PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
       PILOT_ENABLED: 'true', PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env;
     await database.prepare(`INSERT OR REPLACE INTO admission_principals
@@ -54,7 +54,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
       sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionPersisted: true } });
     expect(fake.calls).toHaveLength(3);
     const submitCall = fake.calls[0]!;
-    expect(submitCall.url).toBe('https://runner-sandbox.example/runner-mcp-test/v1/runs');
+    expect(submitCall.url).toBe(`${TELEGRAM_UX_SANDBOX.runnerMockTestUrl}/v1/runs`);
     expect(new Headers(submitCall.init?.headers).get('authorization')).toBe('Bearer dedicated-mock-key');
     expect(new Headers(submitCall.init?.headers).get('idempotency-key')).toBe('sandbox-bootstrap-runner-mock-probe-v1');
     expect(JSON.parse(String(submitCall.init?.body))).toMatchObject({
@@ -71,7 +71,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
     const baseEnv = { DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW,
       PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       PILOT_ENABLED: 'true', PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env;
     const body = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
@@ -104,13 +104,13 @@ describe('sandbox CP to Runner mock-test probe', () => {
       DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
       PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/api',
+      SANDBOX_RUNNER_MOCK_TEST_URL: 'https://runner-sandbox.example/api',
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env);
 
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable',
-      bindingIssue: 'runner_url_route_mismatch' });
+      bindingIssue: 'runner_url_target_mismatch' });
     const missingKey = await worker.fetch(new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': TELEGRAM_UX_SANDBOX.principalId,
         'x-principal-sig': signature }, body: '{}',
@@ -118,7 +118,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
       DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
       PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/runner-mcp-test/',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: undefined,
     } as unknown as Env);
     expect(missingKey.status).toBe(503);
@@ -143,7 +143,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
       DB: database, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET_TELEGRAM_UX: secret,
       SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', PILOT_ENABLED: 'true',
       PILOT_COHORT_PROFILE_IDS: 'integration-telegram-ux-v1',
-      RUNNER_API_URL: 'https://runner-sandbox.example/',
+      SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
       RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST: 'dedicated-mock-key',
     } as unknown as Env);
 

@@ -41,6 +41,7 @@ import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-s
 import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
+import { TELEGRAM_UX_SANDBOX } from './deployment/telegram-ux-sandbox';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
@@ -127,6 +128,7 @@ export interface Env {
   ERROR_WATCHER_KEY?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
+  SANDBOX_RUNNER_MOCK_TEST_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   /** Separate disposable credential for the sandbox-only mock-test probe. */
@@ -273,25 +275,15 @@ const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
 const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-v1';
 
 function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
-  const baseUrl = env.RUNNER_API_URL?.trim();
+  const baseUrl = env.SANDBOX_RUNNER_MOCK_TEST_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
   if (!baseUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_missing' };
   if (!apiKey) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_invalid' };
+  if (baseUrl !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
   }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_unsafe' };
-  }
-  const configuredPath = parsed.pathname.replace(/\/+$/, '') || '/';
-  if (configuredPath !== '/' && configuredPath !== '/runner-mcp-test') {
-    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_route_mismatch' };
-  }
-  const runnerBaseUrl = `${parsed.origin}/runner-mcp-test`;
-  return { adapter: new RunnerApiAdapter(runnerBaseUrl, apiKey), runnerBaseUrl, bindingIssue: null };
+  return { adapter: new RunnerApiAdapter(TELEGRAM_UX_SANDBOX.runnerMockTestUrl, apiKey),
+    runnerBaseUrl: TELEGRAM_UX_SANDBOX.runnerMockTestUrl, bindingIssue: null };
 }
 
 async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outcome: string; httpStatus: number | null }> {
