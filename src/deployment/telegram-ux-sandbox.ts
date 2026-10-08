@@ -7,6 +7,7 @@ export const TELEGRAM_UX_SANDBOX = {
   accountEmail: 'typeformowner@gmail.com',
   principalId: 'integration-telegram-ux-v1',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
+  runnerMockTestUrl: 'https://169-58-15-230.sslip.io/runner-mcp-test',
 } as const;
 
 export function validateTelegramUxSandboxConfig(config: Record<string, any>): true {
@@ -27,6 +28,12 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
     || config.vars?.RUN_SPEC_REPOSITORY) {
     throw new Error('sandbox_agent_api_selection_mismatch');
   }
+  if (config.vars?.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true') {
+    throw new Error('sandbox_mock_probe_gate_mismatch');
+  }
+  if (config.vars?.SANDBOX_RUNNER_MOCK_TEST_URL !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    throw new Error('sandbox_mock_runner_url_mismatch');
+  }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();
   const expectedServices = [
@@ -36,6 +43,14 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   ].sort();
   if (JSON.stringify(services) !== JSON.stringify(expectedServices)) throw new Error('sandbox_service_binding_mismatch');
   return true;
+}
+
+export function isSandboxReadinessEndpointMissing(status: number, body: unknown): boolean {
+  if (status === 404) return true;
+  if (status !== 400 || !body || typeof body !== 'object' || Array.isArray(body)) return false;
+  // Older sandbox revisions route this unknown internal path through the
+  // legacy task-status handler, whose stable response is this exact 400.
+  return (body as Record<string, unknown>).error === 'taskId is required';
 }
 
 export async function telegramUxPrincipalSignature(secret: string): Promise<string> {

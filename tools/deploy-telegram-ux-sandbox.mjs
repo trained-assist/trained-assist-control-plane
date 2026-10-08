@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { TELEGRAM_UX_SANDBOX, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
+import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
 
 const configPath = 'wrangler.telegram-ux-v1.jsonc';
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 1024 * 1024, ...options });
-  if (result.error || result.status !== 0) throw new Error('sandbox_command_failed');
+  if (result.error || result.status !== 0) throw new Error(`sandbox_command_failed:${command}`);
   return result.stdout ?? '';
 }
 
@@ -26,6 +27,44 @@ async function validateAccount() {
   }
 }
 
+async function livenessProbe() {
+  let response;
+  try {
+    response = await fetch('https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev/healthz', {
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new Error('sandbox_worker_unreachable');
+  }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.service !== 'trained-assist-control-plane' || body.check !== 'liveness') {
+    throw new Error('sandbox_worker_liveness_failed');
+  }
+  return { status: 'PASS', buildSha: typeof body.buildSha === 'string' ? body.buildSha : null };
+}
+
+async function readinessProbe(secret, { allowBlocked = false, allowMissing = false } = {}) {
+  const signature = createHmac('sha256', secret).update(TELEGRAM_UX_SANDBOX.principalId).digest('hex');
+  let response;
+  try {
+    response = await fetch('https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev/internal/sandbox/readiness', {
+      headers: { 'x-principal': TELEGRAM_UX_SANDBOX.principalId, 'x-principal-sig': signature },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new Error('sandbox_readiness_unreachable');
+  }
+  const body = await response.json().catch(() => ({}));
+  if (allowMissing && isSandboxReadinessEndpointMissing(response.status, body)) return { lane: 'not_deployed' };
+  if ((!response.ok || body?.ok !== true) && !(allowBlocked && response.status === 409 && body?.reasonCode === 'sandbox_lane_has_nonterminal_task')) {
+    throw new Error(body?.reasonCode || 'sandbox_readiness_failed');
+  }
+  return { buildSha: typeof body.buildSha === 'string' ? body.buildSha : null,
+    principalId: body.principalId, profileId: body.profileId, scopes: body.scopes,
+    lane: body.ok ? 'clear' : 'blocked', taskCount: body.taskCount ?? null,
+    nonterminalTaskCount: body.nonterminalTaskCount ?? null };
+}
+
 async function main(args = process.argv.slice(2)) {
   if (!['--preflight', '--deploy'].includes(args[0]) || args.length !== 1) {
     throw new Error('usage: node tools/deploy-telegram-ux-sandbox.mjs --preflight|--deploy');
@@ -35,10 +74,15 @@ async function main(args = process.argv.slice(2)) {
   await validateAccount();
   const secret = await keychainSecret();
   if (args[0] === '--preflight') {
-    console.log(JSON.stringify({ ok: true, mode: 'preflight', worker: TELEGRAM_UX_SANDBOX.workerName,
-      principalId: TELEGRAM_UX_SANDBOX.principalId }));
+    const liveness = await livenessProbe();
+    const readiness = await readinessProbe(secret, { allowBlocked: true, allowMissing: true });
+    console.log(JSON.stringify({ ok: readiness.lane !== 'blocked', mode: 'preflight',
+      worker: TELEGRAM_UX_SANDBOX.workerName, secretName: 'PRINCIPAL_SECRET_TELEGRAM_UX',
+      liveness, authenticatedReadiness: readiness.lane, ...readiness }));
+    if (readiness.lane === 'blocked') throw new Error('sandbox_lane_has_nonterminal_task');
     return;
   }
+  await livenessProbe();
 
   const secretPut = spawnSync('npx', ['wrangler', 'secret', 'put', 'PRINCIPAL_SECRET_TELEGRAM_UX', '--config', configPath], {
     input: secret,
@@ -46,9 +90,12 @@ async function main(args = process.argv.slice(2)) {
     maxBuffer: 1024 * 1024,
   });
   if (secretPut.error || secretPut.status !== 0) throw new Error('sandbox_secret_sync_failed');
-
   run('npx', ['wrangler', 'deploy', '--config', configPath], { stdio: 'inherit' });
+  const readiness = await readinessProbe(secret);
+  console.log(JSON.stringify({ ok: true, mode: 'deploy', worker: TELEGRAM_UX_SANDBOX.workerName,
+    secretName: 'PRINCIPAL_SECRET_TELEGRAM_UX', ...readiness }));
 
+  // The legacy smoke admits a new durable task, so it stays an explicit post-readiness check.
   const smoke = spawnSync(process.execPath, ['tools/integration-v1-smoke.mjs'], {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,
