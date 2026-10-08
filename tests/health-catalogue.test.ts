@@ -176,6 +176,7 @@ describe('profile-scoped Runner readiness route', () => {
       expect(requestedUrl.origin).toBe(runnerUrl);
       expect(requestedUrl.pathname).toMatch(/^\/v1\/runs\/health-probe-[0-9a-f-]+\/status$/);
       expect(init?.method).toBe('GET');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer scoped-runner-key');
       return Response.json({ error: { code: 'NOT_FOUND', message: 'probe run is absent' } }, { status: 404 });
     });

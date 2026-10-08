@@ -1200,10 +1200,15 @@ const store = new TaskStore(env.DB);
           if (!runtime.adapter) return diagnosticsJson({ error: 'runner not configured' }, 503);
           let timer: ReturnType<typeof setTimeout> | undefined;
           let timedOut = false;
+          const controller = new AbortController();
           try {
             await Promise.race([
-              runtime.adapter.status(`health-probe-${crypto.randomUUID()}`),
-              new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { timedOut = true; reject(new Error('probe_timeout')); }, 5_000); }),
+              runtime.adapter.status(`health-probe-${crypto.randomUUID()}`, controller.signal),
+              new Promise<never>((_resolve, reject) => { timer = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+                reject(new Error('probe_timeout'));
+              }, 5_000); }),
             ]);
             summary = { profileId: principal.profileId, runnerApi: 'reachable', reasonCode: null, checkedAt: new Date().toISOString() };
           } catch (error) {

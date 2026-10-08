@@ -143,7 +143,7 @@ export class RunnerApiAdapter {
     return this.fetchImpl.call(globalThis, url, init) as Promise<Response>;
   }
 
-  private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+  private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal } = {}): Promise<T> {
     let res: Response;
     try {
       res = await this.doFetch(`${this.baseUrl}${path}`, {
@@ -153,6 +153,7 @@ export class RunnerApiAdapter {
           'content-type': 'application/json',
           ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
         },
+        ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
       });
     } catch (e) {
@@ -215,8 +216,8 @@ export class RunnerApiAdapter {
     });
   }
 
-  async status(runId: string): Promise<RunnerStatusView> {
-    return this.request<RunnerStatusView>('GET', `/v1/runs/${runId}/status`);
+  async status(runId: string, signal?: AbortSignal): Promise<RunnerStatusView> {
+    return this.request<RunnerStatusView>('GET', `/v1/runs/${runId}/status`, { signal });
   }
 
   async result(runId: string): Promise<RunnerResult> {

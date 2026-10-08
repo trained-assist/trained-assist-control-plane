@@ -62,7 +62,10 @@ async function main(args = process.argv.slice(2)) {
     },
   });
   if (smoke.stdout) process.stdout.write(smoke.stdout);
-  if (smoke.error || smoke.status !== 0) throw new Error('sandbox_post_deploy_smoke_failed');
+  if (smoke.error || smoke.status !== 0) {
+    if (smoke.stderr) process.stderr.write(smoke.stderr);
+    throw new Error('sandbox_post_deploy_smoke_failed');
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
