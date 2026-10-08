@@ -34,7 +34,7 @@ import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedEr
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
-import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
+import { RunnerConflictError, RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
@@ -272,6 +272,18 @@ const diagnosticsTokenMatches = (request: Request, configured: string | undefine
 
 const healthCatalogueCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
 const profileRunnerHealthCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
+
+function safeRunnerHost(rawUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  try { return new URL(rawUrl).hostname || null; } catch { return null; }
+}
+
+function runnerProbeStatusCode(error: unknown): number | null {
+  if (error instanceof RunnerUnavailableError || error instanceof RunnerConflictError || error instanceof RunnerNotFoundError) {
+    return error.statusCode ?? null;
+  }
+  return null;
+}
 
 async function credentialHost(req: Request, env: Env): Promise<string | null> {
   const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
@@ -1194,12 +1206,20 @@ const store = new TaskStore(env.DB);
         const cacheKey = `${principal.profileId}:${env.RUNNER_API_URL ?? ''}`;
         const cached = profileRunnerHealthCache.get(cacheKey);
         if (cached && cached.expiresAt > now) return diagnosticsJson({ ...cached.summary, cached: true });
+        const probeStartedAt = Date.now();
+        const upstreamHost = safeRunnerHost(env.RUNNER_API_URL);
+        let upstreamStatusCode: number | null = null;
+        let timedOut = false;
         let summary: Record<string, unknown>;
         try {
           const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, principal.profileId);
-          if (!runtime.adapter) return diagnosticsJson({ error: 'runner not configured' }, 503);
+          if (!runtime.adapter) {
+            logStructured({ event: 'runner.profile_health_probe', level: 'warn', profileId: principal.profileId,
+              runnerApi: 'unreachable', reason: 'runner_not_configured', upstreamHost, upstreamStatusCode,
+              durationMs: Date.now() - probeStartedAt, timedOut });
+            return diagnosticsJson({ error: 'runner not configured' }, 503);
+          }
           let timer: ReturnType<typeof setTimeout> | undefined;
-          let timedOut = false;
           const controller = new AbortController();
           try {
             await Promise.race([
@@ -1210,8 +1230,10 @@ const store = new TaskStore(env.DB);
                 reject(new Error('probe_timeout'));
               }, 5_000); }),
             ]);
+            upstreamStatusCode = 200;
             summary = { profileId: principal.profileId, runnerApi: 'reachable', reasonCode: null, checkedAt: new Date().toISOString() };
           } catch (error) {
+            upstreamStatusCode = runnerProbeStatusCode(error);
             const reasonCode = error instanceof RunnerNotFoundError ? null
               : timedOut ? 'probe_timeout'
                 : error instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
@@ -1238,6 +1260,9 @@ const store = new TaskStore(env.DB);
               }
             } catch { /* report the mapping as unavailable without echoing it */ }
             const scopedRunnerKey = env.RUNNER_API_KEY_TELEGRAM_UX?.trim();
+            logStructured({ event: 'runner.profile_health_probe', level: 'warn', profileId: principal.profileId,
+              runnerApi: 'unreachable', reason: 'runner_not_configured', upstreamHost, upstreamStatusCode,
+              durationMs: Date.now() - probeStartedAt, timedOut });
             return diagnosticsJson({ error: 'runner not configured', reasonCode: 'runner_not_configured', readiness: {
               runnerUrlConfigured: Boolean(env.RUNNER_API_URL?.trim()),
               scopedRunnerKeyConfigured: Boolean(scopedRunnerKey),
@@ -1248,6 +1273,11 @@ const store = new TaskStore(env.DB);
           }
           throw error;
         }
+        const runnerApi = typeof summary.runnerApi === 'string' ? summary.runnerApi : 'unknown';
+        const reasonCode = typeof summary.reasonCode === 'string' ? summary.reasonCode : null;
+        logStructured({ event: 'runner.profile_health_probe', level: runnerApi === 'reachable' ? 'info' : 'warn',
+          profileId: principal.profileId, runnerApi, reason: reasonCode,
+          upstreamHost, upstreamStatusCode, durationMs: Date.now() - probeStartedAt, timedOut });
         profileRunnerHealthCache.set(cacheKey, { expiresAt: now + 10_000, summary });
         if (profileRunnerHealthCache.size > 64) profileRunnerHealthCache.clear();
         return diagnosticsJson({ ...summary, cached: false });

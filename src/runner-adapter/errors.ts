@@ -3,6 +3,7 @@ export class RunnerUnavailableError extends Error {
   constructor(
     message: string,
     override readonly cause?: unknown,
+    readonly statusCode?: number,
   ) {
     super(message);
     this.name = 'RunnerUnavailableError';
@@ -11,7 +12,7 @@ export class RunnerUnavailableError extends Error {
 
 /** Отказ Runner: конфликт идемпотентности, невалидный запрос, чужой engine. */
 export class RunnerConflictError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly statusCode?: number) {
     super(message);
     this.name = 'RunnerConflictError';
   }
@@ -26,7 +27,7 @@ export class RunnerArtifactManifestError extends Error {
 
 /** Попытка неизвестна Runner'у. */
 export class RunnerNotFoundError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly statusCode?: number) {
     super(message);
     this.name = 'RunnerNotFoundError';
   }

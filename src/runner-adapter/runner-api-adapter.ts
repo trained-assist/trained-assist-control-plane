@@ -170,10 +170,10 @@ export class RunnerApiAdapter {
       const err = (json as { error?: { code?: string; message?: string } } | null)?.error;
       const code = err?.code ?? `HTTP_${res.status}`;
       const message = err?.message ?? text;
-      if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message);
+      if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message, res.status);
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
-      if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`);
-      throw new RunnerConflictError(`${code}: ${message}`);
+      if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
+      throw new RunnerConflictError(`${code}: ${message}`, res.status);
     }
     return json as T;
   }

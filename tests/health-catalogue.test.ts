@@ -200,6 +200,37 @@ describe('profile-scoped Runner readiness route', () => {
     expect(JSON.stringify(body)).not.toContain('secret diagnostic text');
   });
 
+  it('logs sanitized upstream host, status, and duration without URL path or response details', async () => {
+    const privateUrl = 'https://runner.example.test/private/base?token=private-url-token';
+    const targetBindings = { ...bindings, RUNNER_API_URL: privateUrl } as unknown as Env;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      error: { code: 'UPSTREAM_DOWN', message: 'private response detail' },
+    }, { status: 503 })));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const response = await request(['tasks:read'], secret, targetBindings);
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(body).toContain('runner_unavailable');
+    expect(body).not.toContain('runner.example.test');
+    expect(body).not.toContain('private-url-token');
+
+    const serialized = log.mock.calls.map(([value]) => String(value)).find(value => value.includes('runner.profile_health_probe'));
+    expect(serialized).toBeDefined();
+    const event = JSON.parse(serialized!) as Record<string, unknown>;
+    expect(event).toMatchObject({
+      event: 'runner.profile_health_probe', profileId, runnerApi: 'unreachable',
+      reason: 'runner_unavailable', upstreamHost: 'runner.example.test', upstreamStatusCode: 503,
+      timedOut: false,
+    });
+    expect(event.durationMs).toEqual(expect.any(Number));
+    expect(String(event.durationMs)).not.toBe('');
+    expect(serialized).not.toContain('/private/base');
+    expect(serialized).not.toContain('private-url-token');
+    expect(serialized).not.toContain('private response detail');
+    expect(serialized).not.toContain('scoped-runner-key');
+  });
+
   it('reports only boolean binding readiness when the trusted Runner URL is missing', async () => {
     const targetBindings = { ...bindings, RUNNER_API_URL: undefined } as unknown as Env;
     const response = await request(['tasks:read'], secret, targetBindings);
