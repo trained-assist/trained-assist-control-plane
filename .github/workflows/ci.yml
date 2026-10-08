@@ -36,7 +36,7 @@ jobs:
         run: node --test tools/credential-boundary-verify.test.mjs
 
   deploy-staging:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy)
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy))
     needs: check
     runs-on: ubuntu-latest
     environment: staging
@@ -75,7 +75,7 @@ jobs:
         run: node tools/deployment-smoke.mjs https://trained-assist-cp-staging.skillset-apply.workers.dev "$GITHUB_SHA"
 
   deploy-production:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy)
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy))
     needs: deploy-staging
     runs-on: ubuntu-latest
     environment: production
