@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { TELEGRAM_UX_SANDBOX, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
+import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
 
 const configPath = 'wrangler.telegram-ux-v1.jsonc';
 function run(command, args, options = {}) {
@@ -55,7 +55,7 @@ async function readinessProbe(secret, { allowBlocked = false, allowMissing = fal
     throw new Error('sandbox_readiness_unreachable');
   }
   const body = await response.json().catch(() => ({}));
-  if (allowMissing && response.status === 404) return { lane: 'not_deployed' };
+  if (allowMissing && isSandboxReadinessEndpointMissing(response.status, body)) return { lane: 'not_deployed' };
   if ((!response.ok || body?.ok !== true) && !(allowBlocked && response.status === 409 && body?.reasonCode === 'sandbox_lane_has_nonterminal_task')) {
     throw new Error(body?.reasonCode || 'sandbox_readiness_failed');
   }

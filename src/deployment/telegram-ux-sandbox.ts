@@ -36,6 +36,14 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   return true;
 }
 
+export function isSandboxReadinessEndpointMissing(status: number, body: unknown): boolean {
+  if (status === 404) return true;
+  if (status !== 400 || !body || typeof body !== 'object' || Array.isArray(body)) return false;
+  // Older sandbox revisions route this unknown internal path through the
+  // legacy task-status handler, whose stable response is this exact 400.
+  return (body as Record<string, unknown>).error === 'taskId is required';
+}
+
 export async function telegramUxPrincipalSignature(secret: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);

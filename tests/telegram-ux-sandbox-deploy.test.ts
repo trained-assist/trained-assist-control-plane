@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
-import { TELEGRAM_UX_SANDBOX, telegramUxPrincipalSignature, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
+import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, telegramUxPrincipalSignature, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
 
 const config = {
   name: TELEGRAM_UX_SANDBOX.workerName,
@@ -17,6 +17,14 @@ const config = {
 };
 
 describe('Telegram UX sandbox deploy guard', () => {
+  it('recognizes both 404 and the exact legacy response for an undeployed readiness endpoint', () => {
+    expect(isSandboxReadinessEndpointMissing(404, { error: 'not found' })).toBe(true);
+    expect(isSandboxReadinessEndpointMissing(400, { error: 'taskId is required' })).toBe(true);
+    expect(isSandboxReadinessEndpointMissing(400, { error: 'invalid request' })).toBe(false);
+    expect(isSandboxReadinessEndpointMissing(401, { error: 'taskId is required' })).toBe(false);
+    expect(isSandboxReadinessEndpointMissing(200, { ok: true })).toBe(false);
+  });
+
   it('accepts only the pinned sandbox Worker, D1 and Workflow', () => {
     expect(validateTelegramUxSandboxConfig(config)).toBe(true);
   });
