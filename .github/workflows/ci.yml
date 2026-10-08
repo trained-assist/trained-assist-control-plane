@@ -1,10 +1,16 @@
-name: CI
+name: CI and protected deployment
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      recovery_deploy:
+        description: Deploy the current protected main revision after repeating every gate
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -12,7 +18,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,5 +39,83 @@ jobs:
       # файловые операции в workerd-пуле vitest запрещены.
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
-      - name: Read-only credential boundary verifier
-        run: node --test tools/credential-boundary-verify.test.mjs
+      - name: Deployment and credential boundary verifiers
+        run: node --test tools/deployment-config-verify.test.mjs tools/credential-boundary-verify.test.mjs
+
+  deploy-staging:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy))
+    needs: check
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify Cloudflare account
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "d740a05e9442c1d0feacae2dfc673e93"
+          npx wrangler whoami 2>&1 | tee /tmp/whoami.txt
+          grep -F "d740a05e9442c1d0feacae2dfc673e93" /tmp/whoami.txt
+      - name: Apply staging migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply ta-cp-staging-taskstore --remote --config wrangler.staging.jsonc
+      - name: Deploy staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.staging.jsonc --var BUILD_SHA:${GITHUB_SHA}
+      - name: Smoke staging
+        run: node tools/deployment-smoke.mjs https://trained-assist-cp-staging.skillset-apply.workers.dev "$GITHUB_SHA"
+
+  deploy-production:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy))
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify Cloudflare account
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test "$CLOUDFLARE_ACCOUNT_ID" = "d740a05e9442c1d0feacae2dfc673e93"
+          npx wrangler whoami 2>&1 | tee /tmp/whoami.txt
+          grep -F "d740a05e9442c1d0feacae2dfc673e93" /tmp/whoami.txt
+      - name: Apply production migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply ta-cp-production-taskstore --remote --config wrangler.production.jsonc
+      - name: Deploy production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --config wrangler.production.jsonc --var BUILD_SHA:${GITHUB_SHA}
+      - name: Smoke production
+        run: node tools/deployment-smoke.mjs https://trained-assist-cp-production.skillset-apply.workers.dev "$GITHUB_SHA"

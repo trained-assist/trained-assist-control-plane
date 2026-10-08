@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { registryFixtureHostMcp, registryFixtureMcpSpec, REGISTRY_FIXTURE_PROFILE, REGISTRY_FIXTURE_PRINCIPAL, REGISTRY_FIXTURE_TOOL } from '../src/router/registry-test-mcp';
+import { registryFixtureHostMcp, registryFixtureMcpSpec, REGISTRY_FIXTURE_PROFILE, REGISTRY_FIXTURE_PRINCIPAL, REGISTRY_FIXTURE_TOOL, REGISTRY_FIXTURE_URL } from '../src/router/registry-test-mcp';
 
 const scope = { taskId: 'telegram-task-160', generation: 1, profileId: REGISTRY_FIXTURE_PROFILE, principalId: REGISTRY_FIXTURE_PRINCIPAL };
 const metadata = [{ name: REGISTRY_FIXTURE_TOOL,
@@ -18,6 +18,8 @@ describe('live registry test discovery binding', () => {
     expect(snapshot.decisionOptions).toEqual([{ id: REGISTRY_FIXTURE_TOOL }]);
     expect(fetcher).toHaveBeenCalledTimes(1);
     const init = fetcher.mock.calls[0]![1] as RequestInit;
+    expect(fetcher.mock.calls[0]![0]).toBe(REGISTRY_FIXTURE_URL);
+    expect(REGISTRY_FIXTURE_URL).toBe('https://trained-assist-mcp-host-test-160.skillset-apply.workers.dev/mcp');
     const headers = new Headers(init.headers);
     expect(headers.get('authorization')).toBe('Bearer fixture_bearer_0123456789');
     expect(headers.get('x-mcp-operation')).toBe('discovery');
