@@ -179,13 +179,20 @@ export class RunnerApiAdapter {
       json = null;
     }
     if (!res.ok) {
-      const err = (json as { error?: { code?: string; message?: string } } | null)?.error;
+      const err = (json as { error?: { code?: string; message?: string; details?: { errors?: unknown } } } | null)?.error;
       const code = err?.code ?? `HTTP_${res.status}`;
       const message = err?.message ?? text;
       if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message);
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
       if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`);
-      throw new RunnerConflictError(`${code}: ${message}`);
+      const fieldPaths = Array.isArray(err?.details?.errors)
+        ? err.details.errors.flatMap((entry) => {
+          if (typeof entry !== 'string') return [];
+          const path = entry.split(':', 1)[0]?.trim();
+          return path && /^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*|\[\d+\])*$/.test(path) ? [path] : [];
+        })
+        : [];
+      throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, fieldPaths: [...new Set(fieldPaths)].slice(0, 20) });
     }
     return json as T;
   }

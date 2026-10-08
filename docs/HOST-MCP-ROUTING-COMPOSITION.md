@@ -1,6 +1,6 @@
 # Test-gated host MCP routing composition
 
-This integration is available only to `integration-telegram-ux-v1`, principal `integration-telegram-ux-v1`, and the single `registry.fixture_read` tool. CP source wiring is behind the trusted profile override `hostMcpBinding: registry-mcp-test-160-read` and secret `MCP_TEST_AUTH_TOKEN`; no request field or model output can enable it. The isolated Host test Worker is deployed and provisioned. CP's test Worker now runs version `757b595d-de95-4a19-a6de-5414ef84541d`; an authorized task through CP and invocation through the active Runner service remain to be verified. The discovery, descriptor and ownership contract is [MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
+This integration is available only to `integration-telegram-ux-v1`, principal `integration-telegram-ux-v1`, and the single `registry.fixture_read` tool. CP source wiring is behind the trusted profile override `hostMcpBinding: registry-mcp-test-160-read` and secret `MCP_TEST_AUTH_TOKEN`; no request field or model output can enable it. The isolated Host test Worker is deployed and provisioned. CP retains `scope` and `registryDigest` for its own revalidation but projects only Runner-accepted fields into RunSpec; Runner selects the test repository from the authenticated profile binding. Live verification is in progress. The discovery, descriptor and ownership contract is [MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md](MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md).
 
 ## Routing contract
 
