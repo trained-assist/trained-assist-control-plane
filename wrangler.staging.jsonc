@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trained-assist-cp-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": true,
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": { "enabled": true },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "ta-cp-staging-taskstore",
+    "database_id": "b21464a9-d34e-484f-8111-ac17eabbcdc4",
+    "migrations_dir": "migrations"
+  }],
+  "workflows": [{
+    "name": "ta-cp-staging-task-workflow",
+    "binding": "TASK_WORKFLOW",
+    "class_name": "TaskWorkflow"
+  }],
+  "vars": {
+    "DEPLOYMENT_ENV": "staging",
+    "PREVIEW_ONLY": "true",
+    "PILOT_ENABLED": "false",
+    "ROUTER_AGENT_ALLOWED": "false"
+  }
+}

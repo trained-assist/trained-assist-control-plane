@@ -79,6 +79,7 @@ import {
 } from './output';
 
 export interface Env {
+  BUILD_SHA?: string;
   HEALTH_DIAGNOSTICS_TOKEN?: string;
   HEALTH_CATALOGUE_JSON?: string;
   HEALTH_PROBE_TIMEOUT_MS?: string;
@@ -1181,6 +1182,7 @@ const store = new TaskStore(env.DB);
       if (url.pathname === '/healthz' || url.pathname === '/health') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
+          ...(env.BUILD_SHA ? { buildSha: env.BUILD_SHA } : {}),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
       }
       if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
