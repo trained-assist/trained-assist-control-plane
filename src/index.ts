@@ -286,8 +286,11 @@ function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; 
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
     return { adapter: null, bindingIssue: 'runner_url_unsafe' };
   }
-  if (parsed.pathname !== '/runner-mcp-test') return { adapter: null, bindingIssue: 'runner_url_route_mismatch' };
-  return { adapter: new RunnerApiAdapter(`${parsed.origin}${parsed.pathname}`, apiKey), bindingIssue: null };
+  const configuredPath = parsed.pathname.replace(/\/+$/, '') || '/';
+  if (configuredPath !== '/' && configuredPath !== '/runner-mcp-test') {
+    return { adapter: null, bindingIssue: 'runner_url_route_mismatch' };
+  }
+  return { adapter: new RunnerApiAdapter(`${parsed.origin}/runner-mcp-test`, apiKey), bindingIssue: null };
 }
 
 async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
