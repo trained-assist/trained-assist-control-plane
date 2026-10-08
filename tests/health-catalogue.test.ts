@@ -199,4 +199,24 @@ describe('profile-scoped Runner readiness route', () => {
     expect(body).toMatchObject({ runnerApi: 'rejected', reasonCode: 'runner_rejected' });
     expect(JSON.stringify(body)).not.toContain('secret diagnostic text');
   });
+
+  it('reports only boolean binding readiness when the trusted Runner URL is missing', async () => {
+    const targetBindings = { ...bindings, RUNNER_API_URL: undefined } as unknown as Env;
+    const response = await request(['tasks:read'], secret, targetBindings);
+    expect(response.status).toBe(503);
+    const body = await response.json() as Record<string, any>;
+    expect(body).toEqual({
+      error: 'runner not configured', reasonCode: 'runner_not_configured',
+      readiness: {
+        runnerUrlConfigured: false,
+        scopedRunnerKeyConfigured: true,
+        scopedRunnerKeyDistinctFromGlobal: true,
+        profileMappingConfigured: true,
+        requiredMcpAuthConfigured: true,
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain(runnerUrl);
+    expect(JSON.stringify(body)).not.toContain('scoped-runner-key');
+    expect(JSON.stringify(body)).not.toContain('host-discovery-test-token');
+  });
 });

@@ -1223,7 +1223,29 @@ const store = new TaskStore(env.DB);
             clearTimeout(timer);
           }
         } catch (error) {
-          if (error instanceof ProfileRuntimeConfigurationError) return diagnosticsJson({ error: 'runner not configured' }, 503);
+          if (error instanceof ProfileRuntimeConfigurationError) {
+            let profileMappingConfigured = false;
+            let hostMcpRequired = false;
+            try {
+              const overrides = JSON.parse(env.RUN_SPEC_PROFILE_OVERRIDES ?? '{}') as Record<string, unknown>;
+              const mapping = overrides[TELEGRAM_UX_PROFILE];
+              if (mapping && typeof mapping === 'object' && !Array.isArray(mapping)) {
+                const entry = mapping as Record<string, unknown>;
+                profileMappingConfigured = entry.policy === 'generic_text_v1'
+                  && entry.runnerKeyBinding === 'RUNNER_API_KEY_TELEGRAM_UX'
+                  && (entry.hostMcpBinding === undefined || entry.hostMcpBinding === 'registry-mcp-test-160-read');
+                hostMcpRequired = entry.hostMcpBinding === 'registry-mcp-test-160-read';
+              }
+            } catch { /* report the mapping as unavailable without echoing it */ }
+            const scopedRunnerKey = env.RUNNER_API_KEY_TELEGRAM_UX?.trim();
+            return diagnosticsJson({ error: 'runner not configured', reasonCode: 'runner_not_configured', readiness: {
+              runnerUrlConfigured: Boolean(env.RUNNER_API_URL?.trim()),
+              scopedRunnerKeyConfigured: Boolean(scopedRunnerKey),
+              scopedRunnerKeyDistinctFromGlobal: Boolean(scopedRunnerKey && scopedRunnerKey !== env.RUNNER_API_KEY),
+              profileMappingConfigured,
+              requiredMcpAuthConfigured: !hostMcpRequired || Boolean(env.MCP_TEST_AUTH_TOKEN?.trim()),
+            } }, 503);
+          }
           throw error;
         }
         profileRunnerHealthCache.set(cacheKey, { expiresAt: now + 10_000, summary });
