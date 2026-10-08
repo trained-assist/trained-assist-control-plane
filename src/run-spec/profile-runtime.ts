@@ -48,7 +48,9 @@ export function resolveProfileRuntime(
   const hostMcpEnabled = profileOverride.hostMcpBinding === 'registry-mcp-test-160-read';
   if (hostMcpEnabled && !env.MCP_TEST_AUTH_TOKEN?.trim()) return fail();
   return {
-    policy: { ...policy, outputs: [], inputRefs: [], mcp: hostMcpEnabled ? registryFixtureMcpSpec() : null,
+    // This API principal is bound to its isolated test repository at Runner.
+    // Sending RUN_SPEC_REPOSITORY would try to override that authenticated binding.
+    policy: { ...policy, outputs: [], inputRefs: [], repository: null, mcp: hostMcpEnabled ? registryFixtureMcpSpec() : null,
       envAllowlist: policy.envAllowlist.filter(name => name === 'LLM_LADDER_TOKEN') },
     adapter: runnerAdapterOf({ RUNNER_API_URL: env.RUNNER_API_URL, RUNNER_API_KEY: env.RUNNER_API_KEY_TELEGRAM_UX }),
   };
