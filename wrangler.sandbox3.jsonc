@@ -19,6 +19,9 @@
   }],
   "vars": {
     "DEPLOYMENT_ENV": "sandbox3",
+    "RUNNER_API_ENGINE_SELECTION": "agent_api",
+    "RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID": "sandbox3-agent-api-principal",
+    "RUNNER_PROFILE_DELEGATION_TENANT_ID": "sandbox3-acceptance-a-20261008",
     "PREVIEW_ONLY": "true",
     "PILOT_ENABLED": "false",
     "ROUTER_AGENT_ALLOWED": "false"
