@@ -90,7 +90,7 @@ describe('Control Plane diagnostics routes', () => {
   const token = 'diagnostics-test-token';
   const serviceId = `health-fixture-${crypto.randomUUID()}`;
   const catalogue = JSON.stringify([descriptor({ serviceId, healthUrl: 'https://health.invalid/live', readinessUrl: null })]);
-  const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, HEALTH_DIAGNOSTICS_TOKEN: token,
+  const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, BUILD_SHA: 'test-build-sha', HEALTH_DIAGNOSTICS_TOKEN: token,
     HEALTH_CATALOGUE_JSON: catalogue, HEALTH_CACHE_TTL_MS: '1000', HEALTH_PROBE_TIMEOUT_MS: '100' } as unknown as Env;
 
   it('keeps liveness public and minimal', async () => {
@@ -104,6 +104,7 @@ describe('Control Plane diagnostics routes', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toMatchObject({ service: 'trained-assist-control-plane', status: 'healthy', check: 'liveness' });
+    expect(body).toHaveProperty('buildSha', 'test-build-sha');
     expect(body).not.toHaveProperty('ready');
   });
 
