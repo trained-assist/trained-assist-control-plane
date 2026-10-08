@@ -36,7 +36,7 @@ import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/cre
 import { runnerAdapterOf } from './runner-adapter';
 import { RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
-import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
+import { ProfileRuntimeConfigurationError, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
@@ -271,6 +271,7 @@ const diagnosticsTokenMatches = (request: Request, configured: string | undefine
 };
 
 const healthCatalogueCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
+const profileRunnerHealthCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
 
 async function credentialHost(req: Request, env: Env): Promise<string | null> {
   const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
@@ -1182,6 +1183,47 @@ const store = new TaskStore(env.DB);
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
+      }
+      if (url.pathname === '/internal/runner/profile-health') {
+        if (req.method !== 'GET') return diagnosticsJson({ error: 'method not allowed' }, 405);
+        const principalId = await principalOf(req, auth);
+        const principal = await resolvePrincipal(store, { principalId });
+        requirePermission(principal, principal.profileId, 'tasks:read');
+        if (principal.profileId !== TELEGRAM_UX_PROFILE) return diagnosticsJson({ error: 'profile not supported' }, 404);
+        const now = Date.now();
+        const cacheKey = `${principal.profileId}:${env.RUNNER_API_URL ?? ''}`;
+        const cached = profileRunnerHealthCache.get(cacheKey);
+        if (cached && cached.expiresAt > now) return diagnosticsJson({ ...cached.summary, cached: true });
+        let summary: Record<string, unknown>;
+        try {
+          const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, principal.profileId);
+          if (!runtime.adapter) return diagnosticsJson({ error: 'runner not configured' }, 503);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let timedOut = false;
+          try {
+            await Promise.race([
+              runtime.adapter.status(`health-probe-${crypto.randomUUID()}`),
+              new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { timedOut = true; reject(new Error('probe_timeout')); }, 5_000); }),
+            ]);
+            summary = { profileId: principal.profileId, runnerApi: 'reachable', reasonCode: null, checkedAt: new Date().toISOString() };
+          } catch (error) {
+            const reasonCode = error instanceof RunnerNotFoundError ? null
+              : timedOut ? 'probe_timeout'
+                : error instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
+            const runnerApi = reasonCode === null ? 'reachable'
+              : reasonCode === 'runner_rejected' ? 'rejected' : 'unreachable';
+            summary = { profileId: principal.profileId, runnerApi, reasonCode,
+              checkedAt: new Date().toISOString() };
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch (error) {
+          if (error instanceof ProfileRuntimeConfigurationError) return diagnosticsJson({ error: 'runner not configured' }, 503);
+          throw error;
+        }
+        profileRunnerHealthCache.set(cacheKey, { expiresAt: now + 10_000, summary });
+        if (profileRunnerHealthCache.size > 64) profileRunnerHealthCache.clear();
+        return diagnosticsJson({ ...summary, cached: false });
       }
       if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);

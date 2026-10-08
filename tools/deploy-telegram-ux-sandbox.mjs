@@ -58,6 +58,7 @@ async function main(args = process.argv.slice(2)) {
       CP_INTEGRATION_V1_PRINCIPAL_ID: TELEGRAM_UX_SANDBOX.principalId,
       CP_INTEGRATION_V1_PRINCIPAL_SECRET: secret,
       CP_INTEGRATION_V1_PROFILE_ID: TELEGRAM_UX_SANDBOX.principalId,
+      CP_INTEGRATION_V1_RUNNER_PROBE: 'true',
     },
   });
   if (smoke.stdout) process.stdout.write(smoke.stdout);

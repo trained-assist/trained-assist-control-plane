@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { observeHealth, observeHealthCatalogue, parseHealthCatalogue } from '../src/diagnostics/health-catalogue';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
+import { TaskStore } from '../src/taskstore';
+import { signPrincipal } from '../src/auth/principal-auth';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -130,5 +132,70 @@ describe('Control Plane diagnostics routes', () => {
     const stale = await request();
     expect(stale.status).toBe(200);
     expect(await stale.json()).toMatchObject({ status: 'unknown', cached: true, stale: true, reasonCodes: expect.arrayContaining(['stale_cache_served']) });
+  });
+});
+
+describe('profile-scoped Runner readiness route', () => {
+  const profileId = 'integration-telegram-ux-v1';
+  const principalId = profileId;
+  const secret = 'profile-runner-health-test-secret';
+  const runnerUrl = `https://runner-${crypto.randomUUID()}.example.test`;
+  const bindings = {
+    DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
+    PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+    RUNNER_API_URL: runnerUrl,
+    RUNNER_API_KEY_TELEGRAM_UX: 'scoped-runner-key',
+    RUNNER_API_KEY: 'different-global-key',
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [profileId]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', hostMcpBinding: 'registry-mcp-test-160-read' } }),
+    MCP_TEST_AUTH_TOKEN: 'host-discovery-test-token',
+  } as unknown as Env;
+
+  async function request(scopes = ['tasks:read'], signatureSecret = secret, targetBindings = bindings) {
+    await new TaskStore(bindings.DB).upsertPrincipal({ principalId, profileId, scopes });
+    return worker.fetch(new Request('https://cp.test/internal/runner/profile-health', {
+      headers: {
+        'x-principal': principalId,
+        'x-principal-sig': await signPrincipal(principalId, signatureSecret),
+      },
+    }), targetBindings);
+  }
+
+  it('requires signed identity and tasks:read before probing the Runner', async () => {
+    const fetcher = vi.fn(async () => Response.json({}));
+    vi.stubGlobal('fetch', fetcher);
+    const deniedSignature = await request(['tasks:read'], 'wrong-secret');
+    expect(deniedSignature.status).toBe(401);
+    const deniedScope = await request([]);
+    expect(deniedScope.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('uses the durable profile scoped key for a read-only status probe and caches briefly', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestedUrl = new URL(String(input));
+      expect(requestedUrl.origin).toBe(runnerUrl);
+      expect(requestedUrl.pathname).toMatch(/^\/v1\/runs\/health-probe-[0-9a-f-]+\/status$/);
+      expect(init?.method).toBe('GET');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer scoped-runner-key');
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'probe run is absent' } }, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const first = await request();
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ profileId, runnerApi: 'reachable', reasonCode: null, cached: false });
+    const second = await request();
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ profileId, runnerApi: 'reachable', cached: true });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports rejected credentials without exposing Runner response text', async () => {
+    const targetBindings = { ...bindings, RUNNER_API_URL: `${runnerUrl}/auth-reject` } as unknown as Env;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'UNAUTHORIZED', message: 'secret diagnostic text' } }, { status: 401 })));
+    const response = await request(['tasks:read'], secret, targetBindings);
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ runnerApi: 'rejected', reasonCode: 'runner_rejected' });
+    expect(JSON.stringify(body)).not.toContain('secret diagnostic text');
   });
 });

@@ -60,6 +60,15 @@ probe retains its original deployment-wide credential. Unknown override profiles
 fields or presets, malformed mappings and incomplete generic bindings fail
 closed. Historical profiles are unchanged when no override mapping exists.
 
+For an authenticated, read-only diagnostic of the sandbox profile adapter, call
+`GET /internal/runner/profile-health` with the normal signed principal headers.
+The principal must own `integration-telegram-ux-v1` and have `tasks:read`. The
+route resolves the scoped Runner key from the durable principal profile, probes
+only `GET /v1/runs/health-probe-<random-id>/status`, returns a sanitized reachability result,
+and caches it for 10 seconds. It does not create a task, Workflow, or model call.
+This verifies CP-to-Runner API reachability/authentication only; a 404 for the
+synthetic probe run is expected and does not prove engine readiness or execution.
+
 ## Provisioning gate
 
 Before enabling the gateway adapter, the parent must provision a CP principal
