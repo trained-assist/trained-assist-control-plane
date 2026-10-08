@@ -1,0 +1,33 @@
+name: Read existing task status in Telegram UX sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Existing canonical sandbox userTaskId
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-sandbox-status-probe
+  cancel-in-progress: false
+
+jobs:
+  read-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read status metadata only from canonical sandbox
+        env:
+          CP_SANDBOX_TASK_ID: ${{ github.event.inputs.task_id }}
+          CP_INTEGRATION_V1_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_SMOKE_SECRET }}
+        run: node tools/sandbox-status-probe.mjs
