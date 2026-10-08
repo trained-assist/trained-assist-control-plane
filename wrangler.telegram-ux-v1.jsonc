@@ -31,6 +31,7 @@
     "PILOT_COHORT_PROFILE_IDS": "integration-telegram-ux-v1",
     "DELIVERY_ADAPTER": "local",
     "SANDBOX_READINESS_ENABLED": "true",
-    "SANDBOX_RUNNER_MOCK_PROBE_ENABLED": "true"
+    "SANDBOX_RUNNER_MOCK_PROBE_ENABLED": "true",
+    "SANDBOX_RUNNER_MOCK_TEST_URL": "https://169-58-15-230.sslip.io/runner-mcp-test"
   }
 }

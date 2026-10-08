@@ -7,6 +7,7 @@ export const TELEGRAM_UX_SANDBOX = {
   accountEmail: 'typeformowner@gmail.com',
   principalId: 'integration-telegram-ux-v1',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
+  runnerMockTestUrl: 'https://169-58-15-230.sslip.io/runner-mcp-test',
 } as const;
 
 export function validateTelegramUxSandboxConfig(config: Record<string, any>): true {
@@ -24,6 +25,9 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   }
   if (config.vars?.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true') {
     throw new Error('sandbox_mock_probe_gate_mismatch');
+  }
+  if (config.vars?.SANDBOX_RUNNER_MOCK_TEST_URL !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    throw new Error('sandbox_mock_runner_url_mismatch');
   }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();
