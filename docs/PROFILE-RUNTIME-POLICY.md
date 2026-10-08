@@ -30,13 +30,28 @@ unrelated GCP `CP23_PRINCIPAL_SECRET` value.
 Keep the Keychain item as the sole operator source for this principal. Do not
 rotate the Cloudflare secret independently. Before deployment, run
 `npm run sandbox:preflight:telegram-ux`; this validates the exact sandbox
-Worker/D1 target and Cloudflare account without changing remote state. Deploy
+Worker/D1 target and Cloudflare account, checks Worker liveness, and uses the
+authenticated lane readiness endpoint when the deployed revision has it. On an
+older revision, it reports that readiness is not deployed yet; the endpoint is
+checked after the first code deployment. Deploy
 with `npm run sandbox:deploy:telegram-ux`: the command copies the Keychain value
 directly to the named sandbox Worker without placing it in arguments or logs,
 deploys only `wrangler.telegram-ux-v1.jsonc`, then runs the authenticated
-`accept_only` intake/status/events smoke. The smoke never starts Runner; it
-creates a durable sandbox receipt. A deploy is not accepted if the principal
-signature does not authenticate or the receipt/status/events readback fails.
+readiness check followed by the explicit `accept_only` intake/status/events
+smoke. The readiness check is read-only and blocks when the profile has any
+nonterminal task. The later smoke never starts Runner, but it does create a
+durable sandbox receipt. A deploy is not accepted if the principal signature
+does not authenticate, readiness is unavailable, or receipt/status/events
+readback fails.
+
+The deploy command does not generate or rotate credentials. Runner API key
+pairing is a separate operation owned by Runner and CP; do not rotate either
+copy independently. A future bootstrap command must preflight the current
+authenticated lane before changing either secret, update both owners from one
+in-memory generated key, then verify auth and emit only sanitized evidence.
+Until that paired path is implemented and the shared profile has been safely
+reconciled, use the existing Keychain-backed deploy flow and never clear the
+shared D1, Workflow, or collector state to make readiness pass.
 This procedure does not deploy Telegram Worker secrets; the gateway's
 precomputed signature must be sourced from the same principal secret and
 verified independently before Telegram live acceptance.
