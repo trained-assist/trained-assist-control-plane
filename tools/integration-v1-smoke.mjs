@@ -16,10 +16,18 @@ const requestId = `sde-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0
 let runnerProfileHealth = null;
 if (process.env.CP_INTEGRATION_V1_RUNNER_PROBE === 'true') {
   const healthResponse = await fetch(`${baseUrl}/internal/runner/profile-health`, { headers });
-  runnerProfileHealth = await healthResponse.json();
+  const healthBody = await healthResponse.json();
+  runnerProfileHealth = healthBody;
   if (healthResponse.status !== 200 || runnerProfileHealth.runnerApi !== 'reachable') {
+    const safeReasons = {
+      'runner not configured': 'runner_not_configured',
+      'runner unavailable': 'runner_unavailable',
+    };
+    const reasonCode = runnerProfileHealth.reasonCode
+      ?? safeReasons[runnerProfileHealth.error]
+      ?? null;
     console.error(JSON.stringify({ stage: 'profile_runner_health', status: healthResponse.status,
-      runnerApi: runnerProfileHealth.runnerApi ?? null, reasonCode: runnerProfileHealth.reasonCode ?? null }));
+      runnerApi: runnerProfileHealth.runnerApi ?? null, reasonCode }));
     process.exit(1);
   }
 }
