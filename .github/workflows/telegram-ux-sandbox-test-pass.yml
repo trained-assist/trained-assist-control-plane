@@ -1,0 +1,44 @@
+name: Deploy and verify Telegram UX sandbox test pass
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-ux-sandbox-runner-credentials
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Deploy sandbox, provision paired mock-test key, and verify pong
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CP_TELEGRAM_UX_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
+          RUNNER_MOCK_KEY_SEED: ${{ secrets.RUNNER_MOCK_KEY_SEED }}
+          VM2_SSH_PRIVATE_KEY: ${{ secrets.VM2_SSH_PRIVATE_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs
+      - name: Upload sanitized bootstrap evidence
+        if: always() && hashFiles('sandbox-bootstrap-evidence.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-ux-sandbox-test-pass-${{ github.run_id }}
+          path: sandbox-bootstrap-evidence.json
+          if-no-files-found: error
+          retention-days: 30
