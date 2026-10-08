@@ -19,6 +19,30 @@ Enable delegated routing in a sandbox Worker with these bindings:
 - `RUNNER_API_ENGINE_SELECTION=agent_api`: asks the API to select from its own
   configured engine chain.
 
+## Ownership and routing order
+
+In `agent_api` mode, engine ownership belongs to the Agent API. Do not set
+`ROUTER_AGENT_ENGINE`, send an `engine` in the submit body, select an engine
+from a locally cached capabilities response, or pin a repository in the CP
+RunSpec. CP authenticates to the configured Agent API and supplies the signed
+tenant/profile identity; the API validates the identity and selects an engine
+per its live engine chain and principal policy. The API's selection is the
+source of truth. If the API cannot select or admit a run, report a dispatch
+failure with the API's error class; do not describe it as an LLM/provider
+failure.
+
+Text routing has two model boundaries. First,
+`communication:resolve_user_intent` chooses a registered capability/quick
+answer or the `agent` route. On `agent`, CP dispatches through the Agent API;
+only after successful admission does the task agent's model start and choose
+from its permitted MCP tools. A null `capabilityId` with `route=agent` means
+the resolver selected agent fallback, not an MCP tool call. In the persisted
+`routing.selected` event, `modelId`, `modelCalls`, `providerCode`,
+`capabilityId`, `route` and `degraded` describe the resolver. They do not prove
+that the task-agent model ran. Runner/API dispatch events and the execution's
+`session_id`/`model` establish that later boundary; `runner_submit_rejected`
+with no execution session means no task-agent model or tool call occurred.
+
 The resolved durable profile ID is signed per request with the tenant and
 principal, expires after one minute, and is never accepted from caller text. The
 Agent API resolves the repository from the signed profile route. Keep

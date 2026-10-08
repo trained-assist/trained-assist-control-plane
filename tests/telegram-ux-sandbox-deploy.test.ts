@@ -6,6 +6,7 @@ const config = {
   workers_dev: true,
   d1_databases: [{ database_name: TELEGRAM_UX_SANDBOX.databaseName, database_id: TELEGRAM_UX_SANDBOX.databaseId }],
   workflows: [{ name: TELEGRAM_UX_SANDBOX.workflowName }],
+  vars: { RUNNER_API_ENGINE_SELECTION: 'agent_api' },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },
@@ -31,6 +32,13 @@ describe('Telegram UX sandbox deploy guard', () => {
   it('refuses service bindings outside the reviewed sandbox', () => {
     const wrongService = { ...config, services: [{ binding: 'COMMUNICATION_SERVICE', service: 'production' }] };
     expect(() => validateTelegramUxSandboxConfig(wrongService)).toThrow('sandbox_service_binding_mismatch');
+  });
+
+  it('requires Agent API engine selection and refuses a pinned Runner engine or repository', () => {
+    const pinnedEngine = { ...config, vars: { ...config.vars, ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run' } };
+    const pinnedRepository = { ...config, vars: { ...config.vars, RUN_SPEC_REPOSITORY: '{"fullName":"owner/repo"}' } };
+    expect(() => validateTelegramUxSandboxConfig(pinnedEngine)).toThrow('sandbox_agent_api_selection_mismatch');
+    expect(() => validateTelegramUxSandboxConfig(pinnedRepository)).toThrow('sandbox_agent_api_selection_mismatch');
   });
 
   it('derives the same HMAC signature for the configured principal deterministically', async () => {
