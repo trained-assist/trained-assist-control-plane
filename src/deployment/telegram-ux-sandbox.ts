@@ -6,6 +6,7 @@ export const TELEGRAM_UX_SANDBOX = {
   accountId: 'd740a05e9442c1d0feacae2dfc673e93',
   accountEmail: 'typeformowner@gmail.com',
   principalId: 'integration-telegram-ux-v1',
+  runnerEngine: 'dynamic-ip-azure-agent-run',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
 } as const;
 
@@ -21,6 +22,9 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   if (!Array.isArray(config.workflows) || config.workflows.length !== 1
     || config.workflows[0].name !== TELEGRAM_UX_SANDBOX.workflowName) {
     throw new Error('sandbox_workflow_mismatch');
+  }
+  if (config.vars?.ROUTER_AGENT_ENGINE !== TELEGRAM_UX_SANDBOX.runnerEngine) {
+    throw new Error('sandbox_runner_engine_mismatch');
   }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();

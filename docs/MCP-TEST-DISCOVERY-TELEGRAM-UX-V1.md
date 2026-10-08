@@ -61,6 +61,13 @@ the authenticated Host response. CP never sends `tools/call`.
 
 ## Selection and RunSpec handoff
 
+The canonical Telegram UX sandbox must select `dynamic-ip-azure-agent-run`,
+the engine advertised by its authenticated Runner binding. A mismatched engine
+is rejected at Runner admission (`ENGINE_NOT_ALLOWED`) before a Runner run or
+execution model is created. The sandbox deployment guard pins this engine so
+that configuration errors fail preflight instead of becoming user-visible task
+failures.
+
 The model may return the registered capability ID. It cannot supply or change
 the URL, server ID, profile/principal, binding reference, execution scope, tool
 allowlist, catalogue or policy version, Registry digest, or credential. CP
