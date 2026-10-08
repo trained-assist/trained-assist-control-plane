@@ -390,6 +390,26 @@ npm run check:evidence                     # негативные проверк
 
 ## Что осталось
 
+### Bootstrap и readiness sandbox Telegram UX
+
+`npm run sandbox:preflight:telegram-ux` проверяет привязку к ожидаемому Cloudflare account и точным sandbox Worker/D1/Workflow, плюс Worker liveness. Если текущая версия уже содержит endpoint, проверяет также authenticated read-only readiness; для первой установки endpoint появится только после deploy, поэтому preflight явно сообщает `not_deployed`. `npm run sandbox:deploy:telegram-ux` синхронизирует уже существующий Keychain secret `PRINCIPAL_SECRET_TELEGRAM_UX`, деплоит только `wrangler.telegram-ux-v1.jsonc`, затем вызывает аутентифицированный read-only `/internal/sandbox/readiness` и отдельный intake smoke. Readiness не создаёт задачи; если профиль содержит любую nonterminal задачу, проверка возвращает `409 sandbox_lane_has_nonterminal_task` и deploy flow останавливается до smoke. Intake smoke создаёт durable `accept_only` задачу, но не запускает Runner.
+
+Команда не генерирует и не ротирует ключи. CP и Runner владеют разными копиями credentials; нельзя менять только одну. Парный bootstrap будет доступен после появления Runner provision API и безопасного reconciliation уже существующих задач. До этого не очищать общую D1/Workflow/collector state; для новых попыток пользоваться отдельной одобренной lane. Cloudflare operator auth, SSH доступ, Telegram bot token, provider/model credentials и MCP credentials выдаются своими системами и должны быть заранее настроены. Evidence содержит только revision/resource/secret names и результаты boundary probes, никогда значения ключей.
+
+Обнаруженные credential hops для Telegram UX sandbox:
+
+| Направление | Имя/владелец | Проверка и статус |
+| --- | --- | --- |
+| Оператор/тестовый клиент → CP | `PRINCIPAL_SECRET_TELEGRAM_UX`; операторская копия — macOS Keychain, Worker-копия — Cloudflare CP sandbox | Локальный deploy script ссылается на точное Keychain service/account; соответствие значений не читается. Cloudflare account проверен, но live secret-name query завершился сетевой ошибкой, поэтому Worker-копия не подтверждена. |
+| CP → Runner API | `RUNNER_API_KEY_TELEGRAM_UX`; Cloudflare CP sandbox и Runner test key registry | Имя задано в profile override; парность/наличие секрета не проверены. Runner #210 добавляет hash-only registry provisioner, но ещё не выдаёт/синхронизирует пару и не развёрнут. |
+| CP → MCP Host discovery | `MCP_TEST_AUTH_TOKEN`; CP Worker и Host `trained-assist-mcp-host-test-160` | Имя и discovery-only scope описаны в [MCP test discovery contract](docs/MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md); live secret names/auth не проверены. |
+| Runner → MCP Host invocation | Runner private signing key в mode-0600 env; public JWK и policy на Host Worker | Контракт и владельцы задокументированы; Host deployment settings не полностью отражены в checked-in config, live подпись не проверена. |
+| CP → Communication service | `COMMUNICATION_TOKEN` при вызове `COMMUNICATION_SERVICE` | Имя есть в Worker env contract, sandbox использует service binding; live credential presence/authorization не проверены. |
+| CP → Ingress Buffer | `INGRESS_BUFFER_TOKEN`; CP Worker и `trained-assist-ingress-buffer-sandbox` | Нужен только для artifact manifest/content path; имена и владельцы описаны в [artifact contract](docs/INGRESS-ARTIFACT-MANIFEST-V1.md); live auth не проверена. |
+| Runner → Model Ladder | `LLM_LADDER_TOKEN`; источник — GCP Secret Manager, Runner получает allowlisted env | Имя разрешено в sandbox RunSpec; актуальная выдача/доступность модели в этом прогоне не проверена. |
+
+На 2026-10-09 проверены repository bindings/docs и Cloudflare account ID. Значения секретов не читались. Из-за сетевого сбоя Cloudflare API inventory и все live downstream auth probes остаются `UNKNOWN`; этот PR не объявляет всю цепочку READY.
+
 - **Деплой и замеры на реальном аккаунте Cloudflare** — только по явной команде владельца (там же: настоящий `database_id`, latency пробуждения после `wrangler deploy` = [#91](https://github.com/trained-assist/trained-agent-architecture/issues/91), поведение под старым кодом = [#92](https://github.com/trained-assist/trained-agent-architecture/issues/92)). Токены — GCP Secret Manager / GitHub Secrets, в репо их нет и не будет.
 - **M1.3** — подключение настоящего Runner (ai-agent-runner): idempotent submit, события, cancellation, финализация артефактов.
 - **M1.4** — первый Web vertical slice: пять сообщений одной conversation с рестартом, awaited input, артефакты, единственный delivery owner (нужны `deliveries` как таблица и sandbox Web adapter). **Web adapter и сквозная приёмка — в PR `feat/m1-web-slice`** (страница разговора, клиент к API, сквозной прогон с рестартом); `deliveries` как таблица и единственный delivery owner — остаются на шаг 8.

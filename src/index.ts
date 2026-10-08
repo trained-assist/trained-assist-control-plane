@@ -84,6 +84,7 @@ export interface Env {
   HEALTH_CATALOGUE_JSON?: string;
   HEALTH_PROBE_TIMEOUT_MS?: string;
   HEALTH_CACHE_TTL_MS?: string;
+  SANDBOX_READINESS_ENABLED?: string;
   NATIVE_CANCEL_CONFIRMATION?: string;
   ROUTER_SELECTOR_NAMES_ONLY?: string;
   ROUTER_SELECTOR?: string;
@@ -1184,6 +1185,35 @@ const store = new TaskStore(env.DB);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
           ...(env.BUILD_SHA ? { buildSha: env.BUILD_SHA } : {}),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
+      }
+      if (url.pathname === '/internal/sandbox/readiness') {
+        if (req.method !== 'GET' || env.SANDBOX_READINESS_ENABLED !== 'true'
+          || env.PREVIEW_ONLY === 'false') {
+          return diagnosticsJson({ ok: false, reasonCode: 'sandbox_readiness_unavailable' }, 404);
+        }
+        const principalId = await principalOf(req, auth);
+        if (principalId !== 'integration-telegram-ux-v1') {
+          return diagnosticsJson({ ok: false, reasonCode: principalId ? 'principal_not_allowed' : 'authentication_failed' }, principalId ? 403 : 401);
+        }
+        let principal;
+        try {
+          principal = await resolvePrincipal(store, { principalId });
+          requirePermission(principal, 'integration-telegram-ux-v1', 'tasks:read');
+          requirePermission(principal, 'integration-telegram-ux-v1', 'tasks:intake');
+        } catch {
+          return diagnosticsJson({ ok: false, reasonCode: 'principal_scope_unavailable' }, 403);
+        }
+        const profileState = await env.DB.prepare(`SELECT count(*) AS total,
+          sum(CASE WHEN status NOT IN ('done','failed','cancelled') THEN 1 ELSE 0 END) AS nonterminal
+          FROM durable_tasks WHERE profile_id = ?`).bind('integration-telegram-ux-v1')
+          .first<{ total: number; nonterminal: number | null }>();
+        const nonterminal = Number(profileState?.nonterminal ?? 0);
+        return diagnosticsJson({ ok: nonterminal === 0, check: 'authenticated_sandbox_readiness',
+          principalId, profileId: principal.profileId, scopes: principal.scopes,
+          taskCount: Number(profileState?.total ?? 0), nonterminalTaskCount: nonterminal,
+          reasonCode: nonterminal === 0 ? null : 'sandbox_lane_has_nonterminal_task',
+          buildSha: env.BUILD_SHA ?? null,
+        }, nonterminal === 0 ? 200 : 409);
       }
       if (url.pathname === '/internal/health/catalogue' || url.pathname === '/internal/health/summary') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);

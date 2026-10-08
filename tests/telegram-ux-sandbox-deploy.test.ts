@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import worker, { type Env } from '../src/index';
+import { env } from './env';
 import { TELEGRAM_UX_SANDBOX, telegramUxPrincipalSignature, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
 
 const config = {
@@ -36,5 +38,44 @@ describe('Telegram UX sandbox deploy guard', () => {
   it('derives the same HMAC signature for the configured principal deterministically', async () => {
     expect(await telegramUxPrincipalSignature('sandbox-secret'))
       .toBe('40ee8b265a654c6867c1edd325ba0f05fc7bb624b34840cef15c8cbff1a5c1f7');
+  });
+
+  it('readiness is gated, authenticated, scoped and blocks when the sandbox profile has active work', async () => {
+    const database = env.DB;
+    const workflow = env.TASK_WORKFLOW;
+    const secret = 'sandbox-readiness-test-secret';
+    const baseEnv = { DB: database, TASK_WORKFLOW: workflow,
+      PRINCIPAL_SECRET_TELEGRAM_UX: secret, SANDBOX_READINESS_ENABLED: 'true' } as unknown as Env;
+    const signedRequest = async (targetEnv: Env, path = '/internal/sandbox/readiness', signedSecret = secret) => {
+      const signature = await telegramUxPrincipalSignature(signedSecret);
+      return worker.fetch(new Request(`https://cp.test${path}`, { headers: {
+        'x-principal': TELEGRAM_UX_SANDBOX.principalId, 'x-principal-sig': signature,
+      } }), targetEnv);
+    };
+
+    const gated = await signedRequest({ ...baseEnv, SANDBOX_READINESS_ENABLED: undefined });
+    expect(gated.status).toBe(404);
+    const unauthorized = await worker.fetch(new Request('https://cp.test/internal/sandbox/readiness'), baseEnv);
+    expect(unauthorized.status).toBe(401);
+
+    await database.prepare(`INSERT OR REPLACE INTO admission_principals
+      (principal_id, profile_id, scopes, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 1, 1)`).bind(TELEGRAM_UX_SANDBOX.principalId, TELEGRAM_UX_SANDBOX.principalId,
+      JSON.stringify(['tasks:intake', 'tasks:read'])).run();
+    const ready = await signedRequest(baseEnv);
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toMatchObject({ ok: true, nonterminalTaskCount: 0, check: 'authenticated_sandbox_readiness' });
+
+    const activeTask = `ut-${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`;
+    await database.prepare(`INSERT INTO durable_tasks (id, profile_id, goal, status, created_at, updated_at)
+      VALUES (?, ?, 'readiness fixture', 'active', 1, 1)`).bind(activeTask, TELEGRAM_UX_SANDBOX.principalId).run();
+    try {
+      const blocked = await signedRequest(baseEnv);
+      expect(blocked.status).toBe(409);
+      expect(await blocked.json()).toMatchObject({ ok: false, reasonCode: 'sandbox_lane_has_nonterminal_task' });
+    } finally {
+      await database.prepare('DELETE FROM durable_tasks WHERE id = ?').bind(activeTask).run();
+      await database.prepare('DELETE FROM admission_principals WHERE principal_id = ?').bind(TELEGRAM_UX_SANDBOX.principalId).run();
+    }
   });
 });

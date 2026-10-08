@@ -29,6 +29,7 @@
     "RUN_SPEC_STARTUP_TIMEOUT_MS": "600000",
     "PILOT_ENABLED": "true",
     "PILOT_COHORT_PROFILE_IDS": "integration-telegram-ux-v1",
-    "DELIVERY_ADAPTER": "local"
+    "DELIVERY_ADAPTER": "local",
+    "SANDBOX_READINESS_ENABLED": "true"
   }
 }
