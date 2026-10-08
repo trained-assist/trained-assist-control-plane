@@ -43,7 +43,7 @@ jobs:
           test "$CLOUDFLARE_ACCOUNT_ID" = "d740a05e9442c1d0feacae2dfc673e93"
           npx wrangler whoami 2>&1 | tee /tmp/whoami.txt
           grep -F "d740a05e9442c1d0feacae2dfc673e93" /tmp/whoami.txt
-          grep -F "typeformowner@gmail.com" /tmp/whoami.txt
+          grep -F "Typeformowner@gmail.com's Account" /tmp/whoami.txt
       - name: Deploy disabled sandbox-3 Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
