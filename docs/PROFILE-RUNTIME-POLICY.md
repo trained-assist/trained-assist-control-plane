@@ -44,14 +44,57 @@ durable sandbox receipt. A deploy is not accepted if the principal signature
 does not authenticate, readiness is unavailable, or receipt/status/events
 readback fails.
 
-The deploy command does not generate or rotate credentials. Runner API key
-pairing is a separate operation owned by Runner and CP; do not rotate either
-copy independently. A future bootstrap command must preflight the current
-authenticated lane before changing either secret, update both owners from one
-in-memory generated key, then verify auth and emit only sanitized evidence.
-Until that paired path is implemented and the shared profile has been safely
-reconciled, use the existing Keychain-backed deploy flow and never clear the
-shared D1, Workflow, or collector state to make readiness pass.
+The regular Telegram UX deploy command does not generate or rotate credentials.
+The separate workflow
+[`sandbox-runner-credentials.yml`](../.github/workflows/sandbox-runner-credentials.yml)
+bootstraps only the isolated `mock-test` identity. It derives a stable Runner
+API key from the protected `RUNNER_MOCK_KEY_SEED`, sends only its SHA-256 hash
+over SSH to the root-owned Runner provisioner, writes the key directly to the
+exact sandbox Worker secret `RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST`, and calls
+the authenticated CP mock probe. The normal Telegram UX key, URL, D1, Workflow,
+and collector are not changed. The fixed mock probe is idempotent and creates
+one Runner admission record, but no CP task or Workflow. A shared Telegram lane
+readiness check is intentionally not a gate for this isolated principal; it
+currently reports unrelated nonterminal tasks and must not be cleared to run
+the mock probe.
+
+Before the first run, create a GitHub Actions environment named `sandbox`,
+restrict deployments to protected `main`, and require an authorized reviewer.
+Set the following protected environment secrets and variables; do not put their
+values in this repository or workflow inputs.
+
+| Environment secret | Purpose |
+| --- | --- |
+| `CF_API_TOKEN` | Cloudflare token scoped to the exact sandbox Worker secret |
+| `CP_TELEGRAM_UX_PRINCIPAL_SECRET` | Existing test principal credential used only to authenticate the CP probe; must already match `PRINCIPAL_SECRET_TELEGRAM_UX` on the sandbox Worker |
+| `RUNNER_MOCK_KEY_SEED` | At least 32 bytes; derives the stable dedicated mock API key |
+| `VM2_SSH_PRIVATE_KEY` | SSH identity allowed to run only the installed root provisioner via `sudo -n` |
+
+| Environment variable | Purpose |
+| --- | --- |
+| `CF_ACCOUNT_ID` | Must equal the trained-assist test account ID pinned in the deployment config |
+| `VM2_SSH_HOST` | SSH address of France VM2; the installed provisioner independently verifies its host and test service |
+| `VM2_SSH_USER` | SSH account with narrowly scoped passwordless sudo for the provisioner |
+| `VM2_SSH_KNOWN_HOSTS` | Pinned SSH host key entry; strict host key checking is enabled |
+
+The workflow verifies the exact sandbox Wrangler config, authenticated
+Cloudflare account, and Worker liveness before it changes credentials. It then
+registers the key hash at Runner, updates only the dedicated mock-key binding,
+and requires `succeeded / pong` from CP. It never reads back secret values.
+The `sandbox-bootstrap-evidence.json` artifact contains resource and secret
+names, revisions, boundary outcomes, and the synthetic Runner run ID only. It
+contains neither the derived key nor the CP principal secret. Changing the key
+seed derives a new key; the Runner provisioner intentionally retains old hashes
+until an operator explicitly removes them, so seed replacement alone is not a
+revocation procedure.
+
+The CP principal secret is an externally provisioned prerequisite, not rotated
+by this workflow: it may also be held by the sandbox Telegram ingress. If it is
+missing or does not match the Worker, the authenticated probe fails before any
+ordinary task is created. Do not clear shared D1, Workflow, or collector state
+to make readiness pass. The workflow is dispatch-only from `main`, targets
+Cloudflare sandbox and `agent-runner-api-mcp-test.service`, and is not a
+production promotion path.
 This procedure does not deploy Telegram Worker secrets; the gateway's
 precomputed signature must be sourced from the same principal secret and
 verified independently before Telegram live acceptance.

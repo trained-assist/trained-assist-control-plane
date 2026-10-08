@@ -10,6 +10,20 @@ export const TELEGRAM_UX_SANDBOX = {
   runnerMockTestUrl: 'https://169-58-15-230.sslip.io/runner-mcp-test',
 } as const;
 
+export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
+  githubEnvironment: 'sandbox',
+  runnerKeySeedSecret: 'RUNNER_MOCK_KEY_SEED',
+  cpPrincipalSecret: 'CP_TELEGRAM_UX_PRINCIPAL_SECRET',
+  cloudflareApiTokenSecret: 'CF_API_TOKEN',
+  cloudflareAccountIdVariable: 'CF_ACCOUNT_ID',
+  vm2SshPrivateKeySecret: 'VM2_SSH_PRIVATE_KEY',
+  vm2SshHostVariable: 'VM2_SSH_HOST',
+  vm2SshUserVariable: 'VM2_SSH_USER',
+  vm2SshKnownHostsVariable: 'VM2_SSH_KNOWN_HOSTS',
+  runnerMockKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST',
+  runnerMockProvisioner: '/usr/local/sbin/runner-api-mcp-test-provision-principal',
+} as const;
+
 export function validateSandboxBuildSha(value: unknown): string {
   const sha = String(value ?? '').trim();
   if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error('sandbox_build_sha_invalid');
