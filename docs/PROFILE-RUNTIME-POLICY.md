@@ -199,7 +199,7 @@ gh workflow run telegram-ux-sandbox-test-pass.yml \
 The helper's `journalTerminalOnly` flag is a journal snapshot, not a held admission
 fence or proof of Worker process exit. Fresh-lane readiness remains the scope of
 [CP #159](https://github.com/trained-assist/trained-assist-control-plane/issues/159)
-and [architecture #236](https://github.com/trained-assist/trained-agent-architecture/issues/236).
+and [architecture #193](https://github.com/trained-assist/trained-agent-architecture/issues/193).
 
 Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
 only when that shared target's state is safe for the requested operation.

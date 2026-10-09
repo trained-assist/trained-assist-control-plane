@@ -40,8 +40,8 @@ propagation, repeating only explicit CP pre-admission authentication failures.
 Network errors, malformed replies and Runner failures are not replayed.
 This probe persists a Runner mock admission, creates no CP task and calls no
 worker/model. It does not prove real Telegram execution. Do not reset either lane
-or restart the shared API. The owner-authorized issue #236 sandbox workflow may
-configure the separate route and credentials; production cutover stays separate.
+or restart the shared API. The sandbox workflow may configure the separate route
+and credentials; production cutover stays separate.
 
 The same workflow's `configure-sandbox3-native` mode uses the pinned Runner
 operator and unchanged signed candidate. CP3 execution flags must remain disabled
