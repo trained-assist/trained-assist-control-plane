@@ -67,7 +67,7 @@ import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixe
 import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
-import { communicationSelector, communicationWriter } from './router/communication-client';
+import { communicationSelector, communicationWriter, DEFAULT_COMMUNICATION_TIMEOUT_MS } from './router/communication-client';
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth } from './router/communication-v1';
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
@@ -596,7 +596,7 @@ async function handleRouteRoute(
     profileId: task.profile_id, principalId: principal.principalId }, env.MCP_TEST_AUTH_TOKEN, runtime.policy.mcp,
     env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
   const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
-  const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? 35_000) };
+  const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? DEFAULT_COMMUNICATION_TIMEOUT_MS) };
   const systemHealth = async () => {
     const [runner, watcher] = await Promise.all([probeRunnerHealth(runtime.adapter), probeWatcherHealth(env)]);
     return {

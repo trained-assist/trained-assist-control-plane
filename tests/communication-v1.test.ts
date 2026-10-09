@@ -50,6 +50,16 @@ afterEach(async () => {
 
 describe('communication MCP client', () => {
   const request = { request_id: 'request-1', decision_options: [{ id: 'system_health' }, { id: 'agent' }] };
+  it('distinguishes elapsed transport deadline from immediate dependency failure without raw errors', async () => {
+    const unavailable = communicationSelector({ url: 'https://communication.example.test', token: 'fixture-secret',
+      fetcher: async () => { throw new Error('private-upstream-detail'); } });
+    await expect(unavailable(request)).rejects.toMatchObject({ code: 'unavailable', message: 'unavailable' });
+    const timedOut = communicationSelector({ url: 'https://communication.example.test', token: 'fixture-secret', timeoutMs: 5,
+      fetcher: (_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('private-abort-detail')), { once: true });
+      }) });
+    await expect(timedOut(request)).rejects.toMatchObject({ code: 'timeout', message: 'timeout' });
+  });
   it('calls the native MCP method with scoped bearer and validates structured output', async () => {
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const rpc = JSON.parse(String(init?.body));
@@ -141,7 +151,7 @@ describe('v1 routing', () => {
     expect(result.reply).toBeNull();
   });
 
-  it.each(['unavailable_or_timeout', 'malformed', 'tool_error', 'input_too_large'])('falls back to agent on %s', async (code) => {
+  it.each(['unavailable_or_timeout', 'timeout', 'unavailable', 'malformed', 'tool_error', 'input_too_large'])('falls back to agent on %s', async (code) => {
     const result = await routeRequest(await routingInput('Неизвестная задача'), { communicationV1: { select: async () => { throw new SelectorError(code); }, health: healthy } });
     expect(result.decision.route).toBe('agent');
     expect(result.decision.providerCode).toBe(code);
