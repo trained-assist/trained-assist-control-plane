@@ -158,3 +158,11 @@ export function sanitizedSandbox3Probe(value, mode) {
   } else throw new Error('sandbox3_operator_response_invalid');
   return output;
 }
+
+export function sanitizedSandbox3ProxyConfiguration(value) {
+  if (value?.schemaVersion !== 1 || value.target !== 'agent-runner-api-sandbox3'
+    || value.proxyConfigured !== true || value.legacyConfigPreserved !== true
+    || value.serviceRestarted !== false || value.publicRouteVerified !== false) throw new Error('sandbox3_operator_response_invalid');
+  return { schemaVersion: 1, target: value.target, proxyConfigured: true, legacyConfigPreserved: true,
+    serviceRestarted: false, publicRouteVerified: false };
+}
