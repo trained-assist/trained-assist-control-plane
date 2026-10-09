@@ -393,3 +393,29 @@ despite a spoofed Workflow payload, generic native success with zero artifacts,
 CSV `ARTIFACTS_MISSING` preservation and terminal replay without another submit.
 They do not prove deployed registry bindings, native model execution or Telegram
 delivery.
+
+### Sandbox3 CP credential pairing and component mock acceptance
+
+After public routing is verified, deploy the checked protected-main revision
+to CP sandbox3 with all execution flags disabled. The explicitly enabled mock
+diagnostic applies only to `DEPLOYMENT_ENV=sandbox3`, fixed profile
+`integration-sandbox3-v1`, fixed Runner TLS URL and a separate read-only
+`sandbox3-ops-read-v1` principal. Its dedicated `PRINCIPAL_SECRET_SANDBOX3_OPS`
+never falls back to a shared secret and is inert outside sandbox3.
+
+The existing operator workflow supports `pair-sandbox3-cp`: require exact CP
+deployed SHA, unoccupied new credential bindings, preserved existing intake
+secret, exact signed active Runner process and public TLS/health/auth refusal.
+Derive the existing sandbox3 API/delegation pair and a separate CP read operator
+secret from the same established seed. Write secrets only through Wrangler stdin
+into the fixed sandbox3 Worker. Provision only the read operator row in sandbox3
+D1 with `tasks:read`, preserving any existing profile/principal binding. No
+production principal is inserted and the Telegram intake credential is unchanged.
+
+The operation then invokes the normal CP-to-Runner mock contract. It selects
+`mock-test` explicitly, creates no CP task and makes no model/worker call.
+`sandbox3-cp-mock-probe` repeats this deterministic authenticated check without
+writing credentials or retrying a different run key. A successful check does not
+prove real worker/profile storage, cost bounds or Telegram delivery. Existing
+credential bindings refuse the initial pairing mode, so partial provisioning
+must be reconciled using its sanitized operation evidence before repeating writes.

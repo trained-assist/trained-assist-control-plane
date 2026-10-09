@@ -172,3 +172,10 @@ test('explicit proxy configuration refuses substituted helper before nginx mutat
   assert.equal(commands.some(command => command.args.some(arg => arg.includes('--configure-proxy'))), false);
   assert.equal(evidence.boundaries.sandbox3PublicRoute, 'NOT_RUN');
 });
+
+test('sandbox3 pairing refuses a missing seed before any scoped D1 or secret write', async () => {
+  const { evidence, commands } = await exercise('--pair-sandbox3-cp', { RUNNER_MOCK_KEY_SEED: '', CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
+  assert.equal(evidence.failure.boundary, 'sandbox3CpCredentialPairing');
+  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:RUNNER_MOCK_KEY_SEED');
+  assert.equal(commands.some(command => command.args.includes('execute') || command.args.includes('put')), false);
+});

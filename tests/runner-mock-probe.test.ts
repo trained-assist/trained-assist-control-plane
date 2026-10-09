@@ -1,3 +1,5 @@
+import { SANDBOX3 } from '../src/deployment/sandbox3';
+import { signPrincipal } from '../src/auth/principal-auth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
@@ -5,14 +7,14 @@ import { TELEGRAM_UX_SANDBOX, telegramUxPrincipalSignature } from '../src/deploy
 
 const runId = 'run-sandbox-mock-probe-v1';
 
-function runnerFetch() {
+function runnerFetch(taskId: string = 'sandbox-bootstrap-runner-mock-probe-v1') {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init });
-    if (url.endsWith('/v1/runs')) return Response.json({ requestId: 'req-mock-probe', userTaskId: 'sandbox-bootstrap-runner-mock-probe-v1', runId, deduplicated: calls.length > 1 });
-    if (url.endsWith(`/v1/runs/${runId}/status`)) return Response.json({ runId, userTaskId: 'sandbox-bootstrap-runner-mock-probe-v1', state: 'succeeded', answer: 'pong' });
-    if (url.endsWith(`/v1/runs/${runId}/result`)) return Response.json({ runId, userTaskId: 'sandbox-bootstrap-runner-mock-probe-v1', outcome: 'succeeded', text: 'pong', persistence: 'not_required', cleanup: 'completed' });
+    if (url.endsWith('/v1/runs')) return Response.json({ requestId: 'req-mock-probe', userTaskId: taskId, runId, deduplicated: calls.length > 1 });
+    if (url.endsWith(`/v1/runs/${runId}/status`)) return Response.json({ runId, userTaskId: taskId, state: 'succeeded', answer: 'pong' });
+    if (url.endsWith(`/v1/runs/${runId}/result`)) return Response.json({ runId, userTaskId: taskId, outcome: 'succeeded', text: 'pong', persistence: 'not_required', cleanup: 'completed' });
     return Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -185,5 +187,60 @@ describe('sandbox CP to Runner mock-test probe', () => {
       runnerReachability: { outcome: 'reachable_auth_required', httpStatus: 401 } });
     expect(body).not.toContain('secret-shaped private detail');
     expect(body).not.toContain('private value');
+  });
+});
+
+
+describe('sandbox3 CP mock check with execution disabled', () => {
+  const secret = 'synthetic-sandbox3-read-operator-secret';
+  const baseEnv = () => ({ DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
+    DEPLOYMENT_ENV: 'sandbox3', PRINCIPAL_SECRET_SANDBOX3_OPS: secret,
+    SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_PROBE_PROFILE: SANDBOX3.profileId,
+    PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false', ROUTER_AGENT_ALLOWED: 'false',
+    RUNNER_API_URL: SANDBOX3.runnerUrl, RUNNER_API_KEY_AGENT_API: 'synthetic-sandbox3-api-key',
+  } as unknown as Env);
+  const request = async () => new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': SANDBOX3.diagnosticPrincipalId,
+      'x-principal-sig': await signPrincipal(SANDBOX3.diagnosticPrincipalId, secret) }, body: '{}',
+  });
+  const register = async (profileId: string = SANDBOX3.profileId) => env.DB.prepare(`INSERT OR REPLACE INTO admission_principals
+    (principal_id, profile_id, scopes, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 1)`)
+    .bind(SANDBOX3.diagnosticPrincipalId, profileId, JSON.stringify(['tasks:read'])).run();
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await env.DB.prepare('DELETE FROM admission_principals WHERE principal_id = ?').bind(SANDBOX3.diagnosticPrincipalId).run();
+  });
+  it('uses the fixed scoped route and explicit mock while all execution flags remain disabled', async () => {
+    await register();
+    const before = await env.DB.prepare('SELECT count(*) AS total FROM durable_tasks').first();
+    const fake = runnerFetch(SANDBOX3.mockTaskId);
+    const response = await worker.fetch(await request(), baseEnv());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, answer: 'pong', sideEffects: { cpTaskCreated: false, workerOrModelCalled: false } });
+    expect(fake.calls).toHaveLength(3);
+    const submit = fake.calls[0]!;
+    expect(submit.url).toBe(`${SANDBOX3.runnerUrl}/v1/runs`);
+    expect(new Headers(submit.init?.headers).get('authorization')).toBe('Bearer synthetic-sandbox3-api-key');
+    expect(JSON.parse(String(submit.init?.body))).toMatchObject({ userTaskId: SANDBOX3.mockTaskId, engine: { name: 'mock-test' } });
+    expect(await env.DB.prepare('SELECT count(*) AS total FROM durable_tasks').first()).toEqual(before);
+  });
+  it('refuses a key sent to any foreign Runner route', async () => {
+    await register(); const fake = runnerFetch();
+    const response = await worker.fetch(await request(), { ...baseEnv(), RUNNER_API_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ bindingIssue: 'runner_url_target_mismatch' });
+    expect(fake.fetchMock).not.toHaveBeenCalled();
+  });
+  it('requires read scope for the exact sandbox profile before making any Runner call', async () => {
+    await register('foreign-profile'); const fake = runnerFetch();
+    expect((await worker.fetch(await request(), baseEnv())).status).toBe(403);
+    expect(fake.fetchMock).not.toHaveBeenCalled();
+  });
+  it('refuses real-execution flags and use outside sandbox3', async () => {
+    await register(); const fake = runnerFetch();
+    for (const change of [{ PREVIEW_ONLY: 'false' }, { PILOT_ENABLED: 'true' }, { ROUTER_AGENT_ALLOWED: 'true' }, { DEPLOYMENT_ENV: 'production' }]) {
+      expect((await worker.fetch(await request(), { ...baseEnv(), ...change })).status).toBe(404);
+    }
+    expect(fake.fetchMock).not.toHaveBeenCalled();
   });
 });

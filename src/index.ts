@@ -41,6 +41,7 @@ import { ProfileRuntimeConfigurationError, profileRunnerUrlOf, resolveProfileRun
 import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
+import { SANDBOX3 } from './deployment/sandbox3';
 import { TELEGRAM_UX_SANDBOX } from './deployment/telegram-ux-sandbox';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
 import { InvalidEnvelopeError } from './intake/envelope';
@@ -164,6 +165,9 @@ export interface Env {
   PRINCIPAL_SECRET_TELEGRAM_UX?: string;
   /** Dedicated HMAC credential for the sandbox-3 Telegram principal. */
   PRINCIPAL_SECRET_SANDBOX3?: string;
+  PRINCIPAL_SECRET_SANDBOX3_OPS?: string;
+  DEPLOYMENT_ENV?: string;
+  SANDBOX_RUNNER_MOCK_PROBE_PROFILE?: string;
   /** Dedicated HMAC credential for the isolated integration-v1 sandbox principal. */
   PRINCIPAL_SECRET_INTEGRATION_V1?: string;
   /** Dedicated HMAC credential for the test-only Telegram UX sandbox smoke principal. */
@@ -280,9 +284,13 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
 });
 
 const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
-const SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY = 'sandbox-bootstrap-runner-mock-probe-v1';
 
 function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
+  if (env.DEPLOYMENT_ENV === 'sandbox3' && env.SANDBOX_RUNNER_MOCK_PROBE_PROFILE === SANDBOX3.profileId) {
+    if (env.RUNNER_API_URL !== SANDBOX3.runnerUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
+    if (!env.RUNNER_API_KEY_AGENT_API?.trim()) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
+    return { adapter: new RunnerApiAdapter(SANDBOX3.runnerUrl, env.RUNNER_API_KEY_AGENT_API), runnerBaseUrl: SANDBOX3.runnerUrl, bindingIssue: null };
+  }
   const baseUrl = env.SANDBOX_RUNNER_MOCK_TEST_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
   if (!baseUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_missing' };
@@ -314,18 +322,18 @@ function sandboxRunnerProbeErrorCode(error: unknown): string {
   return 'probe_internal_error';
 }
 
-async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
+async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter, taskId: string = SANDBOX_MOCK_PROBE_TASK_ID): Promise<{
   runId: string;
   state: string;
   answer: string | null;
   outcome: string;
 }> {
   const receipt = await adapter.submit({
-    userTaskId: SANDBOX_MOCK_PROBE_TASK_ID,
-    conversationId: SANDBOX_MOCK_PROBE_TASK_ID,
+    userTaskId: taskId,
+    conversationId: taskId,
     engineName: 'mock-test',
     inputText: 'Return exactly pong.',
-    idempotencyKey: SANDBOX_MOCK_PROBE_IDEMPOTENCY_KEY,
+    idempotencyKey: taskId,
     timeoutMs: 5000,
   });
   let status = await adapter.status(receipt.runId);
@@ -333,12 +341,12 @@ async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter): Promise<{
     await new Promise(resolve => setTimeout(resolve, 200));
     status = await adapter.status(receipt.runId);
   }
-  if (status.runId !== receipt.runId || status.userTaskId !== SANDBOX_MOCK_PROBE_TASK_ID || status.state !== 'succeeded'
+  if (status.runId !== receipt.runId || status.userTaskId !== taskId || status.state !== 'succeeded'
     || status.answer !== 'pong') {
     return { runId: receipt.runId, state: status.state, answer: status.answer ?? null, outcome: 'not_accepted' };
   }
   const result = await adapter.result(receipt.runId);
-  if (result.runId !== receipt.runId || result.userTaskId !== SANDBOX_MOCK_PROBE_TASK_ID
+  if (result.runId !== receipt.runId || result.userTaskId !== taskId
     || result.outcome !== 'succeeded' || result.text !== 'pong' || result.persistence !== 'not_required'
     || result.cleanup !== 'completed') {
     return { runId: receipt.runId, state: status.state, answer: status.answer ?? null, outcome: 'contract_mismatch' };
@@ -1372,19 +1380,24 @@ const store = new TaskStore(env.DB);
         return diagnosticsJson({ ...summary, cached: false });
       }
       if (url.pathname === '/internal/sandbox/runner-mock-probe') {
-        if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true'
-          || env.PREVIEW_ONLY === 'true' || env.PILOT_ENABLED !== 'true'
-          || !String(env.PILOT_COHORT_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes('integration-telegram-ux-v1')) {
+        const sandbox3Probe = env.DEPLOYMENT_ENV === 'sandbox3' && env.SANDBOX_RUNNER_MOCK_PROBE_PROFILE === SANDBOX3.profileId;
+        const profileId = sandbox3Probe ? SANDBOX3.profileId : 'integration-telegram-ux-v1';
+        const allowedPrincipal = sandbox3Probe ? SANDBOX3.diagnosticPrincipalId : 'integration-telegram-ux-v1';
+        const flagsAllowed = sandbox3Probe
+          ? env.PREVIEW_ONLY === 'true' && env.PILOT_ENABLED === 'false' && env.ROUTER_AGENT_ALLOWED === 'false'
+          : env.PREVIEW_ONLY !== 'true' && env.PILOT_ENABLED === 'true'
+            && String(env.PILOT_COHORT_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes('integration-telegram-ux-v1');
+        if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true' || !flagsAllowed) {
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_unavailable' }, 404);
         }
         if (Object.keys(body).length !== 0) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_body_not_supported' }, 400);
         const principalId = await principalOf(req, auth);
-        if (principalId !== 'integration-telegram-ux-v1') {
+        if (principalId !== allowedPrincipal) {
           return diagnosticsJson({ ok: false, reasonCode: principalId ? 'principal_not_allowed' : 'authentication_failed' }, principalId ? 403 : 401);
         }
         try {
           const principal = await resolvePrincipal(store, { principalId });
-          requirePermission(principal, 'integration-telegram-ux-v1', 'tasks:read');
+          requirePermission(principal, profileId, 'tasks:read');
         } catch {
           return diagnosticsJson({ ok: false, reasonCode: 'principal_scope_unavailable' }, 403);
         }
@@ -1392,7 +1405,7 @@ const store = new TaskStore(env.DB);
         if (!binding.adapter) return diagnosticsJson({ ok: false, reasonCode: 'sandbox_mock_runner_binding_unavailable',
           bindingIssue: binding.bindingIssue }, 503);
         try {
-          const probe = await sandboxRunnerMockProbe(binding.adapter);
+          const probe = await sandboxRunnerMockProbe(binding.adapter, sandbox3Probe ? SANDBOX3.mockTaskId : SANDBOX_MOCK_PROBE_TASK_ID);
           const ok = probe.state === 'succeeded' && probe.answer === 'pong' && probe.outcome === 'succeeded';
           return diagnosticsJson({ ok, check: 'authenticated_runner_mock_test', principalId,
             runId: probe.runId, runnerState: probe.state, answer: probe.answer, runnerOutcome: probe.outcome,

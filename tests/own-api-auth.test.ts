@@ -1,5 +1,6 @@
 // Own-API dogfood (#23), шаг 4: проверяющая аутентификация принципала.
 // Заголовок клиента — не доказательство личности: подпись обязана.
+import { SANDBOX3 } from '../src/deployment/sandbox3';
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
 import { principalAuthOf, signPrincipal, verifyPrincipal } from '../src/auth/principal-auth';
@@ -189,4 +190,18 @@ describe('protected HTTP route scopes', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ userTaskId: taskId, durable: true });
   });
+});
+
+
+it('sandbox3 diagnostic principal requires its own secret and exact deployment', async () => {
+  const principal = SANDBOX3.diagnosticPrincipalId;
+  const own = 'synthetic-sandbox3-operator-secret';
+  const signature = await signPrincipal(principal, own);
+  const configured = { PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_SANDBOX3_OPS: own };
+  expect(await verifyPrincipal(req(principal, signature), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'sandbox3' }))).toBe(principal);
+  expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'sandbox3' }))).toBeNull();
+  for (const bindings of [configured, { ...configured, DEPLOYMENT_ENV: 'production' }, { PRINCIPAL_SECRET: SECRET, DEPLOYMENT_ENV: 'sandbox3' }]) {
+    expect(await verifyPrincipal(req(principal, signature), principalAuthOf(bindings))).toBeNull();
+    expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf(bindings))).toBeNull();
+  }
 });

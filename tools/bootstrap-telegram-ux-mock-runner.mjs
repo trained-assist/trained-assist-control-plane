@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal } from './sandbox3-cp-pairing.mjs';
+import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
 import { verifySandbox3PublicRoute } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -59,6 +61,8 @@ const evidence = {
     sandbox3ProxyInspection: 'NOT_RUN',
     sandbox3ProxyConfiguration: 'NOT_RUN',
     sandbox3PublicRoute: 'NOT_RUN',
+    sandbox3CpCredentialPairing: 'NOT_RUN',
+    sandbox3CpMockContract: 'NOT_RUN',
     sandbox3MockContract: 'NOT_RUN',
     sandbox3NamespacePreparation: 'NOT_RUN',
     sandbox3CandidateInstallation: 'NOT_RUN',
@@ -363,6 +367,80 @@ async function configureSandbox3Proxy(input) {
   evidence.sandbox3OperatorSourceSha = TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha;
 }
 
+async function sandbox3CpSettings(input) {
+  let response;
+  try {
+    response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${input.accountId}/workers/scripts/${SANDBOX3.workerName}/settings`, {
+      headers: { authorization: `Bearer ${requiredEnv('CF_API_TOKEN')}` }, redirect: 'error', signal: AbortSignal.timeout(15_000),
+    });
+    const body = await response.json();
+    if (response.status !== 200 || body.success !== true || !Array.isArray(body.result?.bindings)) fail('sandbox3_cp_settings_unavailable');
+    return body.result.bindings;
+  } catch { fail('sandbox3_cp_settings_unavailable'); }
+}
+
+function sandbox3PrincipalQuery(sql) {
+  let body;
+  try { body = JSON.parse(capture('npx', ['wrangler', 'd1', 'execute', 'ta-sandbox3-taskstore',
+    '--config', 'wrangler.sandbox3.jsonc', '--remote', '--json', '--command', sql])); }
+  catch (error) { if (error instanceof SyntaxError) fail('sandbox3_cp_principal_query_invalid'); throw error; }
+  if (!Array.isArray(body) || body.length !== 1 || body[0].success !== true || !Array.isArray(body[0].results)) fail('sandbox3_cp_principal_query_invalid');
+  return body[0].results;
+}
+
+async function pairSandbox3Cp(input) {
+  if (evidence.cpDeployedSha !== input.sourceSha) fail('sandbox3_cp_deployed_source_mismatch');
+  const seed = requiredEnv('RUNNER_MOCK_KEY_SEED');
+  const keys = sandbox3Credentials(seed);
+  const secrets = { RUNNER_API_KEY_AGENT_API: keys.apiKey, RUNNER_PROFILE_DELEGATION_SECRET: keys.delegationSecret,
+    PRINCIPAL_SECRET_SANDBOX3_OPS: sandbox3OperatorSecret(seed) };
+  verifySandbox3PairingBindings(await sandbox3CpSettings(input));
+  const metadata = await inspectSandbox3(input);
+  if (!metadata.serviceActive || !metadata.serviceExecSourceVerified || metadata.runtimeSourceSha !== TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerCandidateSourceSha) fail('sandbox3_installed_source_not_verified');
+  evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+  const principalSql = `SELECT profile_id, scopes, enabled FROM admission_principals WHERE principal_id = '${SANDBOX3.diagnosticPrincipalId}'`;
+  let rows = sandbox3PrincipalQuery(principalSql);
+  if (rows.length > 1) fail('sandbox3_cp_operator_principal_invalid');
+  if (rows.length === 1) verifySandbox3OperatorPrincipal(rows[0]);
+  else {
+    const now = Date.now();
+    sandbox3PrincipalQuery(`INSERT INTO admission_principals (principal_id, profile_id, scopes, enabled, created_at, updated_at) VALUES ('${SANDBOX3.diagnosticPrincipalId}', '${SANDBOX3.profileId}', '["tasks:read"]', 1, ${now}, ${now})`);
+    rows = sandbox3PrincipalQuery(principalSql);
+    if (rows.length !== 1) fail('sandbox3_cp_operator_principal_invalid');
+    verifySandbox3OperatorPrincipal(rows[0]);
+  }
+  evidence.sandbox3CpSecretNamesWritten = [];
+  for (const [name, value] of Object.entries(secrets)) {
+    capture('npx', ['wrangler', 'secret', 'put', name, '--config', 'wrangler.sandbox3.jsonc'], { input: value });
+    evidence.sandbox3CpSecretNamesWritten.push(name);
+  }
+  evidence.sandbox3CpPairing = { credentialsSynced: true, diagnosticPrincipalId: SANDBOX3.diagnosticPrincipalId,
+    profileId: SANDBOX3.profileId, scopes: ['tasks:read'], intakeCredentialChanged: false, realExecutionEnabled: false };
+}
+
+async function probeSandbox3Cp(input) {
+  if (evidence.cpDeployedSha !== input.sourceSha) fail('sandbox3_cp_deployed_source_mismatch');
+  const secret = sandbox3OperatorSecret(requiredEnv('RUNNER_MOCK_KEY_SEED'));
+  const signature = createHmac('sha256', secret).update(SANDBOX3.diagnosticPrincipalId).digest('hex');
+  let response, body;
+  try {
+    response = await fetch(`${SANDBOX3_CP_URL}/internal/sandbox/runner-mock-probe`, {
+      method: 'POST', body: '{}', redirect: 'error', signal: AbortSignal.timeout(30_000), headers: {
+        'content-type': 'application/json', 'x-principal': SANDBOX3.diagnosticPrincipalId, 'x-principal-sig': signature,
+      },
+    });
+    body = await response.json();
+  } catch { fail('sandbox3_cp_mock_probe_unreachable'); }
+  evidence.sandbox3CpMockHttpStatus = response.status;
+  if (response.status !== 200 || body.ok !== true || body.principalId !== SANDBOX3.diagnosticPrincipalId || body.buildSha !== input.sourceSha
+    || body.answer !== 'pong' || body.runnerState !== 'succeeded' || body.runnerOutcome !== 'succeeded'
+    || body.sideEffects?.cpTaskCreated !== false || body.sideEffects?.workerOrModelCalled !== false
+    || body.sideEffects?.runnerAdmissionPersisted !== true || typeof body.runId !== 'string'
+    || !/^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(body.runId)) fail('sandbox3_cp_mock_probe_failed');
+  evidence.sandbox3CpMockContract = { runId: body.runId, runnerState: 'succeeded', answer: 'pong',
+    runnerOutcome: 'succeeded', cpTaskCreated: false, workerOrModelCalled: false, realTelegramE2E: false };
+}
+
 async function withSandbox3Transport(input, files, operation) {
   const localDirectory = await mkdtemp(join(tmpdir(), 'ta-sandbox3-operator-'));
   try {
@@ -523,10 +601,10 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
+    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3);
@@ -555,7 +633,17 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (freshSandbox3) {
-      if (args[0] === '--configure-sandbox3-proxy') {
+      if (['--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0])) {
+        if (args[0] === '--pair-sandbox3-cp') {
+          stage = 'sandbox3CpCredentialPairing';
+          await pairSandbox3Cp(input);
+          evidence.boundaries[stage] = 'PASS';
+        }
+        stage = 'sandbox3CpMockContract';
+        await probeSandbox3Cp(input);
+        evidence.boundaries[stage] = 'PASS';
+        evidence.outcome = 'passed';
+      } else if (args[0] === '--configure-sandbox3-proxy') {
         stage = 'sandbox3ProxyConfiguration';
         await configureSandbox3Proxy(input);
         evidence.boundaries[stage] = 'PASS';
@@ -634,7 +722,8 @@ async function main() {
     if (Object.hasOwn(evidence.boundaries, stage) && evidence.boundaries[stage] !== 'PASS') evidence.boundaries[stage] = 'BLOCKED';
     evidence.failure = {
       boundary: stage,
-      reasonCode: error instanceof Error && /^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
+      reasonCode: error instanceof Error && (/^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
+        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|VM2_SSH_PRIVATE_KEY)$/.test(error.message))
         ? error.message : 'sandbox_bootstrap_failed',
     };
   } finally {

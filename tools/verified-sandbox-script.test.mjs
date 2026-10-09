@@ -112,9 +112,12 @@ test('probe projections reject readiness inflation and never expose raw secrets'
 
 test('proxy configuration evidence separates a successful edit from public proof', () => {
   const value = { schemaVersion: 1, target: 'agent-runner-api-sandbox3', proxyConfigured: true,
-    legacyConfigPreserved: true, serviceRestarted: false, publicRouteVerified: false, rawConfig: 'private-secret' };
+    legacyConfigPreserved: true, serviceRestarted: false, publicRouteVerified: false,
+    matchedServerCount: 2, changedFileCount: 1, rawConfig: 'private-secret' };
   assert.equal(JSON.stringify(sanitizedSandbox3ProxyConfiguration(value)).includes('private-secret'), false);
-  for (const change of [{ serviceRestarted: true }, { legacyConfigPreserved: false }, { publicRouteVerified: true }, { target: 'production' }]) {
+  assert.equal(sanitizedSandbox3ProxyConfiguration(value).matchedServerCount, 2);
+  for (const change of [{ serviceRestarted: true }, { legacyConfigPreserved: false }, { publicRouteVerified: true }, { target: 'production' },
+    { matchedServerCount: 3 }, { matchedServerCount: 0 }, { changedFileCount: 3 }, { changedFileCount: 0 }]) {
     assert.throws(() => sanitizedSandbox3ProxyConfiguration({ ...value, ...change }));
   }
 });
