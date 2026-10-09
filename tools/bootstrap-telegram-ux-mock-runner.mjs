@@ -12,7 +12,7 @@ import {
   validateTelegramUxSandboxConfig,
 } from '../src/deployment/telegram-ux-sandbox.ts';
 import { commandFailureReason } from './command-failure.mjs';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
 const RUNNER_PRINCIPAL_ID = 'integration-telegram-ux-v1-mock-test';
@@ -218,6 +218,10 @@ async function executeVerifiedRunnerHelper(input, source, filename, digest, comm
     let body;
     try { body = JSON.parse(result.stdout); } catch {
       fail(result.status === 0 ? `runner_${prefix}_response_invalid` : commandFailureReason('ssh', result));
+    }
+    if (prefix === 'inventory' && body?.schemaVersion === 1
+      && body.target === 'agent-runner-api-mcp-test' && body.fileMetadata != null) {
+      evidence.runnerFileMetadata = sanitizedRunnerFileMetadata(body.fileMetadata);
     }
     if (result.status !== 0) {
       // Reasons originate from the byte-verified helper, never raw SSH output.
