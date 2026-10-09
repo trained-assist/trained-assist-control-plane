@@ -6,8 +6,8 @@ on:
       mode:
         description: Read-only access/state preflight, or explicit shared mock bootstrap
         type: choice
-        options: [preflight, bootstrap]
-        default: preflight
+        options: [inventory, preflight, bootstrap]
+        default: inventory
         required: true
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
           BOOTSTRAP_MODE: ${{ inputs.mode }}
         run: |
           case "$BOOTSTRAP_MODE" in
-            preflight|bootstrap) ;;
+            inventory|preflight|bootstrap) ;;
             *) exit 1 ;;
           esac
           node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs "--$BOOTSTRAP_MODE"
