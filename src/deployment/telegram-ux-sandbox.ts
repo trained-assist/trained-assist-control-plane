@@ -42,6 +42,11 @@ export function validateSandboxBuildSha(value: unknown): string {
   return sha.toLowerCase();
 }
 
+export function isExpectedTelegramUxCloudflareAccount(output: string): boolean {
+  return output.includes(TELEGRAM_UX_SANDBOX.accountId)
+    && output.toLowerCase().includes(TELEGRAM_UX_SANDBOX.accountEmail.toLowerCase());
+}
+
 export function validateTelegramUxSandboxConfig(config: Record<string, any>): true {
   if (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true) {
     throw new Error('sandbox_worker_mismatch');

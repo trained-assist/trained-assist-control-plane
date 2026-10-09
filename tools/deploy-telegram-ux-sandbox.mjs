@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
+import { TELEGRAM_UX_SANDBOX, isExpectedTelegramUxCloudflareAccount, isSandboxReadinessEndpointMissing, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
 
 const configPath = 'wrangler.telegram-ux-v1.jsonc';
 function run(command, args, options = {}) {
@@ -22,9 +22,7 @@ async function keychainSecret() {
 
 async function validateAccount() {
   const output = run('npx', ['wrangler', 'whoami']);
-  if (!output.includes(TELEGRAM_UX_SANDBOX.accountId) || !output.includes(TELEGRAM_UX_SANDBOX.accountEmail)) {
-    throw new Error('cloudflare_account_mismatch');
-  }
+  if (!isExpectedTelegramUxCloudflareAccount(output)) throw new Error('cloudflare_account_mismatch');
 }
 
 async function livenessProbe(expectedBuildSha = null) {

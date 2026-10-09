@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
-import { TELEGRAM_UX_SANDBOX, isSandboxReadinessEndpointMissing, telegramUxPrincipalSignature, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
+import { TELEGRAM_UX_SANDBOX, isExpectedTelegramUxCloudflareAccount, isSandboxReadinessEndpointMissing, telegramUxPrincipalSignature, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox';
 
 const config = {
   name: TELEGRAM_UX_SANDBOX.workerName,
@@ -18,6 +18,11 @@ const config = {
 };
 
 describe('Telegram UX sandbox deploy guard', () => {
+  it('matches the configured Cloudflare account despite display-name email casing', () => {
+    expect(isExpectedTelegramUxCloudflareAccount("Account ID: d740a05e9442c1d0feacae2dfc673e93\nTypeformowner@gmail.com's Account")).toBe(true);
+    expect(isExpectedTelegramUxCloudflareAccount('wrong-account typeformowner@gmail.com')).toBe(false);
+  });
+
   it('pins sandbox deployment evidence to a full git commit SHA', () => {
     expect(validateSandboxBuildSha('A'.repeat(40))).toBe('a'.repeat(40));
     for (const invalid of ['', 'main', 'a'.repeat(39), 'g'.repeat(40)]) {
