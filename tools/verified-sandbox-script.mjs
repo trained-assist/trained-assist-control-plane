@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 /** Download only the pinned public operator helper, verifying bytes before SSH. */
 export async function verifiedSandboxScript(url, expectedDigest, fetcher = fetch) {
@@ -98,4 +98,33 @@ export function sanitizedRunnerFileMetadata(value) {
     }
   }
   return result;
+}
+
+export function sanitizedSandbox3Namespace(value) {
+  if (value?.schemaVersion !== 1 || value.target !== 'agent-runner-api-sandbox3') throw new Error('sandbox3_operator_response_invalid');
+  const output = { schemaVersion: 1, target: value.target };
+  for (const name of ['serviceActive', 'serviceExecSourceVerified', 'realExecutionVerified']) {
+    if (typeof value[name] !== 'boolean') throw new Error('sandbox3_operator_response_invalid');
+    output[name] = value[name];
+  }
+  if (value.runtimeSourceSha !== null && (typeof value.runtimeSourceSha !== 'string' || !/^[a-f0-9]{40}$/.test(value.runtimeSourceSha))) {
+    throw new Error('sandbox3_operator_response_invalid');
+  }
+  output.runtimeSourceSha = value.runtimeSourceSha;
+  output.componentsExist = {}; output.proxyServicesActive = {};
+  for (const name of ['environment', 'registry', 'unit', 'state', 'runtime']) {
+    if (typeof value.componentsExist?.[name] !== 'boolean') throw new Error('sandbox3_operator_response_invalid');
+    output.componentsExist[name] = value.componentsExist[name];
+  }
+  for (const name of ['caddy', 'nginx']) {
+    if (typeof value.proxyServicesActive?.[name] !== 'boolean') throw new Error('sandbox3_operator_response_invalid');
+    output.proxyServicesActive[name] = value.proxyServicesActive[name];
+  }
+  return output;
+}
+
+export function sandbox3Credentials(seed) {
+  if (typeof seed !== 'string' || new TextEncoder().encode(seed).length < 32) throw new Error('sandbox3_operator_seed_invalid');
+  const derive = role => createHmac('sha256', seed).update(`trained-assist/agent-runner-api-sandbox3/bootstrap/v1/${role}`).digest('base64url');
+  return { apiKey: `ta_sb3_${derive('api-key')}`, delegationSecret: derive('profile-delegation') };
 }

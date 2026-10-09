@@ -12,8 +12,9 @@ import {
   validateTelegramUxSandboxConfig,
 } from '../src/deployment/telegram-ux-sandbox.ts';
 import { commandFailureReason } from './command-failure.mjs';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
+const SANDBOX3_CP_URL = 'https://trained-assist-cp-sandbox3.skillset-apply.workers.dev';
 const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
 const RUNNER_PRINCIPAL_ID = 'integration-telegram-ux-v1-mock-test';
 const RUNNER_PROFILE_ID = 'integration-telegram-ux-v1-mock-test';
@@ -53,6 +54,9 @@ const evidence = {
     runnerAdmissionInventory: 'NOT_RUN',
     runnerInventoryPermissions: 'NOT_RUN',
     runnerCandidateVerification: 'NOT_RUN',
+    sandbox3OperatorInventory: 'NOT_RUN',
+    sandbox3NamespacePreparation: 'NOT_RUN',
+    sandbox3CandidateInstallation: 'NOT_RUN',
   },
   probe: {
     httpStatus: null,
@@ -93,23 +97,24 @@ function deriveRunnerMockApiKey(seed) {
   return `ta_mock_${createHmac('sha256', seed).update(RUNNER_KEY_CONTEXT).digest('base64url')}`;
 }
 
-function validateInputs(preflight = false) {
+function validateInputs(preflight = false, freshSandbox3 = false) {
   const sourceSha = validateSandboxBuildSha(requiredEnv('GITHUB_SHA'));
   const accountId = TELEGRAM_UX_SANDBOX.accountId;
   process.env.CLOUDFLARE_API_TOKEN = requiredEnv('CF_API_TOKEN');
   process.env.CLOUDFLARE_ACCOUNT_ID = accountId;
-  const principalSecret = requiredEnv('CP_TELEGRAM_UX_PRINCIPAL_SECRET');
-  if (new TextEncoder().encode(principalSecret).length < 32) fail('cp_principal_secret_invalid');
-  const key = preflight ? null : deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
+  const principalSecret = freshSandbox3 ? null : requiredEnv('CP_TELEGRAM_UX_PRINCIPAL_SECRET');
+  if (!freshSandbox3 && new TextEncoder().encode(principalSecret).length < 32) fail('cp_principal_secret_invalid');
+  const key = preflight || freshSandbox3 ? null : deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
   const privateKey = requiredEnv('VM2_SSH_PRIVATE_KEY');
   if (!privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
   return { sourceSha, accountId, principalSecret, key, privateKey };
 }
 
-async function verifyConfigAndAccount(accountId) {
-  const config = JSON.parse(await readFile('wrangler.telegram-ux-v1.jsonc', 'utf8'));
-  validateTelegramUxSandboxConfig(config);
-  if (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true) {
+async function verifyConfigAndAccount(accountId, freshSandbox3 = false) {
+  const config = JSON.parse(await readFile(freshSandbox3 ? 'wrangler.sandbox3.jsonc' : 'wrangler.telegram-ux-v1.jsonc', 'utf8'));
+  if (freshSandbox3) validateSandbox3Config(config);
+  else validateTelegramUxSandboxConfig(config);
+  if (!freshSandbox3 && (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true)) {
     fail('sandbox_worker_config_mismatch');
   }
   const output = capture('npx', ['wrangler', 'whoami']);
@@ -118,10 +123,10 @@ async function verifyConfigAndAccount(accountId) {
   }
 }
 
-async function verifySandboxLiveness(expectedBuildSha = null) {
+async function verifySandboxLiveness(expectedBuildSha = null, baseUrl = CP_URL) {
   let response;
   try {
-    response = await fetch(`${CP_URL}/healthz`, { signal: AbortSignal.timeout(15_000) });
+    response = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(15_000) });
   } catch {
     fail('sandbox_worker_unreachable');
   }
@@ -254,7 +259,7 @@ async function restrictRunnerPermissions(input) {
   evidence.runnerPermissionsOperatorSha = source;
 }
 
-async function verifyRunnerCandidate() {
+async function verifyRunnerCandidate(operation = null) {
   const credentials = TELEGRAM_UX_SANDBOX_CREDENTIALS;
   const directory = await mkdtemp(join(tmpdir(), 'ta-runner-candidate-'));
   try {
@@ -288,7 +293,105 @@ async function verifyRunnerCandidate() {
     evidence.runnerCandidate = { runId: credentials.runnerCandidateRunId,
       sourceSha: credentials.runnerCandidateSourceSha, bundleSha256: credentials.runnerCandidateBundleSha256,
       artifactTarget: 'agent-runner-api-mcp-test', attestation: 'PASS', installed: false };
+    if (operation) await operation(archive);
   } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+function validateSandbox3Config(config) {
+  if (config.name !== 'trained-assist-cp-sandbox3' || config.workers_dev !== true
+    || config.d1_databases?.length !== 1 || config.d1_databases[0].binding !== 'DB'
+    || config.d1_databases[0].database_id !== '1e1b8108-9186-43e2-8e50-436598233165'
+    || config.workflows?.length !== 1 || config.workflows[0].name !== 'ta-cp-sandbox3-task-workflow'
+    || config.workflows[0].binding !== 'TASK_WORKFLOW') fail('sandbox3_bootstrap_config_mismatch');
+}
+
+const shellQuote = value => `'${value.replaceAll("'", "'\"'\"'")}'`;
+
+async function sandbox3Script(filename, digest) {
+  return verifiedSandboxScript(
+    `https://raw.githubusercontent.com/trained-assist/ai-agent-runner/${TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha}/scripts/${filename}`, digest);
+}
+
+function sandbox3Response(result) {
+  if (result.error) fail(commandFailureReason('ssh', result));
+  let body;
+  try { body = JSON.parse(result.stdout); } catch { fail('sandbox3_operator_response_invalid'); }
+  if (body?.schemaVersion !== 1 || body.target !== 'agent-runner-api-sandbox3') fail('sandbox3_operator_response_invalid');
+  if (result.status !== 0) {
+    if (typeof body.reasonCode === 'string' && /^sandbox3_prepare_[a-z_]{1,70}$/.test(body.reasonCode)) fail(body.reasonCode);
+    fail(commandFailureReason('ssh', result));
+  }
+  return body;
+}
+
+async function inspectSandbox3(input) {
+  const script = await sandbox3Script('prepare-api-sandbox3.py', TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3PreparerDigest);
+  const body = await withRunnerSsh(input, args => sandbox3Response(spawnSync('ssh', [...args,
+    `sudo -n python3 -c ${shellQuote(script.toString('utf8'))} --inspect`], {
+    encoding: 'utf8', maxBuffer: 64 * 1024, timeout: 60_000,
+  })));
+  const metadata = sanitizedSandbox3Namespace(body);
+  evidence.sandbox3Namespace = metadata;
+  evidence.sandbox3OperatorSourceSha = TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha;
+  return metadata;
+}
+
+async function withSandbox3Transport(input, files, operation) {
+  const localDirectory = await mkdtemp(join(tmpdir(), 'ta-sandbox3-operator-'));
+  try {
+    for (const [name, bytes] of Object.entries(files)) await writeFile(join(localDirectory, name), bytes, { mode: 0o600 });
+    return await withRunnerSsh(input, async args => {
+      const remoteDirectory = capture('ssh', [...args, 'mktemp -d /tmp/ta-sandbox3-operator.XXXXXX']).trim();
+      if (!/^\/tmp\/ta-sandbox3-operator\.[A-Za-z0-9]{6,20}$/.test(remoteDirectory)) fail('sandbox3_operator_temp_path_invalid');
+      try {
+        for (const name of Object.keys(files)) {
+          capture('scp', [...args.slice(0, -1), join(localDirectory, name), `${args.at(-1)}:${remoteDirectory}/${name}`]);
+        }
+        return await operation(args, remoteDirectory);
+      } finally {
+        capture('ssh', [...args, `rm -rf -- ${shellQuote(remoteDirectory)}`]);
+      }
+    });
+  } finally { await rm(localDirectory, { recursive: true, force: true }); }
+}
+
+async function prepareSandbox3(input) {
+  const credentials = TELEGRAM_UX_SANDBOX_CREDENTIALS;
+  const bootstrap = await sandbox3Script('bootstrap-api-sandbox-lane.sh', credentials.sandbox3BootstrapDigest);
+  const preparer = await sandbox3Script('prepare-api-sandbox3.py', credentials.sandbox3PreparerDigest);
+  const keys = sandbox3Credentials(requiredEnv('RUNNER_MOCK_KEY_SEED'));
+  const request = JSON.stringify({ schemaVersion: 1, target: 'agent-runner-api-sandbox3',
+    keyHash: createHash('sha256').update(keys.apiKey).digest('hex'), delegationSecret: keys.delegationSecret });
+  await withSandbox3Transport(input, { 'bootstrap.sh': bootstrap, 'prepare.py': preparer }, async (args, directory) => {
+    const body = sandbox3Response(spawnSync('ssh', [...args,
+      `sudo -n bash ${shellQuote(`${directory}/bootstrap.sh`)} --contract-sandbox3 ${shellQuote(`${directory}/prepare.py`)} --prepare`], {
+      input: request, encoding: 'utf8', maxBuffer: 64 * 1024, timeout: 60_000,
+    }));
+    if (body.namespacePrepared !== true || body.serviceStarted !== false || body.realExecutionEnabled !== false) {
+      fail('sandbox3_operator_response_invalid');
+    }
+    evidence.sandbox3Preparation = { namespacePrepared: true, serviceStarted: false,
+      realExecutionEnabled: false, cpCredentialsSynced: false };
+    evidence.sandbox3OperatorSourceSha = credentials.sandbox3OperatorSourceSha;
+  });
+}
+
+async function installSandbox3(input, archive) {
+  const credentials = TELEGRAM_UX_SANDBOX_CREDENTIALS;
+  const installer = await sandbox3Script('install-api-sandbox-lane-candidate.sh', credentials.sandbox3InstallerDigest);
+  const checker = await sandbox3Script('check-api-sandbox-journal.py', credentials.sandbox3JournalCheckerDigest);
+  await withSandbox3Transport(input, { 'install.sh': installer, 'journal-check.py': checker,
+    'candidate.tar.gz': await readFile(archive) }, async (args, directory) => {
+    capture('ssh', [...args, `sudo -n bash ${shellQuote(`${directory}/install.sh`)} sandbox3 ${credentials.runnerCandidateSourceSha} ${credentials.runnerCandidateBundleSha256} ${shellQuote(`${directory}/candidate.tar.gz`)} ${shellQuote(`${directory}/journal-check.py`)} --existing-mcp-runtime`], { timeout: 240_000 });
+  });
+  const state = await inspectSandbox3(input);
+  if (!state.serviceActive || !state.serviceExecSourceVerified || state.runtimeSourceSha !== credentials.runnerCandidateSourceSha) {
+    fail('sandbox3_installed_source_not_verified');
+  }
+  evidence.runnerCandidate.installed = true;
+  evidence.sandbox3Installation = { target: 'agent-runner-api-sandbox3',
+    sourceSha: state.runtimeSourceSha, activeProcessSourceVerified: true, cpCredentialsSynced: false,
+    realExecutionVerified: false, publicRouteVerified: false };
 }
 
 async function preflight(input, setStage, { includeRunnerInventory = false, repairPermissions = false, candidateVerification = false } = {}) {
@@ -393,29 +496,60 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
+    const freshSandbox3 = ['--sandbox3-operator-preflight', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
-    evidence.mode = diagnosticMode ? args[0].slice(2) : 'bootstrap';
-    const input = validateInputs(diagnosticMode);
+    evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
+    const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3);
     evidence.sourceSha = input.sourceSha;
-    const config = JSON.parse(await readFile('wrangler.telegram-ux-v1.jsonc', 'utf8'));
-    validateTelegramUxSandboxConfig(config);
-    if (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true) {
+    const config = JSON.parse(await readFile(freshSandbox3 ? 'wrangler.sandbox3.jsonc' : 'wrangler.telegram-ux-v1.jsonc', 'utf8'));
+    if (freshSandbox3) {
+      validateSandbox3Config(config);
+      evidence.cpWorker = 'trained-assist-cp-sandbox3';
+      evidence.runnerService = 'agent-runner-api-sandbox3.service';
+      evidence.runnerPrincipalId = 'sandbox3-agent-api-principal';
+      evidence.runnerProfileId = 'integration-sandbox3-v1';
+      evidence.cpMockKeySecretName = 'RUNNER_API_KEY_AGENT_API';
+      evidence.cpPrincipalSecretName = 'PRINCIPAL_SECRET_SANDBOX3';
+    } else validateTelegramUxSandboxConfig(config);
+    if (!freshSandbox3 && (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true)) {
       fail('sandbox_worker_config_mismatch');
     }
     evidence.boundaries.sourceAndConfig = 'PASS';
 
     stage = 'cloudflareAccount';
-    await verifyConfigAndAccount(input.accountId);
+    await verifyConfigAndAccount(input.accountId, freshSandbox3);
     evidence.boundaries.cloudflareAccount = 'PASS';
 
     stage = 'sandboxPreDeployLiveness';
-    await verifySandboxLiveness();
+    await verifySandboxLiveness(undefined, freshSandbox3 ? SANDBOX3_CP_URL : CP_URL);
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
-    if (diagnosticMode) {
+    if (freshSandbox3) {
+      if (args[0] === '--sandbox3-operator-preflight') {
+        stage = 'sandbox3OperatorInventory';
+        await inspectSandbox3(input);
+        evidence.boundaries[stage] = 'PASS';
+        evidence.outcome = 'preflight_passed';
+      } else {
+        stage = 'runnerCandidateVerification';
+        await verifyRunnerCandidate(args[0] === '--install-sandbox3' ? async archive => {
+          evidence.boundaries.runnerCandidateVerification = 'PASS';
+          stage = 'sandbox3CandidateInstallation';
+          await installSandbox3(input, archive);
+          evidence.boundaries[stage] = 'PASS';
+        } : null);
+        evidence.boundaries.runnerCandidateVerification = 'PASS';
+        if (args[0] === '--prepare-sandbox3') {
+          stage = 'sandbox3NamespacePreparation';
+          await prepareSandbox3(input);
+          evidence.boundaries[stage] = 'PASS';
+        }
+        evidence.outcome = 'passed';
+      }
+    } else if (diagnosticMode) {
       await preflight(input, value => { stage = value; }, {
         includeRunnerInventory: ['--inventory', '--repair-permissions'].includes(args[0]),
         repairPermissions: args[0] === '--repair-permissions', candidateVerification: args[0] === '--candidate-preflight',
@@ -447,6 +581,7 @@ async function main() {
       evidence.outcome = 'passed';
     }
   } catch (error) {
+    if (Object.hasOwn(evidence.boundaries, stage) && evidence.boundaries[stage] !== 'PASS') evidence.boundaries[stage] = 'BLOCKED';
     evidence.failure = {
       boundary: stage,
       reasonCode: error instanceof Error && /^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
