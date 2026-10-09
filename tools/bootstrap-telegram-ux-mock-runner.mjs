@@ -12,6 +12,7 @@ import {
   validateTelegramUxSandboxConfig,
 } from '../src/deployment/telegram-ux-sandbox.ts';
 import { commandFailureReason } from './command-failure.mjs';
+import { sanitizedRunnerInventory, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
 const RUNNER_PRINCIPAL_ID = 'integration-telegram-ux-v1-mock-test';
@@ -49,6 +50,7 @@ const evidence = {
     runnerSshIdentity: 'NOT_RUN',
     authenticatedLaneReadiness: 'NOT_RUN',
     authenticatedProfileHealth: 'NOT_RUN',
+    runnerAdmissionInventory: 'NOT_RUN',
   },
   probe: {
     httpStatus: null,
@@ -204,7 +206,35 @@ async function readAuthenticatedBoundary(path, secret) {
   return { status: response.status, body };
 }
 
-async function preflight(input, setStage) {
+async function readRunnerInventory(input) {
+  const source = TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerInventorySourceSha;
+  const script = await verifiedSandboxScript(
+    `https://raw.githubusercontent.com/trained-assist/ai-agent-runner/${source}/scripts/inspect-api-sandbox.py`,
+    TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerInventoryScriptSha256);
+  await withRunnerSsh(input, (args) => {
+    const result = spawnSync('ssh', [...args, 'sudo -n python3 - --inventory'], {
+      input: script, encoding: 'utf8', maxBuffer: 64 * 1024, timeout: 30_000,
+    });
+    if (result.error) fail(commandFailureReason('ssh', result));
+    let body;
+    try { body = JSON.parse(result.stdout); } catch {
+      fail(result.status === 0 ? 'runner_inventory_response_invalid' : commandFailureReason('ssh', result));
+    }
+    if (result.status !== 0) {
+      // Reasons originate from the byte-verified helper, never raw SSH output.
+      if (body?.schemaVersion === 1 && body.target === 'agent-runner-api-mcp-test'
+        && typeof body.reasonCode === 'string' && /^sandbox_inventory_[a-z_]{1,60}$/.test(body.reasonCode)) {
+        fail(body.reasonCode);
+      }
+      fail(commandFailureReason('ssh', result));
+    }
+    evidence.runnerInventory = sanitizedRunnerInventory(body);
+    evidence.runnerInventoryInspectorSha = source;
+    if (!evidence.runnerInventory.journalTerminalOnly) fail('runner_admissions_unresolved');
+  });
+}
+
+async function preflight(input, setStage, includeRunnerInventory = false) {
   const failures = [];
   const check = async (boundary, probe) => {
     setStage(boundary);
@@ -242,6 +272,9 @@ async function preflight(input, setStage) {
     if (health.status !== 200 || health.body.runnerApi !== 'reachable'
       || health.body.profileId !== TELEGRAM_UX_SANDBOX.principalId) fail('sandbox_profile_runner_not_ready');
   });
+  if (includeRunnerInventory) {
+    await check('runnerAdmissionInventory', () => readRunnerInventory(input));
+  }
   evidence.boundaryFailures = failures;
   if (failures.length) {
     setStage(failures[0].boundary);
@@ -297,11 +330,11 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const readOnly = args[0] === '--preflight';
-    evidence.mode = readOnly ? 'preflight' : 'bootstrap';
+    const readOnly = ['--preflight', '--inventory'].includes(args[0]);
+    evidence.mode = readOnly ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(readOnly);
     evidence.sourceSha = input.sourceSha;
     const config = JSON.parse(await readFile('wrangler.telegram-ux-v1.jsonc', 'utf8'));
@@ -320,7 +353,7 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (readOnly) {
-      await preflight(input, value => { stage = value; });
+      await preflight(input, value => { stage = value; }, args[0] === '--inventory');
     } else {
       stage = 'sandboxMigrations';
       applySandboxMigrations();

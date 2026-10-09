@@ -28,6 +28,7 @@ else if(args.includes('execute')) {
     }
     const preload = join(root, 'fetch.mjs');
     await writeFile(preload, `globalThis.fetch=async url=>{
+ if(url.startsWith('https://raw.githubusercontent.com/')) return new Response('tampered-script');
  if(url.endsWith('/healthz')) return Response.json({service:'trained-assist-control-plane',check:'liveness',buildSha:process.env.GITHUB_SHA});
  if(url.endsWith('/internal/sandbox/readiness')){const count=Number(process.env.TEST_BUSY??0);return Response.json({ok:count===0,principalId:'integration-telegram-ux-v1',profileId:process.env.TEST_PROFILE??'integration-telegram-ux-v1',reasonCode:count?'sandbox_lane_has_nonterminal_task':null,nonterminalTaskCount:count},{status:count?409:200});}
  if(url.endsWith('/internal/runner/profile-health')) return Response.json({runnerApi:'reachable',profileId:'integration-telegram-ux-v1'});
@@ -103,4 +104,10 @@ test('explicit bootstrap retains paired-key provisioning and the mock probe', as
   assert.equal(evidence.boundaries.authenticatedCpToRunnerProbe, 'PASS');
   assert.equal(commands.some(x => x.args.includes('deploy')), true);
   assert.equal(commands.some(x => x.args.includes('secret')), true);
+});
+test('inventory refuses a substituted operator helper before sending any script over SSH', async () => {
+  const { evidence, commands } = await exercise('--inventory');
+  assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
+  assert.equal(evidence.boundaries.runnerAdmissionInventory, 'BLOCKED');
+  assertReadOnly(commands);
 });

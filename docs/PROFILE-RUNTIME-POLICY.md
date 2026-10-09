@@ -157,7 +157,7 @@ verified independently before Telegram live acceptance.
 
 ### Read-only bootstrap preflight
 
-The same workflow defaults to `mode=preflight` (implementation: [CP #158](https://github.com/trained-assist/trained-assist-control-plane/issues/158)). It validates the pinned account
+The same workflow offers `mode=preflight` (implementation: [CP #158](https://github.com/trained-assist/trained-assist-control-plane/issues/158)). It validates the pinned account
 and config, reads CP liveness and its deployed SHA, queries only
 `SELECT name FROM d1_migrations`, checks the pinned SSH hostname, and performs
 signed GETs for lane occupancy and profile-scoped Runner reachability. It does
@@ -174,6 +174,27 @@ execution, Telegram delivery, or full lane READY.
 gh workflow run telegram-ux-sandbox-test-pass.yml \
   --repo trained-assist/trained-assist-control-plane --ref main -f mode=preflight
 ```
+
+The workflow defaults to `mode=inventory`, which adds the Runner-owned
+[read-only helper](https://github.com/trained-assist/ai-agent-runner/pull/213).
+Its exact source revision and SHA-256 digest are pinned in the deployment
+contract; downloaded bytes are verified before sending them over pinned SSH.
+The helper reads only the declared test EnvironmentFile, admission journal and
+current manifest. The artifact contains an allowlisted metadata projection:
+installed source SHA, binding-presence booleans, approved engine names and
+admission/unknown counts. Raw script exceptions, credentials and run data are
+excluded. Any unresolved Runner admission blocks this mode, even when CP has
+zero nonterminal tasks. It never restarts or edits the old test service.
+
+```sh
+gh workflow run telegram-ux-sandbox-test-pass.yml \
+  --repo trained-assist/trained-assist-control-plane --ref main -f mode=inventory
+```
+
+The helper's `journalTerminalOnly` flag is a journal snapshot, not a held admission
+fence or proof of Worker process exit. Fresh-lane readiness remains the scope of
+[CP #159](https://github.com/trained-assist/trained-assist-control-plane/issues/159)
+and [architecture #236](https://github.com/trained-assist/trained-agent-architecture/issues/236).
 
 Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
 only when that shared target's state is safe for the requested operation.
