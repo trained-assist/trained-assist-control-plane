@@ -66,11 +66,11 @@ disabling an explicitly configured profile API route.
 
 The isolated CP sandbox-3 config declares tenant
 `sandbox3-acceptance-a-20261008` and API principal
-`sandbox3-agent-api-principal`. Its current deployment intentionally has no
-Agent API URL or credentials and keeps intake/execution disabled. Provision the
-scoped API key and delegation secret only through the sandbox environment once
-the bounded allowance gate is ready. These sandbox values must not be reused
-for production tenants.
+`sandbox3-agent-api-principal`. Its Runner URL is pinned to the serverless
+Cloudflare Worker `trained-assist-runner-api-sandbox3`; it must never point to a
+VM, GHA gateway/workflow, or execution-worker endpoint. The deployed CP keeps
+intake/execution disabled. API and delegation credentials are sandbox-only and
+must not be reused for production tenants.
 
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for
@@ -194,54 +194,23 @@ gh workflow run telegram-ux-sandbox-test-pass.yml \
 The helper's `journalTerminalOnly` flag is a journal snapshot, not a held admission
 fence or proof of Worker process exit. Fresh-lane readiness remains the scope of
 [CP #159](https://github.com/trained-assist/trained-assist-control-plane/issues/159)
-and [architecture #236](https://github.com/trained-assist/trained-agent-architecture/issues/236).
+and the accepted Runner API sandbox contract.
 
 Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
 only when that shared target's state is safe for the requested operation.
 
 ### Fresh sandbox3 namespace through the same operator channel
 
-The existing workflow has explicit modes for the previously declared
-sandbox3 service; it creates no Cloudflare resources and leaves shared MCP
-API/state untouched:
-
-- `sandbox3-operator-preflight`: byte-verified read-only namespace/proxy metadata, including allowlisted systemd failure result and bounded exit status.
-- `sandbox3-proxy-preflight`: inspect nginx marker booleans without emitting its
-  configuration. It also counts server blocks containing the exact host and TLS port together. Legacy routes and upstreams remain independent and are preserved. Global markers do not prove routing or TLS readiness; an ambiguous count does not authorize editing.
-- `sandbox3-mock-probe`: verify installed source/process, then test loopback auth
-  refusal, terminal mock pong, result, idempotent receipt and events. The scoped
-  API key travels only over stdin; an unknown result prevents replay. This
-  component check does not establish Telegram or real worker execution.
-- `configure-sandbox3-proxy`: explicit fixed route configuration via byte-verified
-  helper. Requires exact runtime and one TLS server for the exact declared host, preserves legacy
-  bytes in a private root-only backup, validates nginx before reload and restores
-  on failure while preserving concurrent edits. Runner is not restarted. External
-  TLS/health/anonymous auth refusal is checked separately after configuration.
-- `sandbox3-public-preflight`: repeat read-only exact process/source and public
-  TLS/health/auth-refusal checks, without reapplying an exclusive route edit.
-- `prepare-sandbox3`: verify the existing signed candidate, then invoke the
-  existing Runner lane bootstrap's fixed contract stage over pinned SSH. Refuse
-  any existing component or aliased path. Derive scoped credentials from the
-  existing seed, send only the key hash and delegation secret over stdin, create
-  the distinct nonlogin user/private new config/registry/empty journal/unit.
-  No service starts and CP credentials are not changed.
-- `install-sandbox3`: reverify candidate/provenance, transfer only public verified
-  artifact/operator files to a private temporary directory, install through the
-  existing lane installer with its explicit pinned MCP-runtime compatibility
-  contract, then verify active PID argv/cwd and manifest source SHA. Cleanup
-  removes only this operation's transport directory.
-
-Dispatch from protected main with `-f mode=<mode>`. Install requires the already
-prepared inactive target; it never stops an active API. Any unresolved admission
-blocks restart/rollback. Namespace preparation is exclusive and does not replace
-or recover a previously occupied target.
-
-This initial registry permits mock-test only. There is no default engine chain,
-provider credential, profile workspace or real execution; no paid traffic can
-start. The artifact records CP credentials/public route/real execution as
-unverified. Provision and prove TLS/proxy, pair CP credentials, independently
-probe API/CP mock, then enforce bounded free-only worker/profile storage before
-real Telegram acceptance. These modes alone do not establish full readiness.
+The sandbox3 operator workflow exposes only serverless Runner API checks and CP
+pairing/probe modes. `sandbox3-public-preflight` verifies the fixed Cloudflare
+Worker `/healthz`, `/version`, and anonymous-auth refusal. `pair-sandbox3-cp`
+checks the API key against the Cloudflare Worker before writing sandbox CP
+secrets. `sandbox3-cp-mock-probe` exercises the regular authenticated CP adapter
+against that Worker; it admits a fixed `mock-test` run and creates no CP task,
+model call, or France-worker call. The deployed CP remains disabled for real
+execution. VM-hosted sandbox3 Runner API and reverse-proxy setup modes are
+retired: the execution VM is not an API host, and CP must not store its address
+or token.
 
 ### Existing signed candidate access preflight
 
@@ -405,17 +374,20 @@ never falls back to a shared secret and is inert outside sandbox3.
 
 The existing operator workflow supports `pair-sandbox3-cp`: require exact CP
 deployed SHA, unoccupied new credential bindings, preserved existing intake
-secret, exact signed active Runner process and public TLS/health/auth refusal.
-Derive the existing sandbox3 API/delegation pair and a separate CP read operator
-secret from the same established seed. Write secrets only through Wrangler stdin
-into the fixed sandbox3 Worker. Provision only the read operator row in sandbox3
-D1 with `tasks:read`, preserving any existing profile/principal binding. No
+secret, and successful health/version/anonymous-auth checks on the Cloudflare
+Runner API. Verify the derived API key against that API before writing CP
+secrets. Derive the sandbox3 API/delegation pair and a separate CP read operator
+secret from the established seed. Write secrets only through Wrangler stdin into
+the fixed sandbox3 Worker. Provision only the read operator row in sandbox3 D1
+with `tasks:read`, preserving any existing profile/principal binding. No
 production principal is inserted and the Telegram intake credential is unchanged.
 
-The operation then invokes the normal CP-to-Runner mock contract. It selects
-`mock-test` explicitly, creates no CP task and makes no model/worker call.
-`sandbox3-cp-mock-probe` repeats this deterministic authenticated check without
-writing credentials or retrying a different run key. A successful check does not
-prove real worker/profile storage, cost bounds or Telegram delivery. Existing
-credential bindings refuse the initial pairing mode, so partial provisioning
-must be reconciled using its sanitized operation evidence before repeating writes.
+The operation then invokes the normal CP-to-Runner mock contract through the
+Cloudflare Runner API. It selects `mock-test` explicitly, creates no CP task and
+makes no model/France-worker call. `sandbox3-cp-mock-probe` repeats this
+deterministic authenticated check without writing credentials or retrying a
+different run key. VM-hosted Runner API setup and proxy modes are retired. A
+successful check does not prove real worker/profile storage, cost bounds or
+Telegram delivery. Existing credential bindings refuse the initial pairing
+mode, so partial provisioning must be reconciled using its sanitized operation
+evidence before repeating writes.

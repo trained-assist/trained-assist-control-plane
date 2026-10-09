@@ -25,35 +25,28 @@ Do not import internals of trained-assist-agent; reuse only parts with an explic
 
 ### Isolated sandbox3 contract probe
 
-`wrangler.sandbox3.jsonc` declares `trained-assist-cp-sandbox3`, its separate
+`wrangler.sandbox3.jsonc` declares `trained-assist-cp-sandbox3`, its isolated
 `ta-sandbox3-taskstore` D1 and Workflow. Deploy reviewed protected main with
 `deploy-sandbox3.yml` and `deploy_sandbox3=true`; real routing stays disabled.
-The existing `telegram-ux-sandbox-test-pass.yml` supports explicit
-`configure-sandbox3-proxy`, `pair-sandbox3-cp` and `sandbox3-cp-mock-probe` modes.
-Pair only after the pinned signed Runner process, public TLS/auth route and exact
-CP deployment pass. Existing credentials refuse pairing; preserve the Telegram
-intake secret. The separate `sandbox3-ops-read-v1` principal has `tasks:read` only.
-Observe sanitized bootstrap artifacts. Retry the fixed mock probe through its
-same idempotency key; reconcile partial credential writes before another pairing.
-After secret pairing, the probe waits at most 30 seconds for credential
-propagation, repeating only explicit CP pre-admission authentication failures.
-Network errors, malformed replies and Runner failures are not replayed.
-This probe persists a Runner mock admission, creates no CP task and calls no
-worker/model. It does not prove real Telegram execution. Do not reset either lane
-or restart the shared API. The owner-authorized issue #236 sandbox workflow may
-configure the separate route and credentials; production cutover stays separate.
+CP's Agent API URL must be the Cloudflare Worker
+`trained-assist-runner-api-sandbox3`; a VM, GHA gateway/workflow, or execution
+worker URL is an architecture violation. The `telegram-ux-sandbox-test-pass.yml`
+workflow supports `sandbox3-public-preflight`, `pair-sandbox3-cp`, and
+`sandbox3-cp-mock-probe`. Pair only after the Cloudflare API health/version/
+anonymous-auth checks, API-key verification, and exact CP deployment pass.
+Preserve the Telegram intake secret. The separate `sandbox3-ops-read-v1`
+principal has `tasks:read` only. Observe sanitized bootstrap artifacts. Retry
+the fixed mock probe through its same idempotency key; reconcile partial
+credential writes before another pairing. The probe creates a Runner mock
+admission, creates no CP task, and calls no France worker or model. It does not
+prove real Telegram execution. Do not reset either lane or restart the shared
+API. VM-hosted sandbox3 Runner API setup and proxy modes are retired; production
+cutover stays separate.
 
-The same workflow's `configure-sandbox3-native` mode uses the pinned Runner
-operator and unchanged signed candidate. CP3 execution flags must remain disabled
-while it verifies Worker source/auth, fences and drains admission, checks the
-fresh journal, then updates only sandbox3. Environment `sandbox` supplies private
-SANDBOX3_NATIVE_WORKER_TOKEN, SANDBOX3_PROFILE_GITHUB_TOKEN and
-SANDBOX3_GCS_CREDENTIALS; SANDBOX3_GCS_BUCKET and SANDBOX3_NATIVE_WORKER_SHA
-are nonsecret variables for the existing storage target and deployed source.
-Missing credentials fail before service mutation. Never upload request JSON,
-credential files or private backups as evidence. This setup does not execute a
-model or prove profile saveback. CP3 run-spec policy declares the free Worker's
-180-second timeout, 1 MiB output/log caps and only the Ladder environment name.
+CP3 execution flags stay disabled until real worker/profile storage, cost bounds,
+and Telegram delivery have separate acceptance. The Runner API Worker owns the
+France worker URL/token and placement policy. The France VM is only an execution
+worker; CP has no endpoint or credential for it.
 
 ### Production target
 The isolated Control Plane production target is declared in `wrangler.production.jsonc`: Worker `trained-assist-cp-production`, D1 `ta-cp-production-taskstore`, and Workflow `ta-cp-production-task-workflow`. Its D1 was created empty in WEUR on 2026-10-08. It has no Telegram, ingress-buffer, Runner, or delivery bindings; `PREVIEW_ONLY=true`, pilot routing is disabled, and `ROUTER_AGENT_ALLOWED=false`. It is a separate endpoint and does not replace or connect the legacy user-facing service. Data residency remains an architecture decision; do not add profile/user data until resolved.

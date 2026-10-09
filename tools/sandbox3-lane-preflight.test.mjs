@@ -95,12 +95,22 @@ test('service binding override cannot redirect a passing URL route to shared CP'
   assert.equal(evaluateSandbox3Lane(input).checks.tgRoute, 'BLOCKED');
 });
 
-test('Agent API binding must name the declared separate service route', () => {
+test('Agent API binding must name the Cloudflare Worker route and rejects a direct VM endpoint', () => {
   const input = ready();
-  for (const url of ['https://169-58-15-230.sslip.io/runner-mcp-test', 'https://production.example.test', '']) {
+  for (const url of ['https://169-58-15-230.sslip.io/runner-sandbox3', 'https://production.example.test', '']) {
     input.cpBindings.find(item => item.name === 'RUNNER_API_URL').text = url;
     assert.equal(evaluateSandbox3Lane(input).checks.agentApiBindings, 'BLOCKED');
   }
+});
+
+test('CP has no VM/GHA execution endpoint or service binding', () => {
+  const input = ready();
+  assert.equal(evaluateSandbox3Lane(input).checks.cpHasNoDirectExecutorBinding, 'PASS');
+  input.cpBindings.push(plain('VM_WORKER_URL', 'https://vm.example.test'));
+  assert.equal(evaluateSandbox3Lane(input).checks.cpHasNoDirectExecutorBinding, 'BLOCKED');
+  input.cpBindings.pop();
+  input.cpBindings.push({ name: 'EXECUTION', type: 'service', service: 'trained-assist-native-worker-sandbox3' });
+  assert.equal(evaluateSandbox3Lane(input).checks.cpHasNoDirectExecutorBinding, 'BLOCKED');
 });
 
 test('preflight failures never emit arbitrary exception text', () => {

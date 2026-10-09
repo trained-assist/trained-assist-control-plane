@@ -2,7 +2,7 @@
 import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal } from './sandbox3-cp-pairing.mjs';
 import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
-import { verifySandbox3PublicRoute } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -108,7 +108,7 @@ function deriveRunnerMockApiKey(seed) {
   return `ta_mock_${createHmac('sha256', seed).update(RUNNER_KEY_CONTEXT).digest('base64url')}`;
 }
 
-function validateInputs(preflight = false, freshSandbox3 = false) {
+function validateInputs(preflight = false, freshSandbox3 = false, requiresVmOperator = true) {
   const sourceSha = validateSandboxBuildSha(requiredEnv('GITHUB_SHA'));
   const accountId = TELEGRAM_UX_SANDBOX.accountId;
   process.env.CLOUDFLARE_API_TOKEN = requiredEnv('CF_API_TOKEN');
@@ -116,8 +116,8 @@ function validateInputs(preflight = false, freshSandbox3 = false) {
   const principalSecret = freshSandbox3 ? null : requiredEnv('CP_TELEGRAM_UX_PRINCIPAL_SECRET');
   if (!freshSandbox3 && new TextEncoder().encode(principalSecret).length < 32) fail('cp_principal_secret_invalid');
   const key = preflight || freshSandbox3 ? null : deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
-  const privateKey = requiredEnv('VM2_SSH_PRIVATE_KEY');
-  if (!privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
+  const privateKey = requiresVmOperator ? requiredEnv('VM2_SSH_PRIVATE_KEY') : null;
+  if (privateKey && !privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
   return { sourceSha, accountId, principalSecret, key, privateKey };
 }
 
@@ -397,9 +397,8 @@ async function pairSandbox3Cp(input) {
   const secrets = { RUNNER_API_KEY_AGENT_API: keys.apiKey, RUNNER_PROFILE_DELEGATION_SECRET: keys.delegationSecret,
     PRINCIPAL_SECRET_SANDBOX3_OPS: sandbox3OperatorSecret(seed) };
   verifySandbox3PairingBindings(await sandbox3CpSettings(input));
-  const metadata = await inspectSandbox3(input);
-  if (!metadata.serviceActive || !metadata.serviceExecSourceVerified || metadata.runtimeSourceSha !== TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerCandidateSourceSha) fail('sandbox3_installed_source_not_verified');
   evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+  await verifySandbox3RunnerPrincipal(keys.apiKey);
   const principalSql = `SELECT profile_id, scopes, enabled FROM admission_principals WHERE principal_id = '${SANDBOX3.diagnosticPrincipalId}'`;
   let rows = sandbox3PrincipalQuery(principalSql);
   if (rows.length > 1) fail('sandbox3_cp_operator_principal_invalid');
@@ -635,19 +634,20 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-native', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-native', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
+    const freshSandbox3 = ['--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
+    const requiresVmOperator = !freshSandbox3;
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
-    const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3);
+    const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3, requiresVmOperator);
     evidence.sourceSha = input.sourceSha;
     const config = JSON.parse(await readFile(freshSandbox3 ? 'wrangler.sandbox3.jsonc' : 'wrangler.telegram-ux-v1.jsonc', 'utf8'));
     if (freshSandbox3) {
       validateSandbox3Config(config);
       evidence.cpWorker = 'trained-assist-cp-sandbox3';
-      evidence.runnerService = 'agent-runner-api-sandbox3.service';
+      evidence.runnerService = 'trained-assist-runner-api-sandbox3';
       evidence.runnerPrincipalId = 'sandbox3-agent-api-principal';
       evidence.runnerProfileId = 'integration-sandbox3-v1';
       evidence.cpMockKeySecretName = 'RUNNER_API_KEY_AGENT_API';
@@ -667,15 +667,7 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (freshSandbox3) {
-      if (args[0] === '--configure-sandbox3-native') {
-        stage = 'sandbox3NativeConfiguration';
-        await configureSandbox3Native(input);
-        evidence.boundaries[stage] = 'PASS';
-        stage = 'sandbox3PublicRoute';
-        evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
-        evidence.boundaries[stage] = 'PASS';
-        evidence.outcome = 'passed';
-      } else if (['--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0])) {
+      if (['--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0])) {
         if (args[0] === '--pair-sandbox3-cp') {
           stage = 'sandbox3CpCredentialPairing';
           await pairSandbox3Cp(input);
@@ -685,49 +677,11 @@ async function main() {
         await probeSandbox3Cp(input);
         evidence.boundaries[stage] = 'PASS';
         evidence.outcome = 'passed';
-      } else if (args[0] === '--configure-sandbox3-proxy') {
-        stage = 'sandbox3ProxyConfiguration';
-        await configureSandbox3Proxy(input);
-        evidence.boundaries[stage] = 'PASS';
-        stage = 'sandbox3PublicRoute';
-        evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
-        evidence.boundaries[stage] = 'PASS';
-        evidence.outcome = 'passed';
       } else if (args[0] === '--sandbox3-public-preflight') {
-        stage = 'sandbox3OperatorInventory';
-        const metadata = await inspectSandbox3(input);
-        if (!metadata.serviceActive || !metadata.serviceExecSourceVerified || metadata.runtimeSourceSha !== TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerCandidateSourceSha) fail('sandbox3_installed_source_not_verified');
-        evidence.boundaries[stage] = 'PASS';
         stage = 'sandbox3PublicRoute';
         evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
         evidence.boundaries[stage] = 'PASS';
         evidence.outcome = 'preflight_passed';
-      } else if (['--sandbox3-proxy-preflight', '--sandbox3-mock-probe'].includes(args[0])) {
-        const mock = args[0] === '--sandbox3-mock-probe';
-        stage = mock ? 'sandbox3MockContract' : 'sandbox3ProxyInspection';
-        await probeSandbox3(input, mock);
-        evidence.boundaries[stage] = 'PASS';
-        evidence.outcome = 'passed';
-      } else if (args[0] === '--sandbox3-operator-preflight') {
-        stage = 'sandbox3OperatorInventory';
-        await inspectSandbox3(input);
-        evidence.boundaries[stage] = 'PASS';
-        evidence.outcome = 'preflight_passed';
-      } else {
-        stage = 'runnerCandidateVerification';
-        await verifyRunnerCandidate(args[0] === '--install-sandbox3' ? async archive => {
-          evidence.boundaries.runnerCandidateVerification = 'PASS';
-          stage = 'sandbox3CandidateInstallation';
-          await installSandbox3(input, archive);
-          evidence.boundaries[stage] = 'PASS';
-        } : null);
-        evidence.boundaries.runnerCandidateVerification = 'PASS';
-        if (args[0] === '--prepare-sandbox3') {
-          stage = 'sandbox3NamespacePreparation';
-          await prepareSandbox3(input);
-          evidence.boundaries[stage] = 'PASS';
-        }
-        evidence.outcome = 'passed';
       }
     } else if (diagnosticMode) {
       await preflight(input, value => { stage = value; }, {

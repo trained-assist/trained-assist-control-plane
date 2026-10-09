@@ -6,7 +6,7 @@ const TG_WORKER = 'trained-assist-tg-sandbox3';
 const CP_URL = `https://${CP_WORKER}.skillset-apply.workers.dev`;
 const D1_ID = '1e1b8108-9186-43e2-8e50-436598233165';
 const WORKFLOW = 'ta-cp-sandbox3-task-workflow';
-export const SANDBOX3_RUNNER_URL = 'https://169-58-15-230.sslip.io/runner-sandbox3';
+export const SANDBOX3_RUNNER_URL = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
 const OTHER_GATEWAYS = ['trained-assist-tg-ux-sandbox', 'trained-assist-tg-shturman-sandbox'];
 
 const binding = (bindings, name) => bindings.find(item => item.name === name);
@@ -27,6 +27,9 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
   const serviceRoute = binding(tgBindings, 'CONTROL_PLANE_SERVICE');
   const selectedServiceMatches = !serviceRoute || (serviceRoute.type === 'service'
     && serviceRoute.service === CP_WORKER && (!serviceRoute.environment || serviceRoute.environment === 'production'));
+  const physicalDispatchBindings = cpBindings.filter(item => /(?:^|_)(?:VM_WORKER|EXECUTION_WORKER|GHA_RUNNER|GITHUB_ACTIONS_RUNNER)_(?:URL|TOKEN)$/i.test(item.name));
+  const directServiceBindings = cpBindings.filter(item => item.type === 'service'
+    && item.service !== 'trained-assist-runner-api-sandbox3');
   const reusable = ['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
     .every(name => Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000)
     && counts.nonterminalTasks <= counts.tasks && counts.foreignProfileTasks <= counts.tasks
@@ -40,6 +43,7 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
       && binding(cpBindings, 'DB')?.id === D1_ID ? 'PASS' : 'BLOCKED',
     cpWorkflow: binding(cpBindings, 'TASK_WORKFLOW')?.type === 'workflow'
       && binding(cpBindings, 'TASK_WORKFLOW')?.workflow_name === WORKFLOW ? 'PASS' : 'BLOCKED',
+    cpHasNoDirectExecutorBinding: physicalDispatchBindings.length === 0 && directServiceBindings.length === 0 ? 'PASS' : 'BLOCKED',
     cpStateReusable: reusable ? 'PASS' : 'BLOCKED',
     cpPrincipal: intakePrincipals.length === 1
       && intakePrincipals[0].profile_id === 'integration-sandbox3-v1' && intakePrincipals[0].enabled === 1
@@ -119,16 +123,36 @@ async function main() {
   const [cpBindings, tgBindings, ...otherGatewayBindings] = await Promise.all([
     workerBindings(CP_WORKER), workerBindings(TG_WORKER), ...OTHER_GATEWAYS.map(workerBindings),
   ]);
-  const [counts, principalRows, healthResponse] = await Promise.all([
+  const [counts, principalRows, healthResponse, runnerApiReady] = await Promise.all([
     queryCounts(), queryPrincipals(),
     fetch(`${CP_URL}/healthz`, { signal: AbortSignal.timeout(15_000) }),
+    verifyRunnerApiBoundary(),
   ]);
   const cpHealth = healthResponse.ok ? await healthResponse.json().catch(() => ({})) : {};
   const report = evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindings,
     counts, principalRows, cpHealth,
     expectedCpSha: process.env.EXPECTED_CP_SHA ?? null });
+  report.checks.runnerApiBoundary = runnerApiReady ? 'PASS' : 'BLOCKED';
+  if (!runnerApiReady) report.outcome = 'BLOCKED';
   console.log(JSON.stringify(report, null, 2));
   if (report.outcome !== 'CONFIGURED') process.exitCode = 2;
+}
+
+async function verifyRunnerApiBoundary() {
+  try {
+    const [healthResponse, versionResponse, authResponse] = await Promise.all([
+      fetch(`${SANDBOX3_RUNNER_URL}/healthz`, { signal: AbortSignal.timeout(10_000), redirect: 'error' }),
+      fetch(`${SANDBOX3_RUNNER_URL}/version`, { signal: AbortSignal.timeout(10_000), redirect: 'error' }),
+      fetch(`${SANDBOX3_RUNNER_URL}/v1/capabilities`, { signal: AbortSignal.timeout(10_000), redirect: 'error' }),
+    ]);
+    const [health, version, auth] = await Promise.all([
+      healthResponse.json(), versionResponse.json(), authResponse.json(),
+    ]);
+    return healthResponse.status === 200 && health?.service === 'ai-agent-runner-api'
+      && health?.placement === 'cloudflare-worker'
+      && versionResponse.status === 200 && version?.runtime === 'cloudflare-worker'
+      && authResponse.status === 401 && auth?.error?.code === 'UNAUTHENTICATED';
+  } catch { return false; }
 }
 
 export function sandbox3FailureReason(error) {
