@@ -130,6 +130,25 @@ describe('immutable stop execution pins', () => {
     expect(current.stop).not.toHaveBeenCalled();
   });
 
+  it('cancels a task after the Agent API proves MCP preflight refused before admission', async () => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const attemptKey = current.target.attempts[0]!.idempotencyKey;
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey: attemptKey } });
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'error', source: 'executor',
+      payload: { class: 'runner_unavailable', message: 'MCP_BINDING_UNAVAILABLE: sandbox fixture is not provisioned', idempotencyKey: attemptKey } });
+
+    expect(await current.port.cancel(current.taskId, { reason: 'sandbox test cleanup' })).toMatchObject({
+      cancelled: true, stopConfirmed: true, status: 'cancelled',
+    });
+    expect(current.terminate).toHaveBeenCalledOnce();
+    expect(current.stop).not.toHaveBeenCalled();
+    expect(await current.store.requireTask(current.taskId)).toMatchObject({ status: 'cancelled', generation: 2 });
+    expect(await current.store.getRun(current.attempt.id)).toMatchObject({ status: 'failed', finished_at: expect.any(Number) });
+    expect(await current.store.runnerSubmitMayHaveStarted(current.taskId, current.attempt.id)).toBe(false);
+  });
+
   it.each(['insert-attempt', 'delete-attempt', 'attempt-generation', 'attempt-run', 'task-generation',
     'delete-task', 'delete-claim', 'mutate-claim', 'delete-proof', 'proof-profile', 'proof-run',
     'proof-generation', 'proof-exit', 'proof-source', 'proof-kind', 'proof-event', 'proof-payload',

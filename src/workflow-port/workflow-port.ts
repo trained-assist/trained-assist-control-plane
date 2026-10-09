@@ -22,6 +22,7 @@ import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
 import { withWorkStyleInstructions } from '../output/communication-v1';
 import { isRunnerRunId } from '../runner-adapter/run-id';
+import { stableAttemptKey } from '../runner-adapter/runner-api-adapter';
 import type { RouteResult } from '../router/service';
 import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
@@ -399,7 +400,18 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
 
     const active = await this.store.activeRun(taskId);
-    const initialRuns = await this.store.listRuns(taskId);
+    let initialRuns = await this.store.listRuns(taskId);
+    for (const attempt of initialRuns) {
+      if (attempt.finished_at !== null) continue;
+      const preflightFailure = await this.store.runnerSubmitKnownPreAdmissionFailure(taskId, attempt.id);
+      if (preflightFailure === 'MCP_BINDING_UNAVAILABLE') {
+        await this.store.logEvent({ taskId, generation: attempt.generation, kind: 'progress',
+          executionId: attempt.id, source: 'executor', payload: { event: 'runner_submit_rejected',
+            attemptId: attempt.id, idempotencyKey: await stableAttemptKey(taskId, attempt.generation) } });
+        await this.store.finishRun(attempt.id, 'failed', { errorClass: 'runner_rejected', errorText: preflightFailure });
+      }
+    }
+    initialRuns = await this.store.listRuns(taskId);
     const unsettled = initialRuns.filter(run => run.finished_at === null);
     const nativeAttempts: RunAttemptRow[] = [];
     for (const attempt of unsettled) {

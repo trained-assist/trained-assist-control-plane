@@ -187,6 +187,12 @@ export class RunnerApiAdapter {
       const code = err?.code ?? `HTTP_${res.status}`;
       const message = err?.message ?? text;
       if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message, res.status);
+      // The test Runner returns this profile-configuration refusal before it
+      // creates an admission record. Treating it as an ambiguous 503 leaves a
+      // phantom active CP attempt that can never be reconciled or stopped.
+      if (code === 'MCP_BINDING_UNAVAILABLE') {
+        throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
+      }
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
       if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
       const fieldPaths = Array.isArray(err?.details?.errors)

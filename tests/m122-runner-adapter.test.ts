@@ -262,6 +262,8 @@ describe('Runner adapter: HTTP-клиент (маршруты, auth, идемп�
         })) as unknown as typeof fetch;
 
     await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'INTERNAL')).status('x')).rejects.toMatchObject({ name: 'RunnerUnavailableError' });
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'MCP_BINDING_UNAVAILABLE')).submit({ userTaskId: 'u', idempotencyKey: 'k' }))
+      .rejects.toMatchObject({ name: 'RunnerConflictError', apiCode: 'MCP_BINDING_UNAVAILABLE', statusCode: 503 });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(404, 'NOT_FOUND')).status('x')).rejects.toMatchObject({ name: 'RunnerNotFoundError' });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(400, 'INVALID_REQUEST')).submit({ userTaskId: 'u', idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'RunnerConflictError' });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(409, 'STALE_OWNER_GENERATION')).cancel('x')).rejects.toMatchObject({ name: 'RunnerStaleGenerationError' });
