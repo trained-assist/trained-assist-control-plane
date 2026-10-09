@@ -128,11 +128,15 @@ export function runnerArtifactRef(manifest: unknown): string {
   return ref;
 }
 
+export interface DelegatedProfile { profileId: string; principalId: string; tenantId: string; secret: string }
+
 export class RunnerApiAdapter {
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly engineSelection: 'caller' | 'agent_api' = 'caller',
+    private readonly delegatedProfile?: DelegatedProfile,
   ) {}
 
   /**
@@ -146,13 +150,25 @@ export class RunnerApiAdapter {
   private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal } = {}): Promise<T> {
     let res: Response;
     try {
+      const headers: Record<string, string> = {
+        authorization: `Bearer ${this.apiKey}`,
+        'content-type': 'application/json',
+        ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
+      };
+      if (this.delegatedProfile) {
+        const expiresAt = String(Date.now() + 60_000);
+        const message = `${this.delegatedProfile.principalId}\0${this.delegatedProfile.tenantId}\0${this.delegatedProfile.profileId}\0${expiresAt}`;
+        const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(this.delegatedProfile.secret),
+          { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+        headers['x-agent-profile-id'] = this.delegatedProfile.profileId;
+        headers['x-agent-profile-tenant'] = this.delegatedProfile.tenantId;
+        headers['x-agent-profile-exp'] = expiresAt;
+        headers['x-agent-profile-sig'] = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      }
       res = await this.doFetch(`${this.baseUrl}${path}`, {
         method,
-        headers: {
-          authorization: `Bearer ${this.apiKey}`,
-          'content-type': 'application/json',
-          ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
-        },
+        headers,
         ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
       });
@@ -167,13 +183,20 @@ export class RunnerApiAdapter {
       json = null;
     }
     if (!res.ok) {
-      const err = (json as { error?: { code?: string; message?: string } } | null)?.error;
+      const err = (json as { error?: { code?: string; message?: string; details?: { errors?: unknown } } } | null)?.error;
       const code = err?.code ?? `HTTP_${res.status}`;
       const message = err?.message ?? text;
       if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message, res.status);
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
       if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
-      throw new RunnerConflictError(`${code}: ${message}`, res.status);
+      const fieldPaths = Array.isArray(err?.details?.errors)
+        ? err.details.errors.flatMap((entry) => {
+          if (typeof entry !== 'string') return [];
+          const path = entry.split(':', 1)[0]?.trim();
+          return path && /^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*|\[\d+\])*$/.test(path) ? [path] : [];
+        })
+        : [];
+      throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, fieldPaths: [...new Set(fieldPaths)].slice(0, 20), statusCode: res.status });
     }
     return json as T;
   }
@@ -196,7 +219,7 @@ export class RunnerApiAdapter {
       // Полный RunSpec туда не уходит: checkKeys отклоняет неизвестные поля.
       return this.request<RunnerReceipt>('POST', '/v1/runs', {
         idempotencyKey: input.idempotencyKey,
-        body: toSubmitRequest(input.runSpec),
+        body: toSubmitRequest(input.runSpec, { engineSelection: this.engineSelection }),
       });
     }
     const prompt = input.inputText?.trim();
@@ -206,7 +229,7 @@ export class RunnerApiAdapter {
       idempotencyKey: input.idempotencyKey,
       body: {
         userTaskId: input.userTaskId,
-        engine: { name: input.engineName ?? 'opencode', adapterVersion: '1' },
+        ...(this.engineSelection === 'agent_api' ? {} : { engine: { name: input.engineName ?? 'opencode', adapterVersion: '1' } }),
         envAllowlist: [],
         limits: { timeoutMs: input.timeoutMs ?? 300000 },
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -270,9 +293,29 @@ export class RunnerApiAdapter {
 export function runnerAdapterOf(env: {
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
+  RUNNER_API_ENGINE_SELECTION?: string;
+  RUNNER_PROFILE_DELEGATION_SECRET?: string;
+  RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
+  RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
+  RUNNER_PROFILE_DELEGATED_ID?: string;
 }): RunnerApiAdapter | null {
+  const selection = env.RUNNER_API_ENGINE_SELECTION ?? 'caller';
+  if (selection !== 'caller' && selection !== 'agent_api') {
+    throw new Error('RUNNER_API_ENGINE_SELECTION must be caller or agent_api');
+  }
+  const hasDelegation = Boolean(env.RUNNER_PROFILE_DELEGATION_SECRET || env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID
+    || env.RUNNER_PROFILE_DELEGATION_TENANT_ID || env.RUNNER_PROFILE_DELEGATED_ID);
+  const delegationValues = [env.RUNNER_PROFILE_DELEGATION_SECRET, env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
+    env.RUNNER_PROFILE_DELEGATION_TENANT_ID, env.RUNNER_PROFILE_DELEGATED_ID];
+  if (hasDelegation && delegationValues.some(value => !value?.trim())) {
+    throw new Error('Runner profile delegation requires secret, principal, tenant, and profile');
+  }
+  const delegatedProfile = hasDelegation ? {
+    profileId: env.RUNNER_PROFILE_DELEGATED_ID!, principalId: env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID!,
+    tenantId: env.RUNNER_PROFILE_DELEGATION_TENANT_ID!, secret: env.RUNNER_PROFILE_DELEGATION_SECRET!,
+  } : undefined;
   return env.RUNNER_API_URL && env.RUNNER_API_KEY
-    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY)
+    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY, fetch, selection, delegatedProfile)
     : null;
 }
 

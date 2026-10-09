@@ -325,6 +325,28 @@ describe('run-spec: проекция на тело POST /v1/runs', () => {
     expect(toSubmitRequest(built.spec).mcp).toEqual(built.spec.mcp);
     expect(untransmittedRunSpecFields(built.spec)).not.toContain('mcp');
   });
+
+  it('удаляет host-only MCP scope и registry digest из закрытого Agent API request', () => {
+    const server = {
+      serverId: 'registry-fixture',
+      transport: 'remote',
+      url: 'https://registry.example.com/mcp',
+      bindingRef: 'registry-mcp-test-160-read',
+      allowedTools: ['read_fixture'],
+      catalogueVersion: 'catalogue-v1',
+      policyVersion: 'policy-v1',
+    };
+    const built = buildRunSpec(baseInput, runSpecPolicyOf({ RUN_SPEC_MCP: JSON.stringify({ servers: [server] }) }));
+    Object.assign(built.spec.mcp!.servers[0]!, {
+      scope: 'registry:fixture-read',
+      registryDigest: 'a'.repeat(64),
+    });
+
+    const body = toSubmitRequest(built.spec, { engineSelection: 'agent_api' });
+    expect(body.mcp?.servers[0]).toEqual(server);
+    expect(JSON.stringify(body)).not.toContain('registry:fixture-read');
+    expect(JSON.stringify(body)).not.toContain('registryDigest');
+  });
 });
 
 describe('run-spec: удалённый MCP (transport remote)', () => {
@@ -465,6 +487,23 @@ describe('run-spec: удалённый MCP (transport remote)', () => {
     expect(() => buildRunSpec(baseInput, remotePolicy(remoteServer({ allowedTools: Array.from({ length: 51 }, (_, index) => `tool_${index}`) })))).toThrow(/at most 50/);
     const built = buildRunSpec(baseInput, remotePolicy(remoteServer({ toolTimeoutMs: undefined })));
     expect(toSubmitRequest(built.spec).mcp?.servers[0]).toEqual(remoteServer({ toolTimeoutMs: undefined }));
+  });
+
+  it('Agent API selection omits engine so the API chooses from its configured chain', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ requestId: 'req-1', userTaskId: 'ut-abc123', runId: 'run-1', deduplicated: false }), {
+        status: 202, headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', fetchImpl, 'agent_api');
+    const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
+
+    await adapter.submit({ userTaskId: 'ut-abc123', idempotencyKey: 'k1', runSpec: built.spec });
+
+    expect(bodies[0]).not.toHaveProperty('engine');
+    expect(bodies[0]).toMatchObject({ userTaskId: 'ut-abc123', limits: { timeoutMs: 120_000 } });
   });
 
   it('adapter.submit с runSpec отправляет ровно проекцию: mcp в теле, служебные поля и секреты — нет', async () => {

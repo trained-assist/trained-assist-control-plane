@@ -12,9 +12,16 @@ export class RunnerUnavailableError extends Error {
 
 /** Отказ Runner: конфликт идемпотентности, невалидный запрос, чужой engine. */
 export class RunnerConflictError extends Error {
-  constructor(message: string, readonly statusCode?: number) {
+  readonly apiCode?: string;
+  readonly fieldPaths: string[];
+  readonly statusCode?: number;
+
+  constructor(message: string, options: { apiCode?: string; fieldPaths?: string[]; statusCode?: number } = {}) {
     super(message);
     this.name = 'RunnerConflictError';
+    this.apiCode = options.apiCode;
+    this.fieldPaths = options.fieldPaths ?? [];
+    this.statusCode = options.statusCode;
   }
 }
 

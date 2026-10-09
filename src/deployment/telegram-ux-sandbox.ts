@@ -7,7 +7,28 @@ export const TELEGRAM_UX_SANDBOX = {
   accountEmail: 'typeformowner@gmail.com',
   principalId: 'integration-telegram-ux-v1',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
+  runnerMockTestUrl: 'https://169-58-15-230.sslip.io/runner-mcp-test',
 } as const;
+
+export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
+  githubEnvironment: 'sandbox',
+  runnerKeySeedSecret: 'RUNNER_MOCK_KEY_SEED',
+  cpPrincipalSecret: 'CP_TELEGRAM_UX_PRINCIPAL_SECRET',
+  cloudflareApiTokenSecret: 'CF_API_TOKEN',
+  cloudflareAccountIdVariable: 'CF_ACCOUNT_ID',
+  vm2SshPrivateKeySecret: 'VM2_SSH_PRIVATE_KEY',
+  vm2SshHost: '169.58.15.230',
+  vm2SshUser: 'root',
+  vm2SshKnownHostEntry: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqY97L/HqL+EjcMNau36t5E2BgVprJsPu18ZsGztv/f',
+  runnerMockKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST',
+  runnerMockProvisioner: '/usr/local/sbin/runner-api-mcp-test-provision-principal',
+} as const;
+
+export function validateSandboxBuildSha(value: unknown): string {
+  const sha = String(value ?? '').trim();
+  if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error('sandbox_build_sha_invalid');
+  return sha.toLowerCase();
+}
 
 export function validateTelegramUxSandboxConfig(config: Record<string, any>): true {
   if (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true) {
@@ -22,6 +43,21 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
     || config.workflows[0].name !== TELEGRAM_UX_SANDBOX.workflowName) {
     throw new Error('sandbox_workflow_mismatch');
   }
+  if (config.vars?.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true') {
+    throw new Error('sandbox_mock_probe_gate_mismatch');
+  }
+  if (config.vars?.SANDBOX_RUNNER_MOCK_TEST_URL !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    throw new Error('sandbox_mock_runner_url_mismatch');
+  }
+  if (config.vars?.RUNNER_API_URL_TELEGRAM_UX !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    throw new Error('sandbox_telegram_runner_url_mismatch');
+  }
+  let profileOverrides: Record<string, any> = {};
+  try { profileOverrides = JSON.parse(config.vars?.RUN_SPEC_PROFILE_OVERRIDES ?? '{}'); }
+  catch { throw new Error('sandbox_profile_runner_url_mapping_invalid'); }
+  if (profileOverrides[TELEGRAM_UX_SANDBOX.principalId]?.runnerUrlBinding !== 'RUNNER_API_URL_TELEGRAM_UX') {
+    throw new Error('sandbox_profile_runner_url_mapping_mismatch');
+  }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();
   const expectedServices = [
@@ -31,6 +67,14 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   ].sort();
   if (JSON.stringify(services) !== JSON.stringify(expectedServices)) throw new Error('sandbox_service_binding_mismatch');
   return true;
+}
+
+export function isSandboxReadinessEndpointMissing(status: number, body: unknown): boolean {
+  if (status === 404) return true;
+  if (status !== 400 || !body || typeof body !== 'object' || Array.isArray(body)) return false;
+  // Older sandbox revisions route this unknown internal path through the
+  // legacy task-status handler, whose stable response is this exact 400.
+  return (body as Record<string, unknown>).error === 'taskId is required';
 }
 
 export async function telegramUxPrincipalSignature(secret: string): Promise<string> {
