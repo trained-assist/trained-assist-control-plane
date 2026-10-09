@@ -68,10 +68,12 @@ export function resolveProfileRuntime(
     }
   }
   const policy = runSpecPolicyOf(env);
-  const delegationBindings = [env.RUNNER_PROFILE_DELEGATION_SECRET, env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
+  // An orphaned secret is inert; Agent API selection remains explicit.
+  // Partial principal/tenant identity still fails closed instead of falling back.
+  const delegationIdentityBindings = [env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
     env.RUNNER_PROFILE_DELEGATION_TENANT_ID];
   const agentApiMode = env.RUNNER_API_ENGINE_SELECTION === 'agent_api';
-  if (agentApiMode || delegationBindings.some(value => value !== undefined)) {
+  if (agentApiMode || delegationIdentityBindings.some(value => value !== undefined)) {
     const profileOverride = durableProfileId === TELEGRAM_UX_PROFILE
       ? overrides[durableProfileId] as Record<string, unknown> | undefined : undefined;
     const runnerUrl = profileOverride?.runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX'

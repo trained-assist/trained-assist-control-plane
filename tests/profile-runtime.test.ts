@@ -100,6 +100,13 @@ describe('trusted profile runtime', () => {
       .toThrow(ProfileRuntimeConfigurationError);
   });
 
+  it('does not let an unused delegation secret disable the explicitly configured legacy sandbox route', () => {
+    const configured = { ...bindings, RUNNER_PROFILE_DELEGATION_SECRET: 'stale-unselected-secret' };
+    const runtime = resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE);
+    expect(runtime.runnerApiUrl).toBe(bindings.RUNNER_API_URL);
+    expect(runtime.adapter).not.toBeNull();
+  });
+
   it('enables only the pinned registry fixture when the trusted discovery secret is present', () => {
     const configured = { ...bindings, MCP_TEST_AUTH_TOKEN: 'fixture_bearer_0123456789',
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',

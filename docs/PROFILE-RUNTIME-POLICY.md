@@ -59,8 +59,10 @@ This path is enabled only when the complete delegation configuration exists; an
 incomplete delegation fails closed. Setting `RUNNER_API_ENGINE_SELECTION` to
 `agent_api` without the dedicated API key, delegation secret, principal, tenant,
 and endpoint also fails closed. Without Agent API selection or any partial
-delegation field, the historical profile-specific policy behavior remains for
-compatibility.
+delegation identity (principal or tenant), the historical profile-specific
+policy behavior remains for compatibility. A delegation secret by itself is
+inert and does not select Agent API mode; this avoids an orphaned secret
+disabling an explicitly configured profile API route.
 
 The isolated CP sandbox-3 config declares tenant
 `sandbox3-acceptance-a-20261008` and API principal
