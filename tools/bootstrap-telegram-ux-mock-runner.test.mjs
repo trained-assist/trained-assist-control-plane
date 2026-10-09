@@ -11,11 +11,12 @@ async function exercise(mode, overrides = {}) {
   try {
     const bin = join(root, 'bin');
     await mkdir(bin);
-    for (const tool of ['npx', 'ssh']) {
+    for (const tool of ['npx', 'ssh', 'gh']) {
       const stub = join(bin, `${tool}.mjs`);
       await writeFile(stub, `import fs from 'node:fs';
 const args=process.argv.slice(2);
 fs.appendFileSync(process.env.TEST_LOG,JSON.stringify({tool:'${tool}',args})+'\\n');
+if('${tool}'==='gh') { console.error('Resource not accessible by integration '+process.env.CF_API_TOKEN);process.exit(1); }
 if('${tool}'==='ssh') {
  if(args.at(-1)==='hostname -s') console.log(process.env.TEST_HOST ?? 'vmi3617957');
  else console.log(JSON.stringify({status:'registered',principalId:'integration-telegram-ux-v1-mock-test',profileId:'integration-telegram-ux-v1-mock-test',tenantId:'integration-telegram-ux-v1-mock-test'}));
@@ -119,4 +120,14 @@ test('explicit permission repair verifies helper bytes before mutation and still
   assert.equal(evidence.boundaries.runnerInventoryPermissions, 'BLOCKED');
   assert.equal(evidence.boundaries.runnerAdmissionInventory, 'BLOCKED');
   assertReadOnly(commands);
+});
+
+test('candidate preflight identifies cross-repository artifact access without server mutation', async () => {
+  const { evidence, commands } = await exercise('--candidate-preflight');
+  assert.equal(evidence.mode, 'candidate-preflight');
+  assert.equal(evidence.failure.boundary, 'runnerCandidateVerification');
+  assert.equal(evidence.failure.reasonCode, 'github_permission_denied:gh:1');
+  assert.equal(evidence.boundaries.runnerAdmissionInventory, 'NOT_RUN');
+  assertReadOnly(commands.filter(x => x.tool !== 'gh'));
+  assert.deepEqual(commands.filter(x => x.tool === 'gh').map(x => x.args.slice(0, 2)), [['run', 'view']]);
 });

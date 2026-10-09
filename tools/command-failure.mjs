@@ -1,4 +1,4 @@
-const COMMAND_NAMES = new Set(['git', 'npx', 'ssh']);
+const COMMAND_NAMES = new Set(['git', 'npx', 'ssh', 'gh']);
 
 const WRANGLER_FAILURE_PATTERNS = [
   [/invalid api token|authentication error|not authenticated|authentication failed/i, 'cloudflare_authentication_failed'],
@@ -13,6 +13,12 @@ const SSH_FAILURE_PATTERNS = [
   [/connection timed out|connection refused|connection reset|no route to host/i, 'runner_ssh_unreachable'],
 ];
 
+const GITHUB_FAILURE_PATTERNS = [
+  [/HTTP 403|Resource not accessible|permission denied|insufficient permission/i, 'github_permission_denied'],
+  [/HTTP 401|authentication failed|not logged|GH_TOKEN/i, 'github_authentication_failed'],
+  [/HTTP 404|no artifact matches|artifact.*expired|not found/i, 'github_artifact_unavailable'],
+];
+
 /** Return a stable, allowlisted reason code without retaining command output. */
 export function commandFailureReason(command, result) {
   const safeCommand = COMMAND_NAMES.has(command) ? command : 'command';
@@ -24,7 +30,7 @@ export function commandFailureReason(command, result) {
 
   const output = `${typeof result?.stdout === 'string' ? result.stdout : ''}\n${typeof result?.stderr === 'string' ? result.stderr : ''}`;
   const patterns = safeCommand === 'npx' ? WRANGLER_FAILURE_PATTERNS
-    : safeCommand === 'ssh' ? SSH_FAILURE_PATTERNS : [];
+    : safeCommand === 'ssh' ? SSH_FAILURE_PATTERNS : safeCommand === 'gh' ? GITHUB_FAILURE_PATTERNS : [];
   const classification = patterns.find(([pattern]) => pattern.test(output))?.[1] ?? 'command_failed';
   const exitCode = Number.isInteger(result?.status) ? result.status : 'unknown';
   return `${classification}:${safeCommand}:${exitCode}`;
