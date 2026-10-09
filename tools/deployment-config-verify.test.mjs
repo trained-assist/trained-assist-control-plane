@@ -53,6 +53,6 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sandbox3.vars.PILOT_ENABLED, 'false');
     assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'false');
     assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, undefined);
-    assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, 'eu-vm-agent-run');
+    assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, 'dynamic-ip-azure-agent-run');
     assert.ok(sharedTelegram.vars.RUN_SPEC_REPOSITORY);
 });
