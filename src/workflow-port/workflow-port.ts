@@ -433,7 +433,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
           else if (outcome.state === 'pending') nativeStopState = 'pending';
           else if (outcome.state === 'stopped' && context.runId !== null) {
             const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: attempt.id, runId: context.runId,
-              ownerGeneration: attempt.generation, state: outcome.result.outcome, exitObserved: true };
+              ownerGeneration: attempt.generation, state: outcome.result.outcome, exitObserved: outcome.result.exitObserved,
+              ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
             if (attempt.finished_at === null) {
               const runOutcome = outcome.result.outcome === 'succeeded' ? 'success' : outcome.result.outcome;
               await this.store.finishRun(attempt.id, runOutcome, { errorText: opts.reason ?? 'native_stop_confirmed' });
@@ -473,7 +474,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // Активная попытка завершается как отменённая пользователем.
     if (confirmed.cancelled) {
       for (const attempt of this.externalStop ? unsettled : active ? [active] : []) {
-        if (attempt.finished_at !== null) continue;
+        const currentAttempt = await this.store.getRun(attempt.id);
+        if (!currentAttempt || currentAttempt.finished_at !== null) continue;
         await this.store.finishRun(attempt.id, 'cancelled', { errorText: opts.reason ?? null });
       }
     }
@@ -526,7 +528,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
       if (!await matches()) return unresolved;
       const observed: NativeStopEvidence = { taskId, profileId: target.profileId,
         attemptId: attempt.attemptId, runId: attempt.runId, ownerGeneration: attempt.ownerGeneration,
-        state, exitObserved: true };
+        state, exitObserved: outcome.result.exitObserved,
+        ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
       if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, observed)) return unresolved;
       nativeStops.push(observed);
     }
@@ -625,14 +628,16 @@ export class CfWorkflowPort implements WorkflowPortApi {
       if (!Array.isArray(payload?.nativeStops)) continue;
       for (const value of payload.nativeStops) {
         const proof = value as NativeStopEvidence | null;
-        if (!proof || proof.taskId !== taskId || proof.profileId !== task.profile_id || proof.exitObserved !== true
+        if (!proof || proof.taskId !== taskId || proof.profileId !== task.profile_id
+          || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed'))
           || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
           || !isRunnerRunId(proof.runId)
           || !runs.some(run => run.id === proof.attemptId && run.task_id === taskId && run.session_id === proof.runId
             && run.generation === proof.ownerGeneration && run.finished_at !== null
             && ['success', 'failed', 'cancelled'].includes(run.status))) continue;
         proofs.set(proof.attemptId, { taskId, profileId: task.profile_id, attemptId: proof.attemptId,
-          runId: proof.runId, ownerGeneration: proof.ownerGeneration, state: proof.state, exitObserved: true });
+          runId: proof.runId, ownerGeneration: proof.ownerGeneration, state: proof.state, exitObserved: proof.exitObserved,
+          ...(proof.preAdmissionRefusal === true ? { preAdmissionRefusal: true } : {}) });
       }
     }
     return [...proofs.values()];
@@ -668,7 +673,9 @@ export class CfWorkflowPort implements WorkflowPortApi {
           nativeStopState: outcome.state === 'rejected' ? 'rejected' : 'unknown' };
       }
       const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: run.id,
-        runId: run.session_id, ownerGeneration: run.generation, state: outcome.result.outcome, exitObserved: true };
+        runId: run.session_id, ownerGeneration: run.generation, state: outcome.result.outcome,
+        exitObserved: outcome.result.exitObserved,
+        ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
       if (run.finished_at === null) {
         const runOutcome = outcome.result.outcome === 'succeeded' ? 'success' : outcome.result.outcome;
         await this.store.finishRun(run.id, runOutcome, { errorText: reason ?? 'terminal_runner_reconciled' });
