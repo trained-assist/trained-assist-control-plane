@@ -12,7 +12,7 @@ Enable explicitly with `ROUTER_SELECTOR=communication_v1`. Unset keeps the exist
 - `COMMUNICATION_WRITER_TIMEOUT_MS`: writer MCP deadline; default 10000. With the 5000 ms health probe, defaults leave room within a 60000 ms gateway request deadline. Longer configured calls need a corresponding ingress budget or asynchronous orchestration.
 - `ROUTER_LLM_BUDGET`: permitted calls, default 2 in v1 (selector plus writer).
 - `ROUTER_CONTINUATION_ENABLED=true`: allow Output to start the accepted agent task.
-- `RUNNER_API_URL`, `RUNNER_API_KEY`: existing Runner adapter configuration. Missing configuration gives an explicit `runner_not_configured` dispatch refusal.
+- `RUNNER_API_SERVICE`, `RUNNER_API_KEY`: private service binding and scoped Runner credential. Missing configuration gives an explicit `runner_not_configured` dispatch refusal.
 - `ROUTER_AGENT_ENGINE`: host-selected Runner engine, default `opencode`. Set to an engine advertised by the actual Runner, e.g. `dynamic-ip-azure-agent-run`; it is not chosen by the gateway or classifier. `continuation.executor` reports this configured engine. The legacy route decision/work-order executor field remains the terminal-agent annotation.
 - `PRINCIPAL_SECRET`: existing scoped HMAC authentication. The principal must have `tasks:read` and `tasks:control` for v1 `/route` because selection/result/dispatch mutate Task Store.
 - `ROUTER_GRANTS`: existing principal-keyed capability/integration grants. No permissions are accepted from message text.

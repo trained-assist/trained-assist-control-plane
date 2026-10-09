@@ -141,16 +141,19 @@ describe('profile-scoped Runner readiness route', () => {
   const profileId = 'integration-telegram-ux-v1';
   const principalId = profileId;
   const secret = 'profile-runner-health-test-secret';
-  const runnerUrl = TELEGRAM_UX_SANDBOX.runnerMockTestUrl;
+  const runnerService = { fetch: async (request: Request) => {
+    const body = request.method === 'GET' ? undefined : await request.clone().text();
+    return fetch(request.url, { method: request.method, headers: request.headers,
+      ...(request.signal ? { signal: request.signal } : {}), ...(body ? { body } : {}) });
+  } };
   const bindings = {
     DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
     PRINCIPAL_SECRET_TELEGRAM_UX: secret,
-    RUNNER_API_URL: runnerUrl,
-    RUNNER_API_URL_TELEGRAM_UX: runnerUrl,
+    RUNNER_API_SERVICE: runnerService,
     RUNNER_API_KEY_TELEGRAM_UX: 'scoped-runner-key',
     RUNNER_API_KEY: 'different-global-key',
     RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [profileId]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX',
-      runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX', hostMcpBinding: 'registry-mcp-test-160-read' } }),
+      hostMcpBinding: 'registry-mcp-test-160-read' } }),
     MCP_TEST_AUTH_TOKEN: 'host-discovery-test-token',
   } as unknown as Env;
 
@@ -177,8 +180,8 @@ describe('profile-scoped Runner readiness route', () => {
   it('uses the durable profile scoped key for a read-only status probe and caches briefly', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const requestedUrl = new URL(String(input));
-      expect(requestedUrl.origin).toBe(new URL(runnerUrl).origin);
-      expect(requestedUrl.pathname).toMatch(/^\/runner-mcp-test\/v1\/runs\/health-probe-[0-9a-f-]+\/status$/);
+      expect(requestedUrl.origin).toBe('https://runner-api.internal');
+      expect(requestedUrl.pathname).toMatch(/^\/v1\/runs\/health-probe-[0-9a-f-]+\/status$/);
       expect(init?.method).toBe('GET');
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer scoped-runner-key');
@@ -197,7 +200,7 @@ describe('profile-scoped Runner readiness route', () => {
   it('reports rejected credentials without exposing Runner response text', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 11_000);
-    const targetBindings = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: runnerUrl } as unknown as Env;
+    const targetBindings = bindings as unknown as Env;
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'UNAUTHORIZED', message: 'secret diagnostic text' } }, { status: 401 })));
     const response = await request(['tasks:read'], secret, targetBindings);
     expect(response.status).toBe(200);
@@ -209,8 +212,7 @@ describe('profile-scoped Runner readiness route', () => {
   it('logs sanitized upstream host, status, and duration without URL path or response details', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 30_000);
-    const privateUrl = 'https://runner.example.test/private/base?token=private-url-token';
-    const targetBindings = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: runnerUrl, RUNNER_API_URL: privateUrl } as unknown as Env;
+    const targetBindings = bindings as unknown as Env;
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: { code: 'UPSTREAM_DOWN', message: 'private response detail' },
     }, { status: 503 })));
@@ -228,35 +230,31 @@ describe('profile-scoped Runner readiness route', () => {
     const event = JSON.parse(serialized!) as Record<string, unknown>;
     expect(event).toMatchObject({
       event: 'runner.profile_health_probe', profileId, runnerApi: 'unreachable',
-      reason: 'runner_unavailable', upstreamHost: new URL(runnerUrl).hostname, upstreamStatusCode: 503,
+      reason: 'runner_unavailable', upstreamHost: 'cloudflare-service-binding', upstreamStatusCode: 503,
       timedOut: false,
     });
     expect(event.durationMs).toEqual(expect.any(Number));
     expect(String(event.durationMs)).not.toBe('');
-    expect(serialized).not.toContain('/runner-mcp-test');
-    expect(serialized).not.toContain('/private/base');
-    expect(serialized).not.toContain('private-url-token');
+    expect(serialized).not.toContain('runner-api.internal');
     expect(serialized).not.toContain('private response detail');
     expect(serialized).not.toContain('scoped-runner-key');
   });
 
-  it('reports only boolean binding readiness when the trusted Runner URL is missing', async () => {
-    const targetBindings = { ...bindings, RUNNER_API_URL: undefined, RUNNER_API_URL_TELEGRAM_UX: undefined } as unknown as Env;
+  it('reports only boolean binding readiness when the Runner service binding is missing', async () => {
+    const targetBindings = { ...bindings, RUNNER_API_SERVICE: undefined } as unknown as Env;
     const response = await request(['tasks:read'], secret, targetBindings);
     expect(response.status).toBe(503);
     const body = await response.json() as Record<string, any>;
     expect(body).toEqual({
       error: 'runner not configured', reasonCode: 'runner_not_configured',
       readiness: {
-        runnerUrlConfigured: false,
-        profileRunnerUrlBindingConfigured: false,
+        runnerServiceBindingConfigured: false,
         scopedRunnerKeyConfigured: true,
         scopedRunnerKeyDistinctFromGlobal: true,
         profileMappingConfigured: true,
         requiredMcpAuthConfigured: true,
       },
     });
-    expect(JSON.stringify(body)).not.toContain(runnerUrl);
     expect(JSON.stringify(body)).not.toContain('scoped-runner-key');
     expect(JSON.stringify(body)).not.toContain('host-discovery-test-token');
   });

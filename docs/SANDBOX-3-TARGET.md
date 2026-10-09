@@ -22,11 +22,13 @@ credentials and checks the expected Cloudflare account before deploying. It
 pins the source SHA in `BUILD_SHA` and performs the read-only `/healthz` and
 anonymous private-catalogue smoke.
 
-The config declares Agent API-owned engine/profile selection, but deliberately
-has no Agent API URL or credentials yet. It remains fail-closed:
+The config declares Agent API-owned engine/profile selection and a private service
+binding to `trained-assist-runner-api-sandbox3`; the API key and delegation secret
+remain absent. It remains fail-closed:
 `PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, `ROUTER_AGENT_ALLOWED=false`. No
-service bindings, principal secrets, registration, intake, Runner/provider
-calls, or Telegram delivery are configured. Do not enable execution until
+principal secrets, registration, intake, Runner/provider calls, or Telegram
+delivery are configured. The service binding is inert until its target Worker is
+deployed and CP credentials are provisioned. Do not enable execution until
 profile delegation and bounded reservation/settlement acceptance are complete.
 Do not bind the shared Telegram UX D1 or the staging/production D1 databases
 here.
@@ -49,10 +51,10 @@ until separate observed tests prove them. In the initial disabled deployment,
 the expected result is `BLOCKED`: the Telegram sandbox-3 gateway still points
 to the shared CP, and Agent API credentials and execution flags are absent.
 
-The declared separate Runner route for this lane is
-`https://169-58-15-230.sslip.io/runner-sandbox3`, backed by
-`agent-runner-api-sandbox3.service` (port 18883). The preflight requires this exact
-URL; it does not prove the route is provisioned or the API is reachable. A
-`CONTROL_PLANE_SERVICE` binding takes precedence in the Telegram client, so any
-such binding must also name this lane's CP Worker. Preflight errors are allowlisted
-and cannot print arbitrary transport exception text.
+The declared Runner API service binding is
+`RUNNER_API_SERVICE → trained-assist-runner-api-sandbox3`. It does not expose the
+executor address to CP. The Runner API Worker owns placement and dispatch to the
+France execution worker. A `CONTROL_PLANE_SERVICE` binding takes precedence in
+the Telegram client, so any such binding must also name this lane's CP Worker.
+Preflight errors are allowlisted and cannot print arbitrary transport exception
+text.

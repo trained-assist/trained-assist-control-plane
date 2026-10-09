@@ -6,7 +6,7 @@ const TG_WORKER = 'trained-assist-tg-sandbox3';
 const CP_URL = `https://${CP_WORKER}.skillset-apply.workers.dev`;
 const D1_ID = '1e1b8108-9186-43e2-8e50-436598233165';
 const WORKFLOW = 'ta-cp-sandbox3-task-workflow';
-export const SANDBOX3_RUNNER_URL = 'https://169-58-15-230.sslip.io/runner-sandbox3';
+export const SANDBOX3_RUNNER_API_SERVICE = 'trained-assist-runner-api-sandbox3';
 const OTHER_GATEWAYS = ['trained-assist-tg-ux-sandbox', 'trained-assist-tg-shturman-sandbox'];
 
 const binding = (bindings, name) => bindings.find(item => item.name === name);
@@ -52,7 +52,8 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
       && value(tgBindings, 'CONTROL_PLANE_PROFILE') === 'integration-sandbox3-v1' ? 'PASS' : 'BLOCKED',
     cpPrincipalSecret: binding(cpBindings, 'PRINCIPAL_SECRET_SANDBOX3')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     tgPrincipalSignature: binding(tgBindings, 'CONTROL_PLANE_PRINCIPAL_SIGNATURE')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
-    agentApiBindings: value(cpBindings, 'RUNNER_API_URL') === SANDBOX3_RUNNER_URL
+    agentApiBindings: binding(cpBindings, 'RUNNER_API_SERVICE')?.type === 'service'
+      && binding(cpBindings, 'RUNNER_API_SERVICE')?.service === SANDBOX3_RUNNER_API_SERVICE
       && binding(cpBindings, 'RUNNER_API_KEY_AGENT_API')?.type === 'secret_text'
       && binding(cpBindings, 'RUNNER_PROFILE_DELEGATION_SECRET')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     executionEnabled: value(cpBindings, 'PREVIEW_ONLY') === 'false'

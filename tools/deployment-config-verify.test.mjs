@@ -38,13 +38,13 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sandbox3.d1_databases[0].database_id, '1e1b8108-9186-43e2-8e50-436598233165');
     assert.equal(sandbox3.workflows.length, 1);
     assert.equal(sandbox3.workflows[0].name, 'ta-cp-sandbox3-task-workflow');
-    assert.deepEqual(sandbox3.services ?? [], []);
+    assert.deepEqual(sandbox3.services ?? [], [{ binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-sandbox3' }]);
     assert.deepEqual(sandbox3.r2_buckets ?? [], []);
     assert.equal(sandbox3.vars.DEPLOYMENT_ENV, 'sandbox3');
     assert.equal(sandbox3.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'sandbox3-agent-api-principal');
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_TENANT_ID, 'sandbox3-acceptance-a-20261008');
-    assert.equal(sandbox3.vars.RUNNER_API_URL, 'https://169-58-15-230.sslip.io/runner-sandbox3');
+    assert.equal(sandbox3.vars.RUNNER_API_URL, undefined);
     assert.equal(sandbox3.vars.SANDBOX_RUNNER_MOCK_PROBE_ENABLED, 'true');
     assert.equal(sandbox3.vars.SANDBOX_RUNNER_MOCK_PROBE_PROFILE, 'integration-sandbox3-v1');
     assert.equal(sandbox3.vars.RUNNER_API_KEY_AGENT_API, undefined);
@@ -53,6 +53,10 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sandbox3.vars.PILOT_ENABLED, 'false');
     assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'false');
     assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, undefined);
+    assert.equal(sharedTelegram.services.find((entry) => entry.binding === 'RUNNER_API_SERVICE')?.service,
+      'trained-assist-runner-api-telegram-ux-v1-sandbox');
+    assert.equal(sharedTelegram.vars.RUNNER_API_URL_TELEGRAM_UX, undefined);
+    assert.equal(sharedTelegram.vars.SANDBOX_RUNNER_MOCK_TEST_URL, undefined);
     assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, 'dynamic-ip-azure-agent-run');
     assert.ok(sharedTelegram.vars.RUN_SPEC_REPOSITORY);
 });

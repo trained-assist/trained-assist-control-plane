@@ -34,10 +34,10 @@ import { EnvelopeConflictError, PrincipalForbiddenError, PrincipalUnauthorizedEr
 import { AnswerConflictError, AnswerRejectedError } from './taskstore/errors';
 import type { CredentialReadyEvent, CredentialRequirement } from './awaiting/credential-ready';
 import { runnerAdapterOf } from './runner-adapter';
-import { RunnerApiAdapter } from './runner-adapter/runner-api-adapter';
+import { RunnerApiAdapter, type RunnerApiServiceBinding } from './runner-adapter/runner-api-adapter';
 import { RunnerConflictError, RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
-import { ProfileRuntimeConfigurationError, profileRunnerUrlOf, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from './run-spec/profile-runtime';
+import { ProfileRuntimeConfigurationError, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
@@ -127,10 +127,8 @@ export interface Env {
    */
   ERROR_WATCHER_URL?: string;
   ERROR_WATCHER_KEY?: string;
-  /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
-  RUNNER_API_URL?: string;
-  RUNNER_API_URL_TELEGRAM_UX?: string;
-  SANDBOX_RUNNER_MOCK_TEST_URL?: string;
+  /** Private service binding to the serverless Agent Runner API Worker. */
+  RUNNER_API_SERVICE?: RunnerApiServiceBinding;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   RUNNER_API_KEY_AGENT_API?: string;
@@ -285,28 +283,26 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
 
 const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
 
-function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
+function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerApiConfigured: boolean; bindingIssue: string | null } {
   if (env.DEPLOYMENT_ENV === 'sandbox3' && env.SANDBOX_RUNNER_MOCK_PROBE_PROFILE === SANDBOX3.profileId) {
-    if (env.RUNNER_API_URL !== SANDBOX3.runnerUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
-    if (!env.RUNNER_API_KEY_AGENT_API?.trim()) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
-    return { adapter: new RunnerApiAdapter(SANDBOX3.runnerUrl, env.RUNNER_API_KEY_AGENT_API), runnerBaseUrl: SANDBOX3.runnerUrl, bindingIssue: null };
+    if (!env.RUNNER_API_SERVICE) return { adapter: null, runnerApiConfigured: false, bindingIssue: 'runner_service_binding_missing' };
+    if (!env.RUNNER_API_KEY_AGENT_API?.trim()) return { adapter: null, runnerApiConfigured: true, bindingIssue: 'mock_key_missing' };
+    return { adapter: runnerAdapterOf({ RUNNER_API_SERVICE: env.RUNNER_API_SERVICE,
+      RUNNER_API_KEY: env.RUNNER_API_KEY_AGENT_API }), runnerApiConfigured: true, bindingIssue: null };
   }
-  const baseUrl = env.SANDBOX_RUNNER_MOCK_TEST_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
-  if (!baseUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_missing' };
-  if (!apiKey) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
-  if (baseUrl !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
-    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
-  }
-  return { adapter: new RunnerApiAdapter(TELEGRAM_UX_SANDBOX.runnerMockTestUrl, apiKey),
-    runnerBaseUrl: TELEGRAM_UX_SANDBOX.runnerMockTestUrl, bindingIssue: null };
+  if (!env.RUNNER_API_SERVICE) return { adapter: null, runnerApiConfigured: false, bindingIssue: 'runner_service_binding_missing' };
+  if (!apiKey) return { adapter: null, runnerApiConfigured: true, bindingIssue: 'mock_key_missing' };
+  return { adapter: runnerAdapterOf({ RUNNER_API_SERVICE: env.RUNNER_API_SERVICE, RUNNER_API_KEY: apiKey }),
+    runnerApiConfigured: true, bindingIssue: null };
 }
 
-async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outcome: string; httpStatus: number | null }> {
+async function sandboxRunnerReachability(service: RunnerApiServiceBinding): Promise<{ outcome: string; httpStatus: number | null }> {
   try {
-    const response = await fetch(`${runnerBaseUrl}/v1/capabilities`, {
+    const request = new Request('https://runner-api.internal/v1/capabilities', {
       method: 'GET', headers: { 'cache-control': 'no-store' }, signal: AbortSignal.timeout(5000),
     });
+    const response = await service.fetch(request);
     return { outcome: response.status === 401 ? 'reachable_auth_required' : 'http_response', httpStatus: response.status };
   } catch {
     return { outcome: 'fetch_failed', httpStatus: null };
@@ -365,11 +361,6 @@ const diagnosticsTokenMatches = (request: Request, configured: string | undefine
 
 const healthCatalogueCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
 const profileRunnerHealthCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
-
-function safeRunnerHost(rawUrl: string | undefined): string | null {
-  if (!rawUrl) return null;
-  try { return new URL(rawUrl).hostname || null; } catch { return null; }
-}
 
 function runnerProbeStatusCode(error: unknown): number | null {
   if (error instanceof RunnerUnavailableError || error instanceof RunnerConflictError || error instanceof RunnerNotFoundError) {
@@ -1298,11 +1289,10 @@ const store = new TaskStore(env.DB);
         if (principal.profileId !== TELEGRAM_UX_PROFILE) return diagnosticsJson({ error: 'profile not supported' }, 404);
         const now = Date.now();
         const probeStartedAt = Date.now();
-        const upstreamUrl = profileRunnerUrlOf(env as unknown as Record<string, string | undefined>, principal.profileId);
-        const cacheKey = `${principal.profileId}:${upstreamUrl ?? ''}`;
+        const cacheKey = `${principal.profileId}:${Boolean(env.RUNNER_API_SERVICE)}`;
         const cached = profileRunnerHealthCache.get(cacheKey);
         if (cached && cached.expiresAt > now) return diagnosticsJson({ ...cached.summary, cached: true });
-        const upstreamHost = safeRunnerHost(upstreamUrl ?? undefined);
+        const upstreamHost = 'cloudflare-service-binding';
         let upstreamStatusCode: number | null = null;
         let timedOut = false;
         let summary: Record<string, unknown>;
@@ -1350,7 +1340,6 @@ const store = new TaskStore(env.DB);
                 const entry = mapping as Record<string, unknown>;
                 profileMappingConfigured = entry.policy === 'generic_text_v1'
                   && entry.runnerKeyBinding === 'RUNNER_API_KEY_TELEGRAM_UX'
-                  && (entry.runnerUrlBinding === undefined || entry.runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX')
                   && (entry.hostMcpBinding === undefined || entry.hostMcpBinding === 'registry-mcp-test-160-read');
                 hostMcpRequired = entry.hostMcpBinding === 'registry-mcp-test-160-read';
               }
@@ -1360,8 +1349,7 @@ const store = new TaskStore(env.DB);
               runnerApi: 'unreachable', reason: 'runner_not_configured', upstreamHost, upstreamStatusCode,
               durationMs: Date.now() - probeStartedAt, timedOut });
             return diagnosticsJson({ error: 'runner not configured', reasonCode: 'runner_not_configured', readiness: {
-              runnerUrlConfigured: Boolean(upstreamUrl),
-              profileRunnerUrlBindingConfigured: Boolean(env.RUNNER_API_URL_TELEGRAM_UX?.trim()),
+              runnerServiceBindingConfigured: Boolean(env.RUNNER_API_SERVICE),
               scopedRunnerKeyConfigured: Boolean(scopedRunnerKey),
               scopedRunnerKeyDistinctFromGlobal: Boolean(scopedRunnerKey && scopedRunnerKey !== env.RUNNER_API_KEY),
               profileMappingConfigured,
@@ -1413,8 +1401,8 @@ const store = new TaskStore(env.DB);
             buildSha: env.BUILD_SHA ?? null,
           }, ok ? 200 : 502);
         } catch (error) {
-          const runnerReachability = binding.runnerBaseUrl
-            ? await sandboxRunnerReachability(binding.runnerBaseUrl)
+          const runnerReachability = binding.runnerApiConfigured && env.RUNNER_API_SERVICE
+            ? await sandboxRunnerReachability(env.RUNNER_API_SERVICE)
             : { outcome: 'not_checked', httpStatus: null };
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
             runnerErrorCode: sandboxRunnerProbeErrorCode(error),

@@ -21,7 +21,9 @@ concurrency:
 
 jobs:
   bootstrap:
-    if: github.ref == 'refs/heads/main'
+    # Retired: this workflow provisions the old VM-hosted Node Runner API over SSH.
+    # Current Runner API secrets are owned by the Cloudflare Worker deployment.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: sandbox

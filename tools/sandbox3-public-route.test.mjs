@@ -12,7 +12,7 @@ test('public probe proves TLS route and auth refusal without carrying credential
   assert.equal(result.authenticatedContractVerified, false);
   assert.equal(JSON.stringify(result).includes('private-secret'), false);
   for (const { url, options } of calls) {
-    assert.ok(url.startsWith('https://169-58-15-230.sslip.io/runner-sandbox3/'));
+    assert.ok(url.startsWith('https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev/'));
     assert.equal(options.redirect, 'error');
     assert.equal(options.headers.authorization, undefined);
   }

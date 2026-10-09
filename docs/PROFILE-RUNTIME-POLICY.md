@@ -1,5 +1,11 @@
 # Trusted profile runtime policy
 
+> **Bootstrap note:** the CP-to-Runner runtime now uses `RUNNER_API_SERVICE` (a private
+> Cloudflare service binding). The old `telegram-ux-sandbox-test-pass.yml` workflow and
+> sections below that provision the Node API over SSH are retired and disabled. Provision
+> API-key hashes and France worker credentials in the per-lane Cloudflare Runner API secret
+> store; see the Runner repository's `docs/CLOUDFLARE-RUNNER-API.md`.
+
 This opt-in host policy separates profile identity from Agent API execution. A
 durable task profile identifies the tenant workspace; the Control Plane
 authenticates as its service principal and signs a short-lived tenant/profile
@@ -10,7 +16,7 @@ or other executor.
 
 Enable delegated routing in a sandbox Worker with these bindings:
 
-- `RUNNER_API_URL`: trusted Agent API endpoint.
+- `RUNNER_API_SERVICE`: private Cloudflare service binding to the Runner API Worker.
 - `RUNNER_API_KEY_AGENT_API`: API service-principal key. It authenticates CP
   to the Agent API; it does not select a profile or executor.
 - `RUNNER_PROFILE_DELEGATION_SECRET`: matches the Agent API delegation secret.
@@ -20,11 +26,10 @@ Enable delegated routing in a sandbox Worker with these bindings:
   configured engine chain.
 
 For the sandbox profile `integration-telegram-ux-v1`, the trusted profile
-override may instead select `RUNNER_API_URL_TELEGRAM_UX`. The value is pinned to
-the approved VM2 sandbox API base
-`https://169-58-15-230.sslip.io/runner-mcp-test`; only that profile uses it.
-Other profiles keep `RUNNER_API_URL`. The read-only profile-health probe uses
-the same resolved URL and logs only the hostname, never the path or query.
+override selects its dedicated API key. All profiles use the same private
+`RUNNER_API_SERVICE` binding; the service owns executor placement and the CP
+configuration contains no executor or VM URL. The read-only profile-health
+probe uses that service binding.
 
 ## Ownership and routing order
 
@@ -288,7 +293,11 @@ The artifact records only fixed component statuses and the reviewed operator
 revision. A file owner or target mismatch fails closed and needs investigation.
 This operation does not prove a fresh Runner lane or full Telegram readiness.
 
-### Run and inspect the CP → Runner sandbox E2E
+### Retired VM-hosted Runner bootstrap
+
+The commands and evidence procedure below describe the former SSH-based VM Runner API
+bootstrap. Its GitHub Actions workflow is disabled; do not dispatch it. The new Worker API
+requires its own deployment and secrets before a CP-to-Runner live test can pass.
 
 This workflow is the quickest end-to-end check of CP-to-Runner API auth and the
 Runner `mock-test` contract. It is separate from the Telegram webhook E2E below.

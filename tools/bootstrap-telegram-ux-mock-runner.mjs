@@ -313,7 +313,10 @@ function validateSandbox3Config(config) {
     || config.d1_databases?.length !== 1 || config.d1_databases[0].binding !== 'DB'
     || config.d1_databases[0].database_id !== '1e1b8108-9186-43e2-8e50-436598233165'
     || config.workflows?.length !== 1 || config.workflows[0].name !== 'ta-cp-sandbox3-task-workflow'
-    || config.workflows[0].binding !== 'TASK_WORKFLOW') fail('sandbox3_bootstrap_config_mismatch');
+    || config.workflows[0].binding !== 'TASK_WORKFLOW'
+    || config.services?.filter(item => item.binding === 'RUNNER_API_SERVICE').length !== 1
+    || config.services.find(item => item.binding === 'RUNNER_API_SERVICE')?.service !== 'trained-assist-runner-api-sandbox3'
+    || config.vars?.RUNNER_API_URL !== undefined) fail('sandbox3_bootstrap_config_mismatch');
 }
 
 const shellQuote = value => `'${value.replaceAll("'", "'\"'\"'")}'`;

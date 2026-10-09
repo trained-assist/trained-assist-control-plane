@@ -7,7 +7,7 @@ export const TELEGRAM_UX_SANDBOX = {
   accountEmail: 'typeformowner@gmail.com',
   principalId: 'integration-telegram-ux-v1',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
-  runnerMockTestUrl: 'https://169-58-15-230.sslip.io/runner-mcp-test',
+  runnerApiService: 'trained-assist-runner-api-telegram-ux-v1-sandbox',
 } as const;
 
 export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
@@ -58,16 +58,14 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   if (config.vars?.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true') {
     throw new Error('sandbox_mock_probe_gate_mismatch');
   }
-  if (config.vars?.SANDBOX_RUNNER_MOCK_TEST_URL !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
-    throw new Error('sandbox_mock_runner_url_mismatch');
-  }
-  if (config.vars?.RUNNER_API_URL_TELEGRAM_UX !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
-    throw new Error('sandbox_telegram_runner_url_mismatch');
+  if (config.vars?.RUNNER_API_URL !== undefined || config.vars?.RUNNER_API_URL_TELEGRAM_UX !== undefined
+    || config.vars?.SANDBOX_RUNNER_MOCK_TEST_URL !== undefined) {
+    throw new Error('sandbox_direct_runner_url_forbidden');
   }
   let profileOverrides: Record<string, any> = {};
   try { profileOverrides = JSON.parse(config.vars?.RUN_SPEC_PROFILE_OVERRIDES ?? '{}'); }
   catch { throw new Error('sandbox_profile_runner_url_mapping_invalid'); }
-  if (profileOverrides[TELEGRAM_UX_SANDBOX.principalId]?.runnerUrlBinding !== 'RUNNER_API_URL_TELEGRAM_UX') {
+  if (profileOverrides[TELEGRAM_UX_SANDBOX.principalId]?.runnerUrlBinding !== undefined) {
     throw new Error('sandbox_profile_runner_url_mapping_mismatch');
   }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
@@ -76,6 +74,7 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
     'COMMUNICATION_SERVICE:trained-assist-communication-v1-sandbox',
     'INGRESS_BUFFER:trained-assist-ingress-buffer-sandbox',
     'REGISTRY_MCP_HOST_SERVICE:trained-assist-mcp-host-test-160',
+    `RUNNER_API_SERVICE:${TELEGRAM_UX_SANDBOX.runnerApiService}`,
   ].sort();
   if (JSON.stringify(services) !== JSON.stringify(expectedServices)) throw new Error('sandbox_service_binding_mismatch');
   return true;

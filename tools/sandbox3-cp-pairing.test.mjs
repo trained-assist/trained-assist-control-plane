@@ -1,20 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal, SANDBOX3_PAIRING_SECRETS } from './sandbox3-cp-pairing.mjs';
+import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal, SANDBOX3_PAIRING_SECRETS, SANDBOX3_RUNNER_API_SERVICE } from './sandbox3-cp-pairing.mjs';
 const bindings = () => [
   ...Object.entries({ DEPLOYMENT_ENV: 'sandbox3', PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false', ROUTER_AGENT_ALLOWED: 'false',
-    RUNNER_API_URL: 'https://169-58-15-230.sslip.io/runner-sandbox3', SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
+    SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
     SANDBOX_RUNNER_MOCK_PROBE_PROFILE: 'integration-sandbox3-v1' }).map(([name, text]) => ({ name, text, type: 'plain_text' })),
   { name: 'PRINCIPAL_SECRET_SANDBOX3', type: 'secret_text' },
+  { name: 'RUNNER_API_SERVICE', type: 'service', service: SANDBOX3_RUNNER_API_SERVICE },
 ];
 test('pairing requires disabled execution, exact profile/route and unoccupied secret bindings', () => {
   assert.equal(verifySandbox3PairingBindings(bindings()), true);
   assert.throws(() => verifySandbox3PairingBindings([...bindings(), bindings()[0]]));
   for (const name of SANDBOX3_PAIRING_SECRETS) assert.throws(() => verifySandbox3PairingBindings([...bindings(), { name, type: 'secret_text' }]));
-  for (const [name, text] of [['DEPLOYMENT_ENV', 'production'], ['PILOT_ENABLED', 'true'], ['PREVIEW_ONLY', 'false'], ['RUNNER_API_URL', 'https://foreign.invalid'], ['SANDBOX_RUNNER_MOCK_PROBE_PROFILE', 'foreign']]) {
+  for (const [name, text] of [['DEPLOYMENT_ENV', 'production'], ['PILOT_ENABLED', 'true'], ['PREVIEW_ONLY', 'false'], ['SANDBOX_RUNNER_MOCK_PROBE_PROFILE', 'foreign']]) {
     assert.throws(() => verifySandbox3PairingBindings(bindings().map(binding => binding.name === name ? { ...binding, text } : binding)));
   }
   assert.throws(() => verifySandbox3PairingBindings(bindings().filter(binding => binding.name !== 'PRINCIPAL_SECRET_SANDBOX3')));
+  assert.throws(() => verifySandbox3PairingBindings([...bindings(), { name: 'RUNNER_API_URL', type: 'plain_text', text: 'https://vm.example.test' }]));
+  assert.throws(() => verifySandbox3PairingBindings(bindings().map(binding => binding.name === 'RUNNER_API_SERVICE' ? { ...binding, service: 'production-runner-api' } : binding)));
 });
 test('operator identity is read-only and restricted to the fixed sandbox profile', () => {
   const row = { profile_id: 'integration-sandbox3-v1', enabled: 1, scopes: '["tasks:read"]' };

@@ -380,7 +380,7 @@ describe('Task Store and Output ownership', () => {
     } as unknown as Workflow;
     const signature = await signPrincipal('selector-principal', 'test-principal-secret');
     const request = () => new Request('https://control.example.test/route', { method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature }, body: JSON.stringify({ taskId: id, continue: true }) });
-    const bindings = { DB: env.DB, TASK_WORKFLOW: workflow, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1', ROUTER_CONTINUATION_ENABLED: 'true', ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential', RUNNER_API_URL: 'https://runner.example.test', RUNNER_API_KEY: 'test-runner-credential' };
+    const bindings = { DB: env.DB, TASK_WORKFLOW: workflow, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1', ROUTER_CONTINUATION_ENABLED: 'true', ROUTER_AGENT_ENGINE: 'dynamic-ip-azure-agent-run', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential', RUNNER_API_SERVICE: { fetch: async () => Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 }) }, RUNNER_API_KEY: 'test-runner-credential' };
     const response = await worker.fetch(request(), bindings);
     expect(response.status).toBe(200);
     const body = await response.json() as { continuation: { runId: string } };

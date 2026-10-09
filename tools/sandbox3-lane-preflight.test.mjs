@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateSandbox3Lane, sandbox3FailureReason, SANDBOX3_RUNNER_URL } from './sandbox3-lane-preflight.mjs';
+import { evaluateSandbox3Lane, sandbox3FailureReason, SANDBOX3_RUNNER_API_SERVICE } from './sandbox3-lane-preflight.mjs';
 
 const plain = (name, text) => ({ name, type: 'plain_text', text });
 const state = (name, id, type = 'kv_namespace') => ({ name, type, id });
@@ -10,7 +10,7 @@ const ready = () => ({
     { name: 'DB', type: 'd1', id: '1e1b8108-9186-43e2-8e50-436598233165' },
     { name: 'TASK_WORKFLOW', type: 'workflow', workflow_name: 'ta-cp-sandbox3-task-workflow' },
     { name: 'PRINCIPAL_SECRET_SANDBOX3', type: 'secret_text' },
-    plain('RUNNER_API_URL', SANDBOX3_RUNNER_URL),
+    { name: 'RUNNER_API_SERVICE', type: 'service', service: SANDBOX3_RUNNER_API_SERVICE },
     { name: 'RUNNER_API_KEY_AGENT_API', type: 'secret_text' },
     { name: 'RUNNER_PROFILE_DELEGATION_SECRET', type: 'secret_text' },
     plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'), plain('ROUTER_AGENT_ALLOWED', 'true'),
@@ -95,12 +95,10 @@ test('service binding override cannot redirect a passing URL route to shared CP'
   assert.equal(evaluateSandbox3Lane(input).checks.tgRoute, 'BLOCKED');
 });
 
-test('Agent API binding must name the declared separate service route', () => {
+test('Agent API binding must name the dedicated Cloudflare Worker service', () => {
   const input = ready();
-  for (const url of ['https://169-58-15-230.sslip.io/runner-mcp-test', 'https://production.example.test', '']) {
-    input.cpBindings.find(item => item.name === 'RUNNER_API_URL').text = url;
-    assert.equal(evaluateSandbox3Lane(input).checks.agentApiBindings, 'BLOCKED');
-  }
+  input.cpBindings.find(item => item.name === 'RUNNER_API_SERVICE').service = 'trained-assist-runner-api-production';
+  assert.equal(evaluateSandbox3Lane(input).checks.agentApiBindings, 'BLOCKED');
 });
 
 test('preflight failures never emit arbitrary exception text', () => {

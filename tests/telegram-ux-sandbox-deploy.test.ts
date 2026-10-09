@@ -8,13 +8,13 @@ const config = {
   workers_dev: true,
   d1_databases: [{ database_name: TELEGRAM_UX_SANDBOX.databaseName, database_id: TELEGRAM_UX_SANDBOX.databaseId }],
   workflows: [{ name: TELEGRAM_UX_SANDBOX.workflowName }],
-  vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
-    RUNNER_API_URL_TELEGRAM_UX: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
-    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) },
+  vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX' } }) },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },
     { binding: 'INGRESS_BUFFER', service: 'trained-assist-ingress-buffer-sandbox' },
+    { binding: 'RUNNER_API_SERVICE', service: TELEGRAM_UX_SANDBOX.runnerApiService },
   ],
 };
 
@@ -58,10 +58,10 @@ describe('Telegram UX sandbox deploy guard', () => {
       .toThrow('sandbox_mock_probe_gate_mismatch');
   });
 
-  it('refuses a mock Runner URL outside the pinned API sandbox target', () => {
+  it('rejects direct Runner URLs in the Worker config', () => {
     expect(() => validateTelegramUxSandboxConfig({ ...config, vars: {
-      ...config.vars, SANDBOX_RUNNER_MOCK_TEST_URL: 'https://other.example/runner-mcp-test',
-    } })).toThrow('sandbox_mock_runner_url_mismatch');
+      ...config.vars, RUNNER_API_URL_TELEGRAM_UX: 'https://vm.example.test/runner',
+    } })).toThrow('sandbox_direct_runner_url_forbidden');
   });
 
   it('derives the same HMAC signature for the configured principal deterministically', async () => {

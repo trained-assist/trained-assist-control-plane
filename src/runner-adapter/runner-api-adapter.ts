@@ -4,8 +4,8 @@
  * Контракт — SERVERLESS-AGENT-API.md и фактический HTTP API runner'а
  * (src/api/server.ts): POST /v1/runs, GET /v1/runs/{runId}/status|result|events|artifacts,
  * POST /v1/runs/{runId}/cancel; авторизация Bearer API key, идемпотентность —
- * заголовок Idempotency-Key. Ключ и URL приходят из env, в репозиторий не
- * попадают.
+ * заголовок Idempotency-Key. Ключ приходит из env, а адресуется через частный Cloudflare service binding;
+ * исполнитель и его URL остаются внутри Runner API.
  *
  * Идемпотентность: ключ попытки СТАБИЛЕН и вычисляется ДО отправки из
  * (userTaskId, generation) — повтор доставки того же ключа возвращает тот же
@@ -129,6 +129,12 @@ export function runnerArtifactRef(manifest: unknown): string {
 }
 
 export interface DelegatedProfile { profileId: string; principalId: string; tenantId: string; secret: string }
+
+export interface RunnerApiServiceBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
+const RUNNER_API_SERVICE_ORIGIN = 'https://runner-api.internal';
 
 export class RunnerApiAdapter {
   constructor(
@@ -291,7 +297,7 @@ export class RunnerApiAdapter {
  * сериализоваться в движок.
  */
 export function runnerAdapterOf(env: {
-  RUNNER_API_URL?: string;
+  RUNNER_API_SERVICE?: RunnerApiServiceBinding;
   RUNNER_API_KEY?: string;
   RUNNER_API_ENGINE_SELECTION?: string;
   RUNNER_PROFILE_DELEGATION_SECRET?: string;
@@ -314,8 +320,14 @@ export function runnerAdapterOf(env: {
     profileId: env.RUNNER_PROFILE_DELEGATED_ID!, principalId: env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID!,
     tenantId: env.RUNNER_PROFILE_DELEGATION_TENANT_ID!, secret: env.RUNNER_PROFILE_DELEGATION_SECRET!,
   } : undefined;
-  return env.RUNNER_API_URL && env.RUNNER_API_KEY
-    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY, fetch, selection, delegatedProfile)
+  if (!env.RUNNER_API_SERVICE || !env.RUNNER_API_KEY) return null;
+  const service = env.RUNNER_API_SERVICE;
+  const serviceFetch: typeof fetch = (input, init) => {
+    const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+    return service.fetch(request);
+  };
+  return env.RUNNER_API_SERVICE && env.RUNNER_API_KEY
+    ? new RunnerApiAdapter(RUNNER_API_SERVICE_ORIGIN, env.RUNNER_API_KEY, serviceFetch, selection, delegatedProfile)
     : null;
 }
 

@@ -1,4 +1,4 @@
-const BASE = 'https://169-58-15-230.sslip.io/runner-sandbox3';
+const BASE = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
 export async function verifySandbox3PublicRoute(fetchImpl = fetch) {
   try {
     const results = await Promise.allSettled(['/healthz', '/v1/capabilities'].map(path => fetchImpl(`${BASE}${path}`, {
