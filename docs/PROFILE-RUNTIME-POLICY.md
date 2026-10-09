@@ -146,6 +146,52 @@ This procedure does not deploy Telegram Worker secrets; the gateway's
 precomputed signature must be sourced from the same principal secret and
 verified independently before Telegram live acceptance.
 
+### Run and inspect the CP → Runner sandbox E2E
+
+This workflow is the quickest end-to-end check of CP-to-Runner API auth and the
+Runner `mock-test` contract. It is separate from the Telegram webhook E2E below.
+Dispatch it from protected `main`:
+
+```sh
+gh workflow run telegram-ux-sandbox-test-pass.yml \
+  --repo trained-assist/trained-assist-control-plane --ref main
+gh run list --repo trained-assist/trained-assist-control-plane \
+  --workflow telegram-ux-sandbox-test-pass.yml --limit 5
+gh run watch RUN_ID --repo trained-assist/trained-assist-control-plane --exit-status
+gh run download RUN_ID --repo trained-assist/trained-assist-control-plane \
+  --name telegram-ux-sandbox-test-pass-RUN_ID
+```
+
+Before dispatch, the GitHub `sandbox` environment must have the four secrets
+listed above. `CF_API_TOKEN` must authenticate to account
+`d740a05e9442c1d0feacae2dfc673e93` and have D1 migration and Worker deployment
+permissions. `wrangler whoami` proves the account only; Cloudflare error `7403`
+at `sandboxMigrations` means the token lacks D1 access. Check secret **names**
+in GitHub; never print values while diagnosing credentials.
+
+Accept a run only when its `sandbox-bootstrap-evidence.json` artifact has
+`outcome: "passed"`, all `boundaries` are `PASS`, and the probe reports
+`runnerState: "succeeded"`, `answer: "pong"`,
+`runnerOutcome: "succeeded"`, and `runnerAdmissionPersisted: true`. Also verify
+`cpTaskCreated: false` and `workerOrModelCalled: false`. The artifact is
+sanitized: it includes resource names, source SHA and the synthetic Runner run
+ID, never the derived Runner key or CP principal secret. Link the run and SHA
+from the acceptance issue/PR.
+
+Cloudflare may briefly serve the previous Worker version after deploy. If the
+only failed boundary is `sandboxPostDeployLiveness` with
+`sandbox_worker_build_sha_mismatch`, read the sandbox `/healthz` until
+`buildSha` matches the run's source SHA, then rerun the workflow. Its named D1
+migrations and deploy are idempotent. If a failure occurs at or after
+`runnerPrincipalProvisioning`, inspect the original run and artifact first:
+Runner may already have persisted the synthetic admission.
+
+This E2E proves the CP → Runner `mock-test` API path only. It does not post a
+Telegram update, create a CP task/Workflow, call a real Worker/model/MCP tool,
+or prove Telegram delivery. For the separate real Telegram ingress flow, use
+the bot repository's [integration E2E runbook](https://github.com/trained-assist/trained-assist-tg-bot/blob/main/docs/INTEGRATION-V1-SMOKE.md)
+and its delivery-owner acceptance gate.
+
 The legacy generic preset inherits the global repository, cwd, result policy and
 bounded runtime limits, but sets declared outputs, host input references and
 environment allowlist to empty arrays and disables policy-wide MCP. In Agent API
