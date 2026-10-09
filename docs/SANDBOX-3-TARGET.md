@@ -30,3 +30,20 @@ calls, or Telegram delivery are configured. Do not enable execution until
 profile delegation and bounded reservation/settlement acceptance are complete.
 Do not bind the shared Telegram UX D1 or the staging/production D1 databases
 here.
+
+## Read-only lane preflight
+
+`npm run sandbox:preflight:sandbox3` checks the deployed CP and Telegram
+bindings, verifies the CP D1 has no tasks or executions and only the scoped
+`integration-sandbox3-v1` admission principal, and
+compares Telegram state namespace IDs with the two older test gateways. Supply
+`CLOUDFLARE_API_TOKEN` and the exact `CLOUDFLARE_ACCOUNT_ID` through the
+operator's secret store; optionally set `EXPECTED_CP_SHA` to reject deployment
+drift. The command prints only names, status codes, and the CP source SHA. It
+does not seed a task, apply migrations, rotate secrets, or deploy anything.
+
+`CONFIGURED` means only that the declared bindings are present. The report
+always records Runner admission journal and real Telegram E2E as unverified
+until separate observed tests prove them. In the initial disabled deployment,
+the expected result is `BLOCKED`: the Telegram sandbox-3 gateway still points
+to the shared CP, and Agent API credentials and execution flags are absent.

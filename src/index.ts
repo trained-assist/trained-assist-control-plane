@@ -162,6 +162,8 @@ export interface Env {
   PRINCIPAL_SECRET?: string;
   /** Dedicated HMAC credential for the isolated Telegram UX test principal. */
   PRINCIPAL_SECRET_TELEGRAM_UX?: string;
+  /** Dedicated HMAC credential for the sandbox-3 Telegram principal. */
+  PRINCIPAL_SECRET_SANDBOX3?: string;
   /** Dedicated HMAC credential for the isolated integration-v1 sandbox principal. */
   PRINCIPAL_SECRET_INTEGRATION_V1?: string;
   /** Dedicated HMAC credential for the test-only Telegram UX sandbox smoke principal. */
