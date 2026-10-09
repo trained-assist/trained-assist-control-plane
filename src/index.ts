@@ -67,7 +67,7 @@ import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixe
 import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
-import { communicationSelector, communicationWriter, DEFAULT_COMMUNICATION_TIMEOUT_MS } from './router/communication-client';
+import { communicationSelector, communicationWriter, DEFAULT_COMMUNICATION_TIMEOUT_MS, DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS } from './router/communication-client';
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth } from './router/communication-v1';
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
@@ -663,7 +663,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? 10_000) }), health: systemHealth, hostMcp } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS) }), health: systemHealth, hostMcp } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({

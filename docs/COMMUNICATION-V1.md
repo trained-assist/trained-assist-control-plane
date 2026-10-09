@@ -8,8 +8,8 @@ Enable explicitly with `ROUTER_SELECTOR=communication_v1`. Unset keeps the exist
 
 - `COMMUNICATION_API_URL`: base URL of the independently deployed communication Worker.
 - `COMMUNICATION_TOKEN`: scoped caller credential, supplied as a Worker secret.
-- `COMMUNICATION_TIMEOUT_MS`: selector MCP deadline; default 35000.
-- `COMMUNICATION_WRITER_TIMEOUT_MS`: writer MCP deadline; default 10000. With the 5000 ms health probe, defaults leave room within a 60000 ms gateway request deadline. Longer configured calls need a corresponding ingress budget or asynchronous orchestration.
+- `COMMUNICATION_TIMEOUT_MS`: selector MCP deadline; default 25000 so routing falls back to the agent promptly when classification stalls.
+- `COMMUNICATION_WRITER_TIMEOUT_MS`: writer MCP deadline; default 20000. This allows a short grounded reply more time than the selector while keeping the 5000 ms health probe inside a 60000 ms gateway request budget.
 - `ROUTER_LLM_BUDGET`: permitted calls, default 2 in v1 (selector plus writer).
 - `ROUTER_CONTINUATION_ENABLED=true`: allow Output to start the accepted agent task.
 - `RUNNER_API_URL`, `RUNNER_API_KEY`: existing Runner adapter configuration. Missing configuration gives an explicit `runner_not_configured` dispatch refusal.

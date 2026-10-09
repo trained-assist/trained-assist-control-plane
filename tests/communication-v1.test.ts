@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import { TaskStore, FencedError } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port';
-import { communicationSelector, communicationWriter, SelectorError } from '../src/router/communication-client';
+import { communicationSelector, communicationWriter, SelectorError, DEFAULT_COMMUNICATION_TIMEOUT_MS, DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS } from '../src/router/communication-client';
 import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth, type SystemHealthReport } from '../src/router/communication-v1';
 import { deriveAuthorization } from '../src/router/authorization';
 import { routeRequest } from '../src/router/service';
@@ -50,6 +50,10 @@ afterEach(async () => {
 
 describe('communication MCP client', () => {
   const request = { request_id: 'request-1', decision_options: [{ id: 'system_health' }, { id: 'agent' }] };
+  it('keeps short routing and writer deadlines within the gateway budget', () => {
+    expect(DEFAULT_COMMUNICATION_TIMEOUT_MS).toBe(25_000);
+    expect(DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS).toBe(20_000);
+  });
   it('distinguishes elapsed transport deadline from immediate dependency failure without raw errors', async () => {
     const unavailable = communicationSelector({ url: 'https://communication.example.test', token: 'fixture-secret',
       fetcher: async () => { throw new Error('private-upstream-detail'); } });
