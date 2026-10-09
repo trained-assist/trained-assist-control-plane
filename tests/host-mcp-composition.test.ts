@@ -72,7 +72,7 @@ describe('inactive host MCP routing composition', () => {
   it('routes the full name-only catalogue into one same-task native run with only selected metadata', async () => {
     const current = await fixture();
     const select = vi.fn(async (request: Record<string, unknown>) => {
-      expect(request.decision_options).toEqual([{ id: 'registry.fixture_read' }]);
+      expect(request.decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'registry.fixture_read' }]);
       const encoded = JSON.stringify(request);
       expect(encoded).not.toContain('DESCRIPTION');
       expect(encoded).not.toContain('inputSchema');
@@ -321,6 +321,29 @@ describe('inactive host MCP routing composition', () => {
     expect(await current.store.listRuns(current.taskId)).toHaveLength(0);
   });
 
+  it.each(['system_health', 'catalog.brief'] as const)(
+    'keeps the %s quick answer selectable alongside a discovered Host MCP tool', async capabilityId => {
+      const current = await fixture();
+      const select = vi.fn(async (request: Record<string, unknown>) => {
+        expect(request.decision_options).toEqual([
+          { id: 'system_health' }, { id: 'catalog.brief' }, { id: 'registry.fixture_read' },
+        ]);
+        expect(request).not.toHaveProperty('capabilities');
+        return { user_goal: 'Пользователь выбрал встроенную проверку.', decision: capabilityId };
+      });
+      const routed = await routeRequest(current.input, { communicationV1: {
+        namesOnly: true, select, health: current.health, hostMcp: current.hostMcp,
+      } });
+
+      expect(routed.decision).toMatchObject({ route: 'deterministic', capabilityId, outcome: 'reply' });
+      expect(routed.reply?.text).toBeTruthy();
+      expect(routed.mcpInstruction).toBeUndefined();
+      expect(routed.continuation).toBeNull();
+      expect(current.health).toHaveBeenCalledTimes(capabilityId === 'system_health' ? 1 : 0);
+      expect(current.rpc).toHaveBeenCalledOnce();
+      expect(current.rpc.mock.calls[0]?.[0].method).toBe('tools/list');
+    });
+
   it('keeps built-in handlers available when MCP discovery returns unauthorized', async () => {
     const current = await fixture();
     current.rpc.mockImplementation(async message => ({ jsonrpc: '2.0', id: message.id,
@@ -340,7 +363,7 @@ describe('inactive host MCP routing composition', () => {
   it.each([1, 256])('keeps all %i actual names without synthetic options or trimming', async count => {
     const current = await fixture(count);
     const select = vi.fn(async (request: Record<string, unknown>) => {
-      expect(request.decision_options).toEqual([{ id: 'registry.fixture_read' }]);
+      expect(request.decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'registry.fixture_read' }]);
       return { user_goal: 'original task', decision: current.selectedName };
     });
     const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });

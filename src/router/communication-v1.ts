@@ -192,9 +192,12 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
           ...(input.prepared.originalInput ? [{ id: `${input.envelope.userTaskId}:envelope`, type: 'note', author: 'system', text: JSON.stringify(input.prepared.originalInput) }] : [])],
         attachments: input.prepared.attachments.map((attachment) => ({ id: attachment.artifactRef, name: attachment.artifactRef, resource_ref: attachment.artifactRef, content_status: 'metadata_only' })),
       },
-      recipient: snapshot ? { role: 'Выбери точное имя зарегистрированного метода из списка; если подходящего нет — no_matching_option.' }
+      recipient: snapshot ? { role: 'Выбери точный id quick answer или имя зарегистрированного метода из списка; если ничего не подходит — no_matching_option.' }
         : { role: 'Ты сам — помощник trained-assist и система, к которой пользователь обращается в этом диалоге.', persona: 'Пользователь может спрашивать о твоей работоспособности или возможностях коротко, без имени системы. Выбери quick answer, который выполнит проверку после выбора, либо агентскую задачу.' },
-      decision_options: snapshot ? snapshot.decisionOptions
+      decision_options: snapshot ? [
+        ...allowed.map(({ id }) => ({ id })),
+        ...snapshot.decisionOptions,
+      ]
         : deps.namesOnly ? [...allowed.map(({ id }) => ({ id })), { id: 'agent' }] : [...allowed.map(({ id, description, applicability }) => ({ id, description, applicability })),
         { id: 'agent', description: 'Выполнить любую задачу, не покрытую целиком одним доступным quick answer; сохранить все подзадачи и ограничения.', applicability: 'Составные запросы, работа с файлами, внешние действия, непонятные запросы и продолжения задач. Не подходит для самостоятельного вопроса о работоспособности самого помощника или его возможностях, если такой quick answer доступен.' }],
       ...(deps.namesOnly || snapshot ? {} : { capabilities: visible.map((entry) => ({ id: entry.id, title: entry.title, description: `Режимы: ${entry.supportedModes.join(', ')}; источник: ${entry.dataSource}; эффект: ${entry.effect}.`, version: String(entry.version), availability: entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'granted_readiness_unverified' : 'not_connected') : 'registered' })) }),
@@ -212,6 +215,10 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       selected = 'agent';
     } else if (result.decision === 'no_matching_option') {
       throw new SelectorError('no_matching_option');
+    } else if (allowed.some(answer => answer.id === result.decision)) {
+      // Built-in quick answers stay selectable when this profile also has a
+      // discovered Host MCP catalogue. MCP names do not replace CP handlers.
+      selected = result.decision;
     } else if (snapshot && hostMcp && scope) {
       if (!snapshot.decisionOptions.some(option => option.id === result.decision)) throw new SelectorError('unknown_id');
       const instruction = await hostMcp.catalogue.selectedInstruction(scope, snapshot.catalogueId, result.decision);

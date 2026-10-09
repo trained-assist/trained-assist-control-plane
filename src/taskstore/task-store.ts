@@ -1457,7 +1457,36 @@ export class TaskStore {
         if (payload.event === 'runner_submit_rejected') started = false;
       } catch { /* Ignore unrelated or malformed progress payloads. */ }
     }
+    if (started && await this.runnerSubmitKnownPreAdmissionFailure(taskId, attemptId)) return false;
     return started;
+  }
+
+  /**
+   * Read the typed Agent API response proving its MCP preflight rejected before
+   * admission. This exact code is emitted before the Runner creates any run.
+   */
+  async runnerSubmitKnownPreAdmissionFailure(taskId: string, attemptId: string): Promise<'MCP_BINDING_UNAVAILABLE' | null> {
+    const events = await this.db.prepare(
+      `SELECT payload_json FROM task_events WHERE user_task_id = ?
+       AND source = 'executor' AND kind IN ('progress', 'error') ORDER BY id`,
+    ).bind(taskId).all<{ payload_json: string }>();
+    let idempotencyKey: string | null = null;
+    for (const event of events.results) {
+      try {
+        const payload = JSON.parse(event.payload_json) as { event?: string; attemptId?: string | null; idempotencyKey?: string };
+        if (payload.event === 'runner_submit_started' && payload.attemptId === attemptId
+          && typeof payload.idempotencyKey === 'string') idempotencyKey = payload.idempotencyKey;
+      } catch { /* Ignore unrelated or malformed events. */ }
+    }
+    if (!idempotencyKey) return null;
+    for (const event of events.results) {
+      try {
+        const payload = JSON.parse(event.payload_json) as { class?: string; message?: string; idempotencyKey?: string };
+        if (payload.idempotencyKey === idempotencyKey && payload.class === 'runner_unavailable'
+          && payload.message?.startsWith('MCP_BINDING_UNAVAILABLE:')) return 'MCP_BINDING_UNAVAILABLE';
+      } catch { /* Ignore unrelated or malformed events. */ }
+    }
+    return null;
   }
 
   // ----------------------------------------------------------- переходы
