@@ -131,3 +131,27 @@ test('candidate preflight identifies cross-repository artifact access without se
   assertReadOnly(commands.filter(x => x.tool !== 'gh'));
   assert.deepEqual(commands.filter(x => x.tool === 'gh').map(x => x.args.slice(0, 2)), [['run', 'view']]);
 });
+
+test('fresh namespace inspection verifies operator bytes before any target mutation', async () => {
+  const { evidence, commands } = await exercise('--sandbox3-operator-preflight', { CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
+  assert.equal(evidence.mode, 'sandbox3-operator-preflight');
+  assert.equal(evidence.cpWorker, 'trained-assist-cp-sandbox3');
+  assert.equal(evidence.runnerService, 'agent-runner-api-sandbox3.service');
+  assert.equal(evidence.failure.boundary, 'sandbox3OperatorInventory');
+  assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
+  assertReadOnly(commands);
+});
+test('fresh preparation refuses unavailable signed artifact before provisioning namespace', async () => {
+  const { evidence, commands } = await exercise('--prepare-sandbox3', { RUNNER_MOCK_KEY_SEED: secret });
+  assert.equal(evidence.failure.boundary, 'runnerCandidateVerification');
+  assert.equal(evidence.failure.reasonCode, 'github_permission_denied:gh:1');
+  assert.equal(evidence.boundaries.sandbox3NamespacePreparation, 'NOT_RUN');
+  assert.equal(commands.some(x => x.tool === 'ssh' || x.tool === 'scp'), false);
+});
+test('fresh installation refuses unavailable signed artifact before transfer or restart', async () => {
+  const { evidence, commands } = await exercise('--install-sandbox3');
+  assert.equal(evidence.failure.boundary, 'runnerCandidateVerification');
+  assert.equal(evidence.failure.reasonCode, 'github_permission_denied:gh:1');
+  assert.equal(evidence.boundaries.sandbox3CandidateInstallation, 'NOT_RUN');
+  assert.equal(commands.some(x => x.tool === 'ssh' || x.tool === 'scp'), false);
+});

@@ -199,6 +199,37 @@ and [architecture #236](https://github.com/trained-assist/trained-agent-architec
 Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
 only when that shared target's state is safe for the requested operation.
 
+### Fresh sandbox3 namespace through the same operator channel
+
+The existing workflow has three explicit modes for the previously declared
+sandbox3 service; it creates no Cloudflare resources and leaves shared MCP
+API/state untouched:
+
+- `sandbox3-operator-preflight`: byte-verified read-only namespace/proxy metadata.
+- `prepare-sandbox3`: verify the existing signed candidate, then invoke the
+  existing Runner lane bootstrap's fixed contract stage over pinned SSH. Refuse
+  any existing component or aliased path. Derive scoped credentials from the
+  existing seed, send only the key hash and delegation secret over stdin, create
+  the distinct nonlogin user/private new config/registry/empty journal/unit.
+  No service starts and CP credentials are not changed.
+- `install-sandbox3`: reverify candidate/provenance, transfer only public verified
+  artifact/operator files to a private temporary directory, install through the
+  existing lane installer with its explicit pinned MCP-runtime compatibility
+  contract, then verify active PID argv/cwd and manifest source SHA. Cleanup
+  removes only this operation's transport directory.
+
+Dispatch from protected main with `-f mode=<mode>`. Install requires the already
+prepared inactive target; it never stops an active API. Any unresolved admission
+blocks restart/rollback. Namespace preparation is exclusive and does not replace
+or recover a previously occupied target.
+
+This initial registry permits mock-test only. There is no default engine chain,
+provider credential, profile workspace or real execution; no paid traffic can
+start. The artifact records CP credentials/public route/real execution as
+unverified. Provision and prove TLS/proxy, pair CP credentials, independently
+probe API/CP mock, then enforce bounded free-only worker/profile storage before
+real Telegram acceptance. These modes alone do not establish full readiness.
+
 ### Existing signed candidate access preflight
 
 `mode=candidate-preflight` reuses this workflow's operator environment and
