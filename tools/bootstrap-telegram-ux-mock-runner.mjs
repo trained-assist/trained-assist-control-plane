@@ -12,7 +12,7 @@ import {
   validateTelegramUxSandboxConfig,
 } from '../src/deployment/telegram-ux-sandbox.ts';
 import { commandFailureReason } from './command-failure.mjs';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sanitizedSandbox3Probe, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 const SANDBOX3_CP_URL = 'https://trained-assist-cp-sandbox3.skillset-apply.workers.dev';
 const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
@@ -55,6 +55,8 @@ const evidence = {
     runnerInventoryPermissions: 'NOT_RUN',
     runnerCandidateVerification: 'NOT_RUN',
     sandbox3OperatorInventory: 'NOT_RUN',
+    sandbox3ProxyInspection: 'NOT_RUN',
+    sandbox3MockContract: 'NOT_RUN',
     sandbox3NamespacePreparation: 'NOT_RUN',
     sandbox3CandidateInstallation: 'NOT_RUN',
   },
@@ -318,7 +320,7 @@ function sandbox3Response(result) {
   try { body = JSON.parse(result.stdout); } catch { fail('sandbox3_operator_response_invalid'); }
   if (body?.schemaVersion !== 1 || body.target !== 'agent-runner-api-sandbox3') fail('sandbox3_operator_response_invalid');
   if (result.status !== 0) {
-    if (typeof body.reasonCode === 'string' && /^sandbox3_prepare_[a-z_]{1,70}$/.test(body.reasonCode)) fail(body.reasonCode);
+    if (typeof body.reasonCode === 'string' && /^sandbox3_(prepare|probe|proxy)_[a-z_]{1,70}$/.test(body.reasonCode)) fail(body.reasonCode);
     fail(commandFailureReason('ssh', result));
   }
   return body;
@@ -334,6 +336,18 @@ async function inspectSandbox3(input) {
   evidence.sandbox3Namespace = metadata;
   evidence.sandbox3OperatorSourceSha = TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha;
   return metadata;
+}
+
+async function probeSandbox3(input, mock) {
+  const script = await sandbox3Script('prepare-api-sandbox3.py', TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3PreparerDigest);
+  const payload = mock ? JSON.stringify({ schemaVersion: 1, target: 'agent-runner-api-sandbox3',
+    apiKey: sandbox3Credentials(requiredEnv('RUNNER_MOCK_KEY_SEED')).apiKey }) : undefined;
+  const body = await withRunnerSsh(input, args => sandbox3Response(spawnSync('ssh', [...args,
+    `sudo -n python3 -c ${shellQuote(script.toString('utf8'))} ${mock ? '--mock-probe' : '--proxy-inspect'}`], {
+    input: payload, encoding: 'utf8', maxBuffer: 64 * 1024, timeout: 60_000,
+  })));
+  evidence[mock ? 'sandbox3MockContract' : 'sandbox3ProxyInspection'] = sanitizedSandbox3Probe(body, mock ? 'mock' : 'proxy');
+  evidence.sandbox3OperatorSourceSha = TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha;
 }
 
 async function withSandbox3Transport(input, files, operation) {
@@ -496,10 +510,10 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const freshSandbox3 = ['--sandbox3-operator-preflight', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
+    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3);
@@ -528,7 +542,13 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (freshSandbox3) {
-      if (args[0] === '--sandbox3-operator-preflight') {
+      if (['--sandbox3-proxy-preflight', '--sandbox3-mock-probe'].includes(args[0])) {
+        const mock = args[0] === '--sandbox3-mock-probe';
+        stage = mock ? 'sandbox3MockContract' : 'sandbox3ProxyInspection';
+        await probeSandbox3(input, mock);
+        evidence.boundaries[stage] = 'PASS';
+        evidence.outcome = 'passed';
+      } else if (args[0] === '--sandbox3-operator-preflight') {
         stage = 'sandbox3OperatorInventory';
         await inspectSandbox3(input);
         evidence.boundaries[stage] = 'PASS';

@@ -32,3 +32,9 @@ test('uses safe command and spawn failure codes', () => {
   assert.equal(commandFailureReason('ssh', { status: 255, stderr: 'Connection timed out' }),
     'runner_ssh_unreachable:ssh:255');
 });
+
+test('verified installer failure precedes incidental curl errors and strips output', () => {
+  const result = { status: 1, stderr: 'curl: connection refused\n[sandbox3-api] ERROR: API did not become healthy\nprivate-secret' };
+  assert.equal(commandFailureReason('ssh', result), 'sandbox3_api_unhealthy:ssh:1');
+  assert.equal(commandFailureReason('ssh', { status: 1, stderr: '[sandbox3-api] ERROR: private-secret' }), 'command_failed:ssh:1');
+});

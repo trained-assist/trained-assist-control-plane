@@ -155,3 +155,12 @@ test('fresh installation refuses unavailable signed artifact before transfer or 
   assert.equal(evidence.boundaries.sandbox3CandidateInstallation, 'NOT_RUN');
   assert.equal(commands.some(x => x.tool === 'ssh' || x.tool === 'scp'), false);
 });
+
+for (const mode of ['--sandbox3-proxy-preflight', '--sandbox3-mock-probe']) {
+  test(`${mode} refuses substituted helper before SSH execution`, async () => {
+    const { evidence, commands } = await exercise(mode, { CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
+    assert.equal(evidence.failure.boundary, mode.includes('mock') ? 'sandbox3MockContract' : 'sandbox3ProxyInspection');
+    assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
+    assert.equal(commands.some(command => command.args.some(arg => arg.includes('python3 -c'))), false);
+  });
+}
