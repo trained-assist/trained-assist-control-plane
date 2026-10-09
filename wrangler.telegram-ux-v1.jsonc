@@ -22,7 +22,7 @@
     "ROUTER_CONTINUATION_ENABLED": "true",
     "ROUTER_AGENT_ALLOWED": "true",
     "ROUTER_AGENT_ENGINE": "dynamic-ip-azure-agent-run",
-    "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-telegram-ux-v1\":{\"policy\":\"generic_text_v1\",\"runnerKeyBinding\":\"RUNNER_API_KEY_TELEGRAM_UX\",\"runnerUrlBinding\":\"RUNNER_API_URL_TELEGRAM_UX\",\"hostMcpBinding\":\"registry-mcp-test-160-read\"}}",
+    "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-telegram-ux-v1\":{\"policy\":\"generic_text_v1\",\"runnerKeyBinding\":\"RUNNER_API_KEY_TELEGRAM_UX\",\"hostMcpBinding\":\"registry-mcp-test-160-read\"}}",
     "RUN_SPEC_REPOSITORY": "{\"fullName\":\"vovalikessmoothy-png/cp-telegram-ux-runner-sandbox\"}",
     "RUN_SPEC_ENV_ALLOWLIST": "LLM_LADDER_TOKEN",
     "RUN_SPEC_OUTPUTS": "[{\"path\":\"outputs/category-results.csv\",\"name\":\"Category totals\",\"mime\":\"text/csv\"}]",
@@ -35,7 +35,6 @@
     "DELIVERY_ADAPTER": "local",
     "SANDBOX_READINESS_ENABLED": "true",
     "SANDBOX_RUNNER_MOCK_PROBE_ENABLED": "true",
-    "SANDBOX_RUNNER_MOCK_TEST_URL": "https://169-58-15-230.sslip.io/runner-mcp-test",
-    "RUNNER_API_URL_TELEGRAM_UX": "https://169-58-15-230.sslip.io/runner-mcp-test"
+    "SANDBOX_RUNNER_MOCK_TEST_URL": "https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev"
   }
 }

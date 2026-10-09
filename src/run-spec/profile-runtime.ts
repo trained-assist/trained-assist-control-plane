@@ -1,7 +1,6 @@
 import { runnerAdapterOf, type RunnerApiAdapter } from '../runner-adapter';
 import { RunSpecMappingError, runSpecPolicyOf, type RunSpecPolicy } from './run-spec';
 import { registryFixtureMcpSpec } from '../router/registry-test-mcp';
-import { TELEGRAM_UX_SANDBOX } from '../deployment/telegram-ux-sandbox';
 
 export const TELEGRAM_UX_PROFILE = 'integration-telegram-ux-v1';
 
@@ -13,7 +12,6 @@ export class ProfileRuntimeConfigurationError extends RunSpecMappingError {
 
 export interface ProfileRuntimeBindings {
   RUNNER_API_URL?: string;
-  RUNNER_API_URL_TELEGRAM_UX?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   RUNNER_API_KEY_AGENT_API?: string;
@@ -33,9 +31,12 @@ export function profileRunnerUrlOf(
   try {
     const overrides = JSON.parse(env.RUN_SPEC_PROFILE_OVERRIDES ?? '{}') as Record<string, unknown>;
     const raw = overrides[durableProfileId];
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)
-      && (raw as Record<string, unknown>).runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX') {
-      return env.RUNNER_API_URL_TELEGRAM_UX?.trim() || null;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const entry = raw as Record<string, unknown>;
+      if (Object.hasOwn(entry, 'runnerUrlBinding')
+        || entry.policy !== 'generic_text_v1'
+        || !['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding']
+          .includes(Object.keys(entry).sort().join(','))) return null;
     }
   } catch { /* resolveProfileRuntime returns the sanitized configuration error */ }
   return env.RUNNER_API_URL?.trim() || null;
@@ -58,12 +59,9 @@ export function resolveProfileRuntime(
       if (profileId !== TELEGRAM_UX_PROFILE || !raw || typeof raw !== 'object' || Array.isArray(raw)) return fail();
       const entry = raw as Record<string, unknown>;
       const keys = Object.keys(entry).sort().join(',');
-      if (!['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding',
-        'policy,runnerUrlBinding', 'hostMcpBinding,policy,runnerUrlBinding', 'policy,runnerKeyBinding,runnerUrlBinding',
-        'hostMcpBinding,policy,runnerKeyBinding,runnerUrlBinding'].includes(keys)
+      if (!['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding'].includes(keys)
         || entry.policy !== 'generic_text_v1') return fail();
       if (entry.runnerKeyBinding !== undefined && entry.runnerKeyBinding !== 'RUNNER_API_KEY_TELEGRAM_UX') return fail();
-      if (entry.runnerUrlBinding !== undefined && entry.runnerUrlBinding !== 'RUNNER_API_URL_TELEGRAM_UX') return fail();
       if (entry.hostMcpBinding !== undefined && entry.hostMcpBinding !== 'registry-mcp-test-160-read') return fail();
     }
   }
@@ -76,10 +74,7 @@ export function resolveProfileRuntime(
   if (agentApiMode || delegationIdentityBindings.some(value => value !== undefined)) {
     const profileOverride = durableProfileId === TELEGRAM_UX_PROFILE
       ? overrides[durableProfileId] as Record<string, unknown> | undefined : undefined;
-    const runnerUrl = profileOverride?.runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX'
-      ? env.RUNNER_API_URL_TELEGRAM_UX?.trim() : env.RUNNER_API_URL?.trim();
-    if (profileOverride?.runnerUrlBinding !== undefined
-      && runnerUrl !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) return fail();
+    const runnerUrl = env.RUNNER_API_URL?.trim();
     if (!agentApiMode || !env.RUNNER_PROFILE_DELEGATION_SECRET?.trim() || !env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?.trim()
       || !env.RUNNER_PROFILE_DELEGATION_TENANT_ID?.trim() || !runnerUrl
       || !env.RUNNER_API_KEY_AGENT_API?.trim() || env.RUNNER_API_KEY_AGENT_API === env.RUNNER_API_KEY
@@ -104,10 +99,7 @@ export function resolveProfileRuntime(
   if (durableProfileId !== TELEGRAM_UX_PROFILE) return { policy, adapter: runnerAdapterOf(env),
     runnerApiUrl: profileRunnerUrlOf(env, durableProfileId) };
   const profileOverride = overrides[durableProfileId] as Record<string, unknown> | undefined;
-  const runnerUrl = profileOverride?.runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX'
-    ? env.RUNNER_API_URL_TELEGRAM_UX?.trim() : env.RUNNER_API_URL?.trim();
-  if (profileOverride?.runnerUrlBinding !== undefined
-    && runnerUrl !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) return fail();
+  const runnerUrl = env.RUNNER_API_URL?.trim();
   if (!profileOverride || !Object.hasOwn(overrides, durableProfileId) || !runnerUrl
     || !env.RUNNER_API_KEY_TELEGRAM_UX?.trim()
     || env.RUNNER_API_KEY_TELEGRAM_UX === env.RUNNER_API_KEY) return fail();
