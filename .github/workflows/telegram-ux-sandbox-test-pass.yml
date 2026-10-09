@@ -6,12 +6,14 @@ on:
       mode:
         description: Inspect state, explicitly restrict sandbox file permissions, or bootstrap mock pair
         type: choice
-        options: [inventory, preflight, repair-permissions, bootstrap]
+        options: [inventory, preflight, candidate-preflight, repair-permissions, bootstrap]
         default: inventory
         required: true
 
 permissions:
   contents: read
+  actions: read
+  attestations: read
 
 concurrency:
   group: telegram-ux-sandbox-runner-credentials
@@ -35,6 +37,7 @@ jobs:
       - run: npm ci
       - name: Inspect sandbox or explicitly bootstrap the mock-test pair
         env:
+          GH_TOKEN: ${{ github.token }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CP_TELEGRAM_UX_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
           RUNNER_MOCK_KEY_SEED: ${{ secrets.RUNNER_MOCK_KEY_SEED }}
@@ -43,7 +46,7 @@ jobs:
           BOOTSTRAP_MODE: ${{ inputs.mode }}
         run: |
           case "$BOOTSTRAP_MODE" in
-            inventory|preflight|repair-permissions|bootstrap) ;;
+            inventory|preflight|candidate-preflight|repair-permissions|bootstrap) ;;
             *) exit 1 ;;
           esac
           node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs "--$BOOTSTRAP_MODE"
