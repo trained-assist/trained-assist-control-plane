@@ -148,9 +148,8 @@ async function cleanupSmokeTask(userTaskId, requestId) {
 
   const removed = await query(`DELETE FROM durable_tasks WHERE ${eligible}`,
     [userTaskId, TELEGRAM_UX_SANDBOX.principalId, requestId]);
-  if (removed?.meta?.changed_db !== true || removed?.meta?.rows_written !== 1) {
-    throw new Error('sandbox_smoke_cleanup_write_contract_failed');
-  }
+  // D1's HTTP API does not consistently report rows_written for DELETE statements;
+  // the scoped pre-read plus this authoritative absence check verifies the outcome.
   const verified = await query('SELECT COUNT(*) AS remaining FROM durable_tasks WHERE id = ?', [userTaskId]);
   if (verified?.meta?.changed_db !== false || verified?.meta?.rows_written !== 0
     || verified.results?.[0]?.remaining !== 0) throw new Error('sandbox_smoke_cleanup_verify_failed');
