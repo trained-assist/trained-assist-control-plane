@@ -2,7 +2,7 @@
 import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal } from './sandbox3-cp-pairing.mjs';
 import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
-import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -406,7 +406,7 @@ async function pairSandbox3Cp(input) {
   evidence.sandbox3RunnerCredentialSync = { credentialsSynced: true, workerName: SANDBOX3.runnerWorkerName,
     principalId: SANDBOX3.diagnosticPrincipalId, profileId: SANDBOX3.profileId, scopes: ['runs:read', 'runs:write'], engines: ['mock-test'] };
   evidence.boundaries.sandbox3RunnerCredentialSync = 'PASS';
-  await verifySandbox3RunnerPrincipal(keys.apiKey);
+  await waitForSandbox3RunnerPrincipal(keys.apiKey);
   const principalSql = `SELECT profile_id, scopes, enabled FROM admission_principals WHERE principal_id = '${SANDBOX3.diagnosticPrincipalId}'`;
   let rows = sandbox3PrincipalQuery(principalSql);
   if (rows.length > 1) fail('sandbox3_cp_operator_principal_invalid');

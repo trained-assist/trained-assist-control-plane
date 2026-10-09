@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 test('public probe proves TLS route and auth refusal without carrying credentials', async () => {
   const calls = [];
   const result = await verifySandbox3PublicRoute(async (url, options) => {
@@ -28,6 +28,17 @@ test('sandbox API key is validated against the Cloudflare Runner API before CP p
   assert.equal(result, true);
   await assert.rejects(() => verifySandbox3RunnerPrincipal('test-api-key-that-is-long-enough-for-validation', async () =>
     Response.json({ error: { code: 'UNAUTHENTICATED' } }, { status: 401 })), /^Error: sandbox3_runner_principal_not_authorized$/);
+});
+test('newly written Runner key may propagate before read-only authorization succeeds', async () => {
+  let calls = 0;
+  const result = await waitForSandbox3RunnerPrincipal('test-api-key-that-is-long-enough-for-validation', async () => {
+    calls++;
+    return calls === 1
+      ? Response.json({ error: { code: 'UNAUTHENTICATED' } }, { status: 401 })
+      : Response.json({ contract: { name: 'ai-agent-runner/serverless-agent-api' }, placement: 'cloudflare-worker' });
+  }, { attempts: 2, intervalMs: 1 });
+  assert.equal(result, true);
+  assert.equal(calls, 2);
 });
 test('404, generic auth refusal, bad JSON and TLS failures never claim a public route', async () => {
   for (const mode of ['404', 'foreign', 'bad-json', 'tls']) {
