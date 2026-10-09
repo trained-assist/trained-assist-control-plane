@@ -27,4 +27,8 @@ test('uses safe command and spawn failure codes', () => {
   assert.equal(commandFailureReason('npx', { error: { code: 'ENOENT' } }), 'command_unavailable:npx');
   assert.equal(commandFailureReason('ssh', { error: { code: 'EACCES', message: 'private detail' } }),
     'command_spawn_failed:ssh');
+  assert.equal(commandFailureReason('ssh', { status: 255, stderr: 'Permission denied (publickey)' }),
+    'runner_ssh_authentication_failed:ssh:255');
+  assert.equal(commandFailureReason('ssh', { status: 255, stderr: 'Connection timed out' }),
+    'runner_ssh_unreachable:ssh:255');
 });
