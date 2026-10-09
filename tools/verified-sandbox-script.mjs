@@ -146,7 +146,9 @@ export function sanitizedSandbox3Probe(value, mode) {
     output[name] = value[name];
   }
   if (mode === 'proxy') {
-    if (output.publicRouteVerified !== false) throw new Error('sandbox3_operator_response_invalid');
+    if (output.publicRouteVerified !== false || !Number.isInteger(value.qualifiedRouteTargetCount)
+      || value.qualifiedRouteTargetCount < 0 || value.qualifiedRouteTargetCount > 100) throw new Error('sandbox3_operator_response_invalid');
+    output.qualifiedRouteTargetCount = value.qualifiedRouteTargetCount;
   } else if (mode === 'mock') {
     if (!fields.slice(0, 4).every(name => output[name]) || output.workerOrModelCalled || output.realTelegramE2E) throw new Error('sandbox3_operator_response_invalid');
     for (const [name, prefix] of [['runId', 'run'], ['requestId', 'req']]) {
