@@ -2,6 +2,13 @@ name: Deploy and verify Telegram UX sandbox test pass
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Read-only access/state preflight, or explicit shared mock bootstrap
+        type: choice
+        options: [preflight, bootstrap]
+        default: preflight
+        required: true
 
 permissions:
   contents: read
@@ -26,14 +33,20 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Deploy sandbox, provision paired mock-test key, and verify pong
+      - name: Inspect sandbox or explicitly bootstrap the mock-test pair
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CP_TELEGRAM_UX_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
           RUNNER_MOCK_KEY_SEED: ${{ secrets.RUNNER_MOCK_KEY_SEED }}
           VM2_SSH_PRIVATE_KEY: ${{ secrets.VM2_SSH_PRIVATE_KEY }}
           GITHUB_SHA: ${{ github.sha }}
-        run: node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs
+          BOOTSTRAP_MODE: ${{ inputs.mode }}
+        run: |
+          case "$BOOTSTRAP_MODE" in
+            preflight|bootstrap) ;;
+            *) exit 1 ;;
+          esac
+          node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs "--$BOOTSTRAP_MODE"
       - name: Upload sanitized bootstrap evidence
         if: always() && hashFiles('sandbox-bootstrap-evidence.json') != ''
         uses: actions/upload-artifact@v4

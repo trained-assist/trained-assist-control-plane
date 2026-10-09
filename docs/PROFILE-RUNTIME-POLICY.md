@@ -100,7 +100,7 @@ readback fails.
 The regular Telegram UX deploy command does not generate or rotate credentials.
 The separate workflow
 [`telegram-ux-sandbox-test-pass.yml`](../.github/workflows/telegram-ux-sandbox-test-pass.yml)
-is the one-click sandbox test pass: it verifies the account/config, applies
+is the one-click sandbox test pass when dispatched with `mode=bootstrap`: it verifies the account/config, applies
 only the named sandbox D1 migrations, deploys the current `main` revision to
 the exact CP sandbox Worker, then bootstraps the isolated `mock-test` identity
 and requires the authenticated CP probe to return `succeeded / pong`. It
@@ -155,6 +155,29 @@ This procedure does not deploy Telegram Worker secrets; the gateway's
 precomputed signature must be sourced from the same principal secret and
 verified independently before Telegram live acceptance.
 
+### Read-only bootstrap preflight
+
+The same workflow defaults to `mode=preflight` (implementation: [CP #158](https://github.com/trained-assist/trained-assist-control-plane/issues/158)). It validates the pinned account
+and config, reads CP liveness and its deployed SHA, queries only
+`SELECT name FROM d1_migrations`, checks the pinned SSH hostname, and performs
+signed GETs for lane occupancy and profile-scoped Runner reachability. It does
+not apply migrations, deploy, provision/rotate secrets, submit a mock run, or
+restart Runner. `RUNNER_MOCK_KEY_SEED` is not required for this mode.
+
+An occupied lane fails with `sandbox_lane_has_nonterminal_task`; the independent
+profile-health read still runs. The artifact records counts and boundary results,
+not task payloads or CLI output. `preflight_passed` establishes these access/read
+checks only; it does not prove state isolation, write permissions, Worker/model
+execution, Telegram delivery, or full lane READY.
+
+```sh
+gh workflow run telegram-ux-sandbox-test-pass.yml \
+  --repo trained-assist/trained-assist-control-plane --ref main -f mode=preflight
+```
+
+Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
+only when that shared target's state is safe for the requested operation.
+
 ### Run and inspect the CP → Runner sandbox E2E
 
 This workflow is the quickest end-to-end check of CP-to-Runner API auth and the
@@ -163,7 +186,7 @@ Dispatch it from protected `main`:
 
 ```sh
 gh workflow run telegram-ux-sandbox-test-pass.yml \
-  --repo trained-assist/trained-assist-control-plane --ref main
+  --repo trained-assist/trained-assist-control-plane --ref main -f mode=bootstrap
 gh run list --repo trained-assist/trained-assist-control-plane \
   --workflow telegram-ux-sandbox-test-pass.yml --limit 5
 gh run watch RUN_ID --repo trained-assist/trained-assist-control-plane --exit-status
