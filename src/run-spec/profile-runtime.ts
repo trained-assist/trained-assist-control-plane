@@ -19,33 +19,42 @@ export interface ProfileRuntimeBindings {
   RUNNER_PROFILE_DELEGATION_SECRET?: string;
   RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
   RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
+  RUNNER_API_FETCH?: typeof fetch;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
   MCP_TEST_AUTH_TOKEN?: string;
+}
+
+function runnerRuntimeBindings(env: ProfileRuntimeBindings & Record<string, string | undefined>) {
+  const service = (env as ProfileRuntimeBindings & { RUNNER_API_SERVICE?: { fetch: typeof fetch } }).RUNNER_API_SERVICE;
+  return { env: env as ProfileRuntimeBindings, fetch: service ? service.fetch.bind(service) as typeof fetch : undefined };
 }
 
 export function profileRunnerUrlOf(
   env: ProfileRuntimeBindings & Record<string, string | undefined>,
   durableProfileId: string,
 ): string | null {
-  if (durableProfileId !== TELEGRAM_UX_PROFILE) return env.RUNNER_API_URL?.trim() || null;
+  const runtime = runnerRuntimeBindings(env);
+  if (durableProfileId !== TELEGRAM_UX_PROFILE) return runtime.env.RUNNER_API_URL?.trim() || null;
   try {
-    const overrides = JSON.parse(env.RUN_SPEC_PROFILE_OVERRIDES ?? '{}') as Record<string, unknown>;
+    const overrides = JSON.parse(runtime.env.RUN_SPEC_PROFILE_OVERRIDES ?? '{}') as Record<string, unknown>;
     const raw = overrides[durableProfileId];
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       const entry = raw as Record<string, unknown>;
       if (Object.hasOwn(entry, 'runnerUrlBinding')
         || entry.policy !== 'generic_text_v1'
-        || !['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding']
+        || !['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding']
           .includes(Object.keys(entry).sort().join(','))) return null;
     }
   } catch { /* resolveProfileRuntime returns the sanitized configuration error */ }
-  return env.RUNNER_API_URL?.trim() || null;
+  return runtime.env.RUNNER_API_URL?.trim() || null;
 }
 
 export function resolveProfileRuntime(
   env: ProfileRuntimeBindings & Record<string, string | undefined>,
   durableProfileId: string,
 ): { policy: RunSpecPolicy; adapter: RunnerApiAdapter | null; runnerApiUrl: string | null } {
+  const resolved = runnerRuntimeBindings(env);
+  env = resolved.env as ProfileRuntimeBindings & Record<string, string | undefined>;
   const fail = (): never => {
     throw new ProfileRuntimeConfigurationError();
   };
@@ -83,7 +92,8 @@ export function resolveProfileRuntime(
     const adapter = runnerAdapterOf({ RUNNER_API_URL: runnerUrl, RUNNER_API_KEY: env.RUNNER_API_KEY_AGENT_API,
       RUNNER_API_ENGINE_SELECTION: 'agent_api', RUNNER_PROFILE_DELEGATION_SECRET: env.RUNNER_PROFILE_DELEGATION_SECRET,
       RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
-      RUNNER_PROFILE_DELEGATION_TENANT_ID: env.RUNNER_PROFILE_DELEGATION_TENANT_ID, RUNNER_PROFILE_DELEGATED_ID: durableProfileId });
+      RUNNER_PROFILE_DELEGATION_TENANT_ID: env.RUNNER_PROFILE_DELEGATION_TENANT_ID, RUNNER_PROFILE_DELEGATED_ID: durableProfileId,
+      RUNNER_API_FETCH: resolved.fetch });
     if (!adapter) return fail();
     if (durableProfileId === TELEGRAM_UX_PROFILE) {
       const profileOverride = overrides[durableProfileId] as Record<string, unknown> | undefined;
@@ -100,7 +110,7 @@ export function resolveProfileRuntime(
     runnerApiUrl: profileRunnerUrlOf(env, durableProfileId) };
   const profileOverride = overrides[durableProfileId] as Record<string, unknown> | undefined;
   const runnerUrl = env.RUNNER_API_URL?.trim();
-  if (!profileOverride || !Object.hasOwn(overrides, durableProfileId) || !runnerUrl
+    if (!profileOverride || !Object.hasOwn(overrides, durableProfileId) || !runnerUrl
     || !env.RUNNER_API_KEY_TELEGRAM_UX?.trim()
     || env.RUNNER_API_KEY_TELEGRAM_UX === env.RUNNER_API_KEY) return fail();
   const hostMcpEnabled = profileOverride.hostMcpBinding === 'registry-mcp-test-160-read';
@@ -111,7 +121,7 @@ export function resolveProfileRuntime(
     policy: { ...policy, outputs: [], inputRefs: [], repository: null, mcp: hostMcpEnabled ? registryFixtureMcpSpec() : null,
       envAllowlist: policy.envAllowlist.filter(name => name === 'LLM_LADDER_TOKEN') },
     adapter: runnerAdapterOf({ RUNNER_API_URL: runnerUrl, RUNNER_API_KEY: env.RUNNER_API_KEY_TELEGRAM_UX,
-      RUNNER_API_ENGINE_SELECTION: env.RUNNER_API_ENGINE_SELECTION }),
+      RUNNER_API_ENGINE_SELECTION: env.RUNNER_API_ENGINE_SELECTION, RUNNER_API_FETCH: resolved.fetch }),
     runnerApiUrl: runnerUrl,
   };
 }

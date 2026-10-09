@@ -9,11 +9,16 @@ const config = {
   d1_databases: [{ database_name: TELEGRAM_UX_SANDBOX.databaseName, database_id: TELEGRAM_UX_SANDBOX.databaseId }],
   workflows: [{ name: TELEGRAM_UX_SANDBOX.workflowName }],
   vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
-    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { policy: 'generic_text_v1' } }) },
+    RUNNER_API_ENGINE_SELECTION: 'agent_api',
+    RUNNER_API_URL: 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev',
+    RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: TELEGRAM_UX_SANDBOX.principalId,
+    RUNNER_PROFILE_DELEGATION_TENANT_ID: 'telegram-ux-sandbox-20261009',
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { policy: 'generic_text_v1', hostMcpBinding: 'registry-mcp-test-160-read' } }) },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },
     { binding: 'INGRESS_BUFFER', service: 'trained-assist-ingress-buffer-sandbox' },
+    { binding: 'RUNNER_API_SERVICE', service: TELEGRAM_UX_SANDBOX.runnerApiWorker },
   ],
 };
 

@@ -95,6 +95,8 @@ export interface Env {
   ROUTER_SELECTOR?: string;
   COMMUNICATION_API_URL?: string;
   COMMUNICATION_SERVICE?: Fetcher;
+  /** Private service binding to the serverless Runner API Worker. */
+  RUNNER_API_SERVICE?: Fetcher;
   /** Test-only direct Worker binding to the isolated Registry MCP host. */
   REGISTRY_MCP_HOST_SERVICE?: Fetcher;
   COMMUNICATION_TOKEN?: string;

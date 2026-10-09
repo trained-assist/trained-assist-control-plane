@@ -8,6 +8,7 @@ export const TELEGRAM_UX_SANDBOX = {
   principalId: 'integration-telegram-ux-v1',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
   runnerMockTestUrl: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev',
+  runnerApiWorker: 'trained-assist-runner-api-telegram-ux-v1-sandbox',
 } as const;
 
 export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
@@ -75,12 +76,20 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   if (profileOverrides[TELEGRAM_UX_SANDBOX.principalId]?.runnerUrlBinding !== undefined) {
     throw new Error('sandbox_profile_runner_url_mapping_mismatch');
   }
+  if (config.vars?.RUNNER_API_ENGINE_SELECTION !== 'agent_api'
+    || config.vars?.RUNNER_API_URL !== 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev'
+    || config.vars?.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID !== TELEGRAM_UX_SANDBOX.principalId
+    || config.vars?.RUNNER_PROFILE_DELEGATION_TENANT_ID !== 'telegram-ux-sandbox-20261009'
+    || profileOverrides[TELEGRAM_UX_SANDBOX.principalId]?.runnerKeyBinding !== undefined) {
+    throw new Error('sandbox_agent_api_target_mismatch');
+  }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();
   const expectedServices = [
     'COMMUNICATION_SERVICE:trained-assist-communication-v1-sandbox',
     'INGRESS_BUFFER:trained-assist-ingress-buffer-sandbox',
     'REGISTRY_MCP_HOST_SERVICE:trained-assist-mcp-host-test-160',
+    `RUNNER_API_SERVICE:${TELEGRAM_UX_SANDBOX.runnerApiWorker}`,
   ].sort();
   if (JSON.stringify(services) !== JSON.stringify(expectedServices)) throw new Error('sandbox_service_binding_mismatch');
   return true;

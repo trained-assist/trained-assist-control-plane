@@ -298,6 +298,7 @@ export function runnerAdapterOf(env: {
   RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
   RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
   RUNNER_PROFILE_DELEGATED_ID?: string;
+  RUNNER_API_FETCH?: typeof fetch;
 }): RunnerApiAdapter | null {
   const selection = env.RUNNER_API_ENGINE_SELECTION ?? 'caller';
   if (selection !== 'caller' && selection !== 'agent_api') {
@@ -315,7 +316,7 @@ export function runnerAdapterOf(env: {
     tenantId: env.RUNNER_PROFILE_DELEGATION_TENANT_ID!, secret: env.RUNNER_PROFILE_DELEGATION_SECRET!,
   } : undefined;
   return env.RUNNER_API_URL && env.RUNNER_API_KEY
-    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY, fetch, selection, delegatedProfile)
+    ? new RunnerApiAdapter(env.RUNNER_API_URL, env.RUNNER_API_KEY, env.RUNNER_API_FETCH ?? fetch, selection, delegatedProfile)
     : null;
 }
 
