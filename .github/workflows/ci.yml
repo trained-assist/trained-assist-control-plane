@@ -33,7 +33,7 @@ jobs:
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
       - name: Safe sandbox bootstrap command diagnostics
-        run: node --experimental-strip-types --test tools/command-failure.test.mjs tools/bootstrap-telegram-ux-mock-runner.test.mjs tools/verified-sandbox-script.test.mjs tools/sandbox3-lane-preflight.test.mjs tools/sandbox3-public-route.test.mjs tools/sandbox3-cp-pairing.test.mjs tools/sandbox3-cp-probe-request.test.mjs
+        run: node --experimental-strip-types --test tools/command-failure.test.mjs tools/bootstrap-telegram-ux-mock-runner.test.mjs tools/verified-sandbox-script.test.mjs tools/sandbox3-lane-preflight.test.mjs tools/sandbox3-public-route.test.mjs tools/sandbox3-cp-pairing.test.mjs tools/sandbox3-cp-probe-request.test.mjs tools/sandbox3-test-cleanup.test.mjs
       - name: Deployment and credential boundary verifiers
         run: node --test tools/deployment-config-verify.test.mjs tools/credential-boundary-verify.test.mjs
 

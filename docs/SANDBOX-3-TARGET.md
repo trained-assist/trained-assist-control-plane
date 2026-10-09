@@ -66,6 +66,13 @@ The `telegram-ux-sandbox-test-pass.yml` workflow exposes these sandbox3 modes:
   fixed `mock-test` Runner API contract. It creates no CP task and calls no
   model or France worker.
 
+After each run the workflow sweeps only terminal tasks whose `request_id` uses
+the reserved `sandbox3-test-` prefix in this lane's D1. Cascading task history
+is removed with the task. Tasks still active or carrying non-cascading control,
+credential, input-buffer, or schedule references are retained for investigation.
+Normal Telegram requests and all other profiles are outside the cleanup scope.
+The cleanup report is included in the sanitized workflow artifact.
+
 VM-hosted sandbox3 Runner API installation and proxy setup modes are retired.
 Do not restart a VM service to test the API boundary. Do not reset shared D1 or
 Workflow state; use unique idempotency keys and reconcile accepted operations.
