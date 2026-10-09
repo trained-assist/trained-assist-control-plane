@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port/workflow-port';
-import { CpStopTargetsService } from '../src/workflow-port/external-stop';
+import { CpStopTargetsService, runnerExternalStopPort } from '../src/workflow-port/external-stop';
 import type { ExternalStopContext, ExternalStopOutcome } from '../src/workflow-port/external-stop';
 import type { RunnerResult } from '../src/runner-adapter/runner-api-adapter';
 
@@ -43,6 +43,23 @@ function result(context: ExternalStopContext): RunnerResult {
     exitCode: null, exitSignal: 'SIGTERM', exitObserved: true, startedAt: '', finishedAt: '',
     usage: { status: 'unknown' }, outputRefs: [], persistence: 'not_required', cleanup: 'completed', logPath: '' };
 }
+
+describe('serverless Runner run ids', () => {
+  it('allows cancellation and confirmation for Durable Object sharded run ids', async () => {
+    const runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
+    const context: ExternalStopContext = { taskId: 'task-serverless-run', profileId: 'profile-serverless-run',
+      attemptId: 'attempt-serverless-run', runId, ownerGeneration: 2 };
+    const adapter = {
+      cancel: vi.fn(async () => ({ status: 'already_terminal' })),
+      status: vi.fn(async () => ({ runId, userTaskId: context.taskId, ownerGeneration: 2,
+        connectionLost: false, state: 'cancelled' })),
+      result: vi.fn(async () => result(context)),
+    };
+    const port = runnerExternalStopPort(adapter as unknown as Pick<import('../src/runner-adapter/runner-api-adapter').RunnerApiAdapter, 'cancel' | 'status' | 'result'>);
+    expect(await port.stop(context)).toMatchObject({ state: 'stopped' });
+    expect(adapter.cancel).toHaveBeenCalledWith(runId, { ownerGeneration: 2, reason: undefined });
+  });
+});
 
 describe('immutable stop execution pins', () => {
   it('repins known terminal evidence into the snapshot before final confirmation', async () => {
