@@ -199,6 +199,27 @@ and [architecture #236](https://github.com/trained-assist/trained-agent-architec
 Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
 only when that shared target's state is safe for the requested operation.
 
+### Explicit sandbox file permission repair
+
+The existing workflow also accepts `mode=repair-permissions` for the two
+fixed MCP test service files. It downloads the reviewed Runner helper at a
+pinned source revision and verifies its SHA-256 before sending bytes over the
+pinned SSH connection. The helper validates both file owners, canonical paths,
+regular-file identity and the sandbox environment before restricting unsafe
+modes to `0600`. It preserves file bytes and owners and performs no service
+restart, admission, journal replay or cancellation. Default inventory stays
+read-only. A successful repair is followed by the same read-only inventory;
+unresolved admissions still block reuse independently of the permission repair.
+
+```bash
+gh workflow run telegram-ux-sandbox-test-pass.yml \
+  --repo trained-assist/trained-assist-control-plane --ref main -f mode=repair-permissions
+```
+
+The artifact records only fixed component statuses and the reviewed operator
+revision. A file owner or target mismatch fails closed and needs investigation.
+This operation does not prove a fresh Runner lane or full Telegram readiness.
+
 ### Run and inspect the CP → Runner sandbox E2E
 
 This workflow is the quickest end-to-end check of CP-to-Runner API auth and the

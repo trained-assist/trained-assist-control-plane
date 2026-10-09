@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Read-only access/state preflight, or explicit shared mock bootstrap
+        description: Inspect state, explicitly restrict sandbox file permissions, or bootstrap mock pair
         type: choice
-        options: [inventory, preflight, bootstrap]
+        options: [inventory, preflight, repair-permissions, bootstrap]
         default: inventory
         required: true
 
@@ -43,7 +43,7 @@ jobs:
           BOOTSTRAP_MODE: ${{ inputs.mode }}
         run: |
           case "$BOOTSTRAP_MODE" in
-            inventory|preflight|bootstrap) ;;
+            inventory|preflight|repair-permissions|bootstrap) ;;
             *) exit 1 ;;
           esac
           node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs "--$BOOTSTRAP_MODE"
