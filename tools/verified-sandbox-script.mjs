@@ -69,3 +69,15 @@ export function sanitizedRunnerInventory(result) {
   }
   return output;
 }
+
+/** Project mode-only repair evidence without retaining service-held values. */
+export function sanitizedRunnerPermissions(result) {
+  if (result?.schemaVersion !== 1 || result.target !== 'agent-runner-api-mcp-test'
+    || !['restricted', 'already_private'].includes(result.components?.environment)
+    || !['restricted', 'already_private'].includes(result.components?.journal)) {
+    throw new Error('runner_permissions_response_invalid');
+  }
+  return { schemaVersion: 1, target: result.target, components: {
+    environment: result.components.environment, journal: result.components.journal,
+  } };
+}

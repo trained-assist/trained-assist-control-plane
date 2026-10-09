@@ -111,3 +111,12 @@ test('inventory refuses a substituted operator helper before sending any script 
   assert.equal(evidence.boundaries.runnerAdmissionInventory, 'BLOCKED');
   assertReadOnly(commands);
 });
+
+test('explicit permission repair verifies helper bytes before mutation and still runs inventory', async () => {
+  const { evidence, commands } = await exercise('--repair-permissions');
+  assert.equal(evidence.mode, 'repair-permissions');
+  assert.equal(evidence.failure.boundary, 'runnerInventoryPermissions');
+  assert.equal(evidence.boundaries.runnerInventoryPermissions, 'BLOCKED');
+  assert.equal(evidence.boundaries.runnerAdmissionInventory, 'BLOCKED');
+  assertReadOnly(commands);
+});
