@@ -102,6 +102,33 @@ describe('engine-text: конечный текст движка из событ�
 });
 
 describe('one-shot с движком: результат = текст движка, ожидание не открывается', () => {
+  it('passes the host-derived task budget through the complete RunSpec submit path', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-budget-submit');
+    await store.admitTask({ id: taskId, profileId: 'profile-budget', goal: 'bounded test task' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const { adapter } = makeFakeRunner({ stdout: ['bounded result'] });
+    const submit = vi.fn(adapter.submit);
+    const enforcement = { provider: 'ladder', policyId: 'sandbox-test-v1', maxInputTokens: 12000, maxOutputTokens: 2000, maxTotalTokens: 20000 };
+    const basePolicy = runSpecPolicyOf({ RUN_SPEC_BUDGET_POLICIES: JSON.stringify({ 'profile-budget': enforcement }) });
+    const runSpecPolicy = { ...basePolicy, budget: basePolicy.budgetPolicies?.['profile-budget'] };
+    const params: PlanParams = {
+      taskId,
+      generation: 1,
+      profileId: 'profile-budget',
+      runId: attempt.id,
+      goal: 'bounded test task',
+      runnerPollSec: 1,
+      runnerTimeoutSec: 30,
+    };
+
+    await conversationPlan(ctx, store, params, { adapter: { ...adapter, submit } as unknown as RunnerApiAdapter, runSpecPolicy });
+
+    expect(submit).toHaveBeenCalledTimes(1);
+    const submitted = submit.mock.calls[0]?.[0] as unknown as { runSpec?: { budget?: unknown } };
+    expect(submitted.runSpec?.budget).toEqual({ correlationRef: taskId, approved: true, enforcement });
+  });
+
   it('без awaitingPurpose план закрывает задачу текстом движка, без ожидания', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-one-shot');
