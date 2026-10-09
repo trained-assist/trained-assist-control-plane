@@ -205,10 +205,12 @@ The existing workflow also accepts `mode=repair-permissions` for the two
 fixed MCP test service files. It downloads the reviewed Runner helper at a
 pinned source revision and verifies its SHA-256 before sending bytes over the
 pinned SSH connection. The helper verifies the fixed service account and validates both file owners (root
-or sandbox for its environment; sandbox for its journal), canonical paths,
+or sandbox before changing its environment mode; sandbox for its journal), canonical paths,
 regular-file identity and the sandbox environment before restricting unsafe
 modes to `0600`. It preserves file bytes and owners and performs no service
-restart, admission, journal replay or cancellation. Default inventory stays
+restart, admission, journal replay or cancellation. An already-private operator-owned
+environment is preserved without mutation. Failed inventory can report lstat-only
+file access/owner categories, without content, owner IDs or arbitrary paths. Default inventory stays
 read-only. A successful repair is followed by the same read-only inventory;
 unresolved admissions still block reuse independently of the permission repair.
 

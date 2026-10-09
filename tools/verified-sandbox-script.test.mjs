@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 test('verifies exact downloaded bytes and refuses tampering before execution', async () => {
   const body = Buffer.from('print("synthetic-inventory")');
@@ -58,4 +58,15 @@ test('permission repair evidence retains only known components and statuses', ()
   assert.equal(JSON.stringify(sanitizedRunnerPermissions(result)).includes('private_secret'), false);
   assert.throws(() => sanitizedRunnerPermissions({ ...result, target: 'production' }), /runner_permissions_response_invalid/);
   assert.throws(() => sanitizedRunnerPermissions({ ...result, components: { environment: 'private_secret', journal: 'restricted' } }), /runner_permissions_response_invalid/);
+});
+
+test('failed inventory file metadata cannot emit arbitrary owners or paths', () => {
+  const data = { environment: { exists: true, owner: 'other', regular: true, unique: true,
+    privateMode: true, serviceCanRead: false, serviceCanWrite: false, rawPath: 'private-secret' },
+    journal: { exists: false }, rawOwner: 'private-secret' };
+  const output = sanitizedRunnerFileMetadata(data);
+  assert.equal(output.environment.owner, 'other');
+  assert.equal(JSON.stringify(output).includes('private-secret'), false);
+  assert.throws(() => sanitizedRunnerFileMetadata({ ...data, environment: { ...data.environment, owner: 'private-secret' } }), /runner_file_metadata_invalid/);
+  assert.throws(() => sanitizedRunnerFileMetadata({ ...data, journal: {} }), /runner_file_metadata_invalid/);
 });
