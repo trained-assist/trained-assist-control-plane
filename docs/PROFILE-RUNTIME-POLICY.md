@@ -201,11 +201,17 @@ only when that shared target's state is safe for the requested operation.
 
 ### Fresh sandbox3 namespace through the same operator channel
 
-The existing workflow has three explicit modes for the previously declared
+The existing workflow has explicit modes for the previously declared
 sandbox3 service; it creates no Cloudflare resources and leaves shared MCP
 API/state untouched:
 
-- `sandbox3-operator-preflight`: byte-verified read-only namespace/proxy metadata.
+- `sandbox3-operator-preflight`: byte-verified read-only namespace/proxy metadata, including allowlisted systemd failure result and bounded exit status.
+- `sandbox3-proxy-preflight`: inspect nginx marker booleans without emitting its
+  configuration. Global markers do not prove routing or TLS readiness.
+- `sandbox3-mock-probe`: verify installed source/process, then test loopback auth
+  refusal, terminal mock pong, result, idempotent receipt and events. The scoped
+  API key travels only over stdin; an unknown result prevents replay. This
+  component check does not establish Telegram or real worker execution.
 - `prepare-sandbox3`: verify the existing signed candidate, then invoke the
   existing Runner lane bootstrap's fixed contract stage over pinned SSH. Refuse
   any existing component or aliased path. Derive scoped credentials from the

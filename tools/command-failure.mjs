@@ -29,6 +29,23 @@ export function commandFailureReason(command, result) {
   }
 
   const output = `${typeof result?.stdout === 'string' ? result.stdout : ''}\n${typeof result?.stderr === 'string' ? result.stderr : ''}`;
+  if (safeCommand === 'ssh') {
+    const installationFailures = new Map([
+      ['API did not become healthy', 'sandbox3_api_unhealthy'],
+      ['API service is not active', 'sandbox3_service_inactive'],
+      ['installation requires an inactive fenced service', 'sandbox3_service_active_install_refused'],
+      ['admission journal contains unfinished or invalid runs', 'sandbox3_journal_not_terminal'],
+      ['a new run appeared during deployment', 'sandbox3_admission_during_install'],
+      ['wrong isolated service account', 'sandbox3_service_account_mismatch'],
+      ['wrong runtime executable', 'sandbox3_runtime_executable_mismatch'],
+      ['current candidate is unhealthy', 'sandbox3_current_candidate_unhealthy'],
+      ['candidate release already exists with a different current pointer', 'sandbox3_candidate_pointer_mismatch'],
+    ]);
+    for (const line of output.split(/\r?\n/)) {
+      const reason = installationFailures.get(line.startsWith('[sandbox3-api] ERROR: ') ? line.slice(22) : '');
+      if (reason) return `${reason}:ssh:${Number.isInteger(result?.status) ? result.status : 'unknown'}`;
+    }
+  }
   const patterns = safeCommand === 'npx' ? WRANGLER_FAILURE_PATTERNS
     : safeCommand === 'ssh' ? SSH_FAILURE_PATTERNS : safeCommand === 'gh' ? GITHUB_FAILURE_PATTERNS : [];
   const classification = patterns.find(([pattern]) => pattern.test(output))?.[1] ?? 'command_failed';

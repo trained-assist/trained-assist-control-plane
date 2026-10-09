@@ -111,6 +111,12 @@ export function sanitizedSandbox3Namespace(value) {
     throw new Error('sandbox3_operator_response_invalid');
   }
   output.runtimeSourceSha = value.runtimeSourceSha;
+  if (!['success', 'exit-code', 'signal', 'timeout', 'resources', 'start-limit-hit', 'unknown'].includes(value.serviceFailureResult)
+    || (value.serviceExitStatus !== null && (!Number.isInteger(value.serviceExitStatus) || value.serviceExitStatus < 0 || value.serviceExitStatus > 255))) {
+    throw new Error('sandbox3_operator_response_invalid');
+  }
+  output.serviceFailureResult = value.serviceFailureResult;
+  output.serviceExitStatus = value.serviceExitStatus;
   output.componentsExist = {}; output.proxyServicesActive = {};
   for (const name of ['environment', 'registry', 'unit', 'state', 'runtime']) {
     if (typeof value.componentsExist?.[name] !== 'boolean') throw new Error('sandbox3_operator_response_invalid');
@@ -127,4 +133,26 @@ export function sandbox3Credentials(seed) {
   if (typeof seed !== 'string' || new TextEncoder().encode(seed).length < 32) throw new Error('sandbox3_operator_seed_invalid');
   const derive = role => createHmac('sha256', seed).update(`trained-assist/agent-runner-api-sandbox3/bootstrap/v1/${role}`).digest('base64url');
   return { apiKey: `ta_sb3_${derive('api-key')}`, delegationSecret: derive('profile-delegation') };
+}
+
+export function sanitizedSandbox3Probe(value, mode) {
+  if (value?.schemaVersion !== 1 || value.target !== 'agent-runner-api-sandbox3') throw new Error('sandbox3_operator_response_invalid');
+  const output = { schemaVersion: 1, target: value.target };
+  const fields = mode === 'proxy'
+    ? ['hostMentioned', 'tlsMentioned', 'legacyPathMentioned', 'sandbox3PathMentioned', 'sandbox3UpstreamMentioned', 'publicRouteVerified']
+    : ['mockTerminalPong', 'idempotentReceipt', 'eventsReadable', 'authRefusal', 'workerOrModelCalled', 'realTelegramE2E'];
+  for (const name of fields) {
+    if (typeof value[name] !== 'boolean') throw new Error('sandbox3_operator_response_invalid');
+    output[name] = value[name];
+  }
+  if (mode === 'proxy') {
+    if (output.publicRouteVerified !== false) throw new Error('sandbox3_operator_response_invalid');
+  } else if (mode === 'mock') {
+    if (!fields.slice(0, 4).every(name => output[name]) || output.workerOrModelCalled || output.realTelegramE2E) throw new Error('sandbox3_operator_response_invalid');
+    for (const [name, prefix] of [['runId', 'run'], ['requestId', 'req']]) {
+      if (typeof value[name] !== 'string' || !new RegExp(`^${prefix}_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`).test(value[name])) throw new Error('sandbox3_operator_response_invalid');
+      output[name] = value[name];
+    }
+  } else throw new Error('sandbox3_operator_response_invalid');
+  return output;
 }

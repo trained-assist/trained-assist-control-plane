@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sanitizedSandbox3Probe, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 test('verifies exact downloaded bytes and refuses tampering before execution', async () => {
   const body = Buffer.from('print("synthetic-inventory")');
@@ -74,6 +74,7 @@ test('failed inventory file metadata cannot emit arbitrary owners or paths', () 
 test('fresh namespace evidence drops raw config and preserves unavailable runtime proof', () => {
   const value = { schemaVersion: 1, target: 'agent-runner-api-sandbox3', serviceActive: false,
     serviceExecSourceVerified: false, runtimeSourceSha: null, realExecutionVerified: false,
+    serviceFailureResult: 'exit-code', serviceExitStatus: 200,
     componentsExist: Object.fromEntries(['environment', 'registry', 'unit', 'state', 'runtime'].map(name => [name, false])),
     proxyServicesActive: { caddy: true, nginx: false }, rawSecret: 'private-secret' };
   const result = sanitizedSandbox3Namespace(value);
@@ -89,4 +90,19 @@ test('sandbox3 bootstrap credentials are repeatable and separated by role and ta
   assert.match(first.apiKey, /^ta_sb3_[A-Za-z0-9_-]{43}$/);
   assert.match(first.delegationSecret, /^[A-Za-z0-9_-]{43}$/);
   assert.throws(() => sandbox3Credentials('short'), /sandbox3_operator_seed_invalid/);
+});
+
+test('probe projections reject readiness inflation and never expose raw secrets', () => {
+  const base = { schemaVersion: 1, target: 'agent-runner-api-sandbox3', rawSecret: 'private-secret' };
+  const proxy = { ...base, hostMentioned: true, tlsMentioned: true, legacyPathMentioned: true,
+    sandbox3PathMentioned: false, sandbox3UpstreamMentioned: false, publicRouteVerified: false };
+  assert.equal(JSON.stringify(sanitizedSandbox3Probe(proxy, 'proxy')).includes('private-secret'), false);
+  assert.throws(() => sanitizedSandbox3Probe({ ...proxy, publicRouteVerified: true }, 'proxy'));
+  const mock = { ...base, mockTerminalPong: true, idempotentReceipt: true, eventsReadable: true,
+    authRefusal: true, workerOrModelCalled: false, realTelegramE2E: false,
+    runId: 'run_12345678-1234-1234-1234-123456789abc', requestId: 'req_12345678-1234-1234-1234-123456789abc' };
+  assert.equal(JSON.stringify(sanitizedSandbox3Probe(mock, 'mock')).includes('private-secret'), false);
+  for (const change of [{ realTelegramE2E: true }, { mockTerminalPong: false }, { runId: 'private-secret' }, { target: 'production' }]) {
+    assert.throws(() => sanitizedSandbox3Probe({ ...mock, ...change }, 'mock'));
+  }
 });
