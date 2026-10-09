@@ -22,6 +22,25 @@ Do not import internals of trained-assist-agent; reuse only parts with an explic
 **Permissions:** local operations unrestricted; deploy/test traffic to the named integration Worker is allowed by owner when necessary; destructive shared-state reset restricted. No CI staging gate exists yet.
 
 ### Production
+
+### Isolated sandbox3 contract probe
+
+`wrangler.sandbox3.jsonc` declares `trained-assist-cp-sandbox3`, its separate
+`ta-sandbox3-taskstore` D1 and Workflow. Deploy reviewed protected main with
+`deploy-sandbox3.yml` and `deploy_sandbox3=true`; real routing stays disabled.
+The existing `telegram-ux-sandbox-test-pass.yml` supports explicit
+`configure-sandbox3-proxy`, `pair-sandbox3-cp` and `sandbox3-cp-mock-probe` modes.
+Pair only after the pinned signed Runner process, public TLS/auth route and exact
+CP deployment pass. Existing credentials refuse pairing; preserve the Telegram
+intake secret. The separate `sandbox3-ops-read-v1` principal has `tasks:read` only.
+Observe sanitized bootstrap artifacts. Retry the fixed mock probe through its
+same idempotency key; reconcile partial credential writes before another pairing.
+This probe persists a Runner mock admission, creates no CP task and calls no
+worker/model. It does not prove real Telegram execution. Do not reset either lane
+or restart the shared API. The owner-authorized issue #236 sandbox workflow may
+configure the separate route and credentials; production cutover stays separate.
+
+### Production target
 The isolated Control Plane production target is declared in `wrangler.production.jsonc`: Worker `trained-assist-cp-production`, D1 `ta-cp-production-taskstore`, and Workflow `ta-cp-production-task-workflow`. Its D1 was created empty in WEUR on 2026-10-08. It has no Telegram, ingress-buffer, Runner, or delivery bindings; `PREVIEW_ONLY=true`, pilot routing is disabled, and `ROUTER_AGENT_ALLOWED=false`. It is a separate endpoint and does not replace or connect the legacy user-facing service. Data residency remains an architecture decision; do not add profile/user data until resolved.
 
 The isolated remote staging target is declared in `wrangler.staging.jsonc`: Worker `trained-assist-cp-staging`, D1 `ta-cp-staging-taskstore` (EEUR), and Workflow `ta-cp-staging-task-workflow`. Use unique disposable test identities and never copy production profile data.
