@@ -62,7 +62,7 @@ try {
   assert.equal(result.mode, 'engine');
   assert.equal(result.persistence, 'persisted');
   assert.equal(result.engineText?.source, 'runner_status_answer', 'answer is not the native final-answer channel');
-  assert.match(result.runId ?? '', /^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i);
+  assert.match(result.runId ?? '', /^run_(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[a-f0-9]{64}_[a-f0-9]{24})$/i);
   assert.ok(typeof result.answer === 'string' && result.answer.trim().length > 0, 'persisted agent answer is missing');
   assert.equal(state.runs.length, 1, 'expected one admitted attempt');
   assert.equal(state.runs[0].status, 'success');

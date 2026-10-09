@@ -5,7 +5,10 @@ import { pathToFileURL } from 'node:url';
 
 const maximumBytes = 1024 * 1024;
 const reference = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value);
-const canonicalRun = value => typeof value === 'string' && /^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+const canonicalRun = value => typeof value === 'string' && (
+  /^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value)
+  || /^run_[a-f0-9]{64}_[a-f0-9]{24}$/.test(value)
+);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const requireCondition = (condition, reason) => { if (!condition) throw new Error(reason); };
 const exact = (actual, expected) => record(actual) && Object.keys(actual).length === Object.keys(expected).length

@@ -167,7 +167,7 @@ export class CpStopTargetsService {
         && Array.isArray(target.attempts) && target.attempts.every(attempt => attempt
           && typeof attempt.attemptId === 'string' && attempt.attemptId.length > 0
           && Number.isSafeInteger(attempt.ownerGeneration) && attempt.ownerGeneration > 0
-          && (attempt.runId === null || /^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(attempt.runId))
+          && (attempt.runId === null || isRunnerRunId(attempt.runId))
           && typeof attempt.idempotencyKey === 'string')
         && new Set(target.attempts.map(attempt => attempt.attemptId)).size === target.attempts.length) ? targets : null;
     } catch { return null; }

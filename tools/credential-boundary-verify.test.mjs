@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, chmod, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readOnlyClient, verifyBoundary, readPrivateJson, runCli } from './credential-boundary-verify.mjs';
+import { readOnlyClient, verifyBoundary, readPrivateJson, runCli, validateExpectation } from './credential-boundary-verify.mjs';
 
 function fixture() {
   const expected = { version: 'credential-boundary-verify-v2', cpOrigin: 'https://cp.fixture', statusMethod: 'GET',
@@ -37,6 +37,12 @@ function fixture() {
   };
   return { expected, binding, checkpoint, wait, status, calls, fetchImpl };
 }
+
+test('boundary checkpoint accepts Cloudflare Runner Durable Object run ids', () => {
+  const { expected } = fixture();
+  expected.runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
+  assert.equal(validateExpectation(expected), expected);
+});
 
 test('verifies typed wait and one Workflow attempt with native answer channel, not native engine or launch time', async () => {
   const data = fixture();
