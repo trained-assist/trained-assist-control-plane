@@ -105,7 +105,9 @@ export interface NativeStopEvidence {
   runId: string;
   ownerGeneration: number;
   state: 'succeeded' | 'failed' | 'cancelled';
-  exitObserved: true;
+  exitObserved: boolean;
+  /** Authenticated Runner proof that France refused launch before issuing a receipt. */
+  preAdmissionRefusal?: true;
 }
 
 export interface CpStopTarget {

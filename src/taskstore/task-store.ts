@@ -1399,7 +1399,8 @@ export class TaskStore {
     const unique = new Map<string, NativeStopEvidence>();
     for (const proof of proofs) {
       const run = runs.find((item) => item.id === proof.attemptId);
-      if (proof.taskId !== taskId || proof.profileId !== task.profile_id || proof.exitObserved !== true
+      if (proof.taskId !== taskId || proof.profileId !== task.profile_id
+        || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed'))
         || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
         || !run || run.session_id !== proof.runId || run.generation !== proof.ownerGeneration
         || run.finished_at === null || !['success', 'failed', 'cancelled'].includes(run.status)) {
@@ -1407,7 +1408,8 @@ export class TaskStore {
       }
       unique.set(proof.attemptId, {
         taskId, profileId: task.profile_id, attemptId: run.id, runId: proof.runId,
-        ownerGeneration: run.generation, state: proof.state, exitObserved: true,
+        ownerGeneration: run.generation, state: proof.state, exitObserved: proof.exitObserved,
+        ...(proof.preAdmissionRefusal === true ? { preAdmissionRefusal: true } : {}),
       });
     }
     if (unique.size === 0) return;
@@ -2577,7 +2579,8 @@ export class TaskStore {
     const attempt = target.attempts.find(value => value.attemptId === proof.attemptId);
     if (!attempt || proof.taskId !== target.userTaskId || proof.profileId !== target.profileId
       || proof.runId !== attempt.runId || proof.ownerGeneration !== attempt.ownerGeneration
-      || proof.exitObserved !== true || !['succeeded', 'failed', 'cancelled'].includes(proof.state)) return false;
+      || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed'))
+      || !['succeeded', 'failed', 'cancelled'].includes(proof.state)) return false;
     const eventId = `cp-stop-proof:${snapshotId}:${proof.attemptId}`;
     await this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
       SELECT ?, id, 'progress', generation, 'gateway', ?, ? FROM durable_tasks WHERE id = ? AND ${CP_STOP_GUARD_SQL}
@@ -2744,7 +2747,10 @@ export class TaskStore {
                    AND json_extract(observed.value, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
                    AND json_extract(observed.value, '$.runId') IS json_extract(attempt.value, '$.runId')
                    AND json_extract(observed.value, '$.ownerGeneration') = json_extract(attempt.value, '$.ownerGeneration')
-                   AND json_type(observed.value, '$.exitObserved') = 'true'
+                   AND (json_type(observed.value, '$.exitObserved') = 'true'
+                     OR (json_type(observed.value, '$.exitObserved') = 'false'
+                       AND json_type(observed.value, '$.preAdmissionRefusal') = 'true'
+                       AND json_extract(observed.value, '$.state') = 'failed'))
                    AND json_extract(observed.value, '$.state') IN ('succeeded','failed','cancelled'))))
            AND NOT EXISTS (SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
              AND submission.kind = 'progress' AND submission.source = 'executor'

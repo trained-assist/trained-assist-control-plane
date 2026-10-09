@@ -41,6 +41,20 @@ async function setup(withNative = true) {
 }
 
 describe('native cancellation requires actual terminal evidence', () => {
+  it('accepts authenticated terminal proof that the France worker refused before admission', async () => {
+    const fixture = await setup();
+    fixture.result.outcome = 'failed';
+    fixture.result.exitReason = 'preflight_refused';
+    fixture.result.exitObserved = false;
+    fixture.result.failure = { code: 'WORKER_INVALID_REQUEST', failureClass: 'preflight',
+      safeSummary: 'The France execution worker refused the run before accepting it.', retryable: false };
+    fixture.status.state = 'failed';
+    const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
+    const cancelled = await port.cancel(fixture.taskId);
+    expect(cancelled).toMatchObject({ cancelled: true, stopConfirmed: true });
+    expect(cancelled.nativeStops).toMatchObject([{ state: 'failed', exitObserved: false, preAdmissionRefusal: true }]);
+  });
+
   it('signed HTTP status and cancellation retry expose durable proof only to the owning profile', async () => {
     const fixture = await setup();
     const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));

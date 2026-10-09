@@ -22,11 +22,20 @@ export interface ExternalStopPort {
 }
 
 export function confirmedExternalStop(context: ExternalStopContext, outcome: ExternalStopOutcome): boolean {
+  // Runner API records a terminal `preflight_refused` result only when the
+  // France worker rejected the launch before issuing an execution receipt.
+  // In that case there is no process exit to observe, but the authenticated
+  // terminal result is definitive proof that nothing remains to stop.
+  const preAdmissionRefusal = outcome.state === 'stopped' && outcome.result.outcome === 'failed'
+    && outcome.result.exitObserved === false && outcome.result.exitReason === 'preflight_refused'
+    && outcome.result.failure?.failureClass === 'preflight' && outcome.result.failure.retryable === false
+    && /^WORKER_[A-Z0-9_]{1,80}$/.test(outcome.result.failure.code);
   return outcome.state === 'stopped' && context.runId !== null
     && isRunnerRunId(context.runId)
     && outcome.result.runId === context.runId && outcome.result.userTaskId === context.taskId
     && outcome.result.profileId === context.profileId && outcome.result.ownerGeneration === context.ownerGeneration
-    && outcome.result.exitObserved === true && ['succeeded', 'failed', 'cancelled'].includes(outcome.result.outcome);
+    && (outcome.result.exitObserved === true || preAdmissionRefusal)
+    && ['succeeded', 'failed', 'cancelled'].includes(outcome.result.outcome);
 }
 
 export function runnerExternalStopPort(adapter: Pick<RunnerApiAdapter, 'cancel' | 'status' | 'result'>): ExternalStopPort {
