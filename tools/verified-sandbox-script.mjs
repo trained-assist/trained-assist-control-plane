@@ -81,3 +81,21 @@ export function sanitizedRunnerPermissions(result) {
     environment: result.components.environment, journal: result.components.journal,
   } };
 }
+
+export function sanitizedRunnerFileMetadata(value) {
+  if (!value || typeof value !== 'object') throw new Error('runner_file_metadata_invalid');
+  const result = {};
+  for (const component of ['environment', 'journal']) {
+    const entry = value[component];
+    if (typeof entry?.exists !== 'boolean') throw new Error('runner_file_metadata_invalid');
+    result[component] = { exists: entry.exists };
+    if (!entry.exists) continue;
+    if (!['root', 'sandbox', 'other'].includes(entry.owner)) throw new Error('runner_file_metadata_invalid');
+    result[component].owner = entry.owner;
+    for (const name of ['regular', 'unique', 'privateMode', 'serviceCanRead', 'serviceCanWrite']) {
+      if (typeof entry[name] !== 'boolean') throw new Error('runner_file_metadata_invalid');
+      result[component][name] = entry[name];
+    }
+  }
+  return result;
+}
