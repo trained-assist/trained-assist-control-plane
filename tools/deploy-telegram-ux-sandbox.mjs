@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { TELEGRAM_UX_SANDBOX, isExpectedTelegramUxCloudflareAccount, isSandboxReadinessEndpointMissing, validateSandboxBuildSha, validateTelegramUxSandboxConfig } from '../src/deployment/telegram-ux-sandbox.ts';
 
 const configPath = 'wrangler.telegram-ux-v1.jsonc';
+const RUNNER_API_URL = 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
+const RUNNER_DELEGATION_TENANT = 'telegram-ux-sandbox-20261009';
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 1024 * 1024, ...options });
   if (result.error || result.status !== 0) throw new Error(`sandbox_command_failed:${command}`);
@@ -42,6 +44,19 @@ print(secret)`;
 async function validateAccount() {
   const output = run('npx', ['wrangler', 'whoami']);
   if (!isExpectedTelegramUxCloudflareAccount(output)) throw new Error('cloudflare_account_mismatch');
+}
+
+function optionalSecret(name) {
+  const value = process.env[name]?.trim();
+  if (!value || value.length < 32) throw new Error(`sandbox_runner_secret_missing:${name}`);
+  return value;
+}
+
+function putWorkerSecret(name, value) {
+  const result = spawnSync('npx', ['wrangler', 'secret', 'put', name, '--config', configPath], {
+    input: `${value}\n`, encoding: 'utf8', maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) throw new Error(`sandbox_worker_secret_sync_failed:${name}`);
 }
 
 async function livenessProbe(expectedBuildSha = null) {
@@ -162,13 +177,21 @@ async function main(args = process.argv.slice(2)) {
   }
   await livenessProbe();
 
+  const apiKey = optionalSecret('RUNNER_API_KEY_AGENT_API');
+  const delegationSecret = optionalSecret('RUNNER_PROFILE_DELEGATION_SECRET');
+  for (const [name, value] of [['RUNNER_API_KEY_AGENT_API', apiKey],
+    ['RUNNER_PROFILE_DELEGATION_SECRET', delegationSecret]]) putWorkerSecret(name, value);
+
   const secretPut = spawnSync('npx', ['wrangler', 'secret', 'put', 'PRINCIPAL_SECRET_TELEGRAM_UX', '--config', configPath], {
     input: secret,
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,
   });
   if (secretPut.error || secretPut.status !== 0) throw new Error('sandbox_secret_sync_failed');
-  run('npx', ['wrangler', 'deploy', '--config', configPath, '--var', `BUILD_SHA:${sourceSha}`], { stdio: 'inherit' });
+  run('npx', ['wrangler', 'deploy', '--config', configPath, '--var', `BUILD_SHA:${sourceSha}`,
+    '--var', 'RUNNER_API_ENGINE_SELECTION:agent_api', '--var', `RUNNER_API_URL:${RUNNER_API_URL}`,
+    '--var', `RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID:${TELEGRAM_UX_SANDBOX.principalId}`,
+    '--var', `RUNNER_PROFILE_DELEGATION_TENANT_ID:${RUNNER_DELEGATION_TENANT}`], { stdio: 'inherit' });
   const liveness = await livenessProbe(sourceSha);
   const readiness = await readinessProbe(secret);
   console.log(JSON.stringify({ ok: true, mode: 'deploy', worker: TELEGRAM_UX_SANDBOX.workerName,
