@@ -58,7 +58,7 @@ export function sanitizedRunnerInventory(result) {
     throw new Error('runner_inventory_response_invalid');
   }
   output.workerEngines = [...new Set(result.workerEngines)].sort();
-  const bindings = ['AGENT_API_WORKERS', 'EXTERNAL_WORKER_URL', 'EXTERNAL_WORKER_TOKEN',
+  const bindings = ['AGENT_API_WORKERS', 'EXTERNAL_WORKER_URL', 'EXTERNAL_WORKER_TOKEN', 'AGENT_API_ENGINE_CHAIN',
     'AGENT_API_PROFILE_WORKSPACE_ROOT', 'AGENT_API_PROFILE_OWNER', 'AGENT_API_PROFILE_GITHUB_TOKEN',
     'AGENT_API_PROFILE_TENANT_ROUTES_JSON', 'AGENT_API_PROFILE_DELEGATION_SECRET', 'AGENT_API_PUBLIC_URL',
     'GCS_BUCKET', 'GOOGLE_APPLICATION_CREDENTIALS'];

@@ -32,8 +32,8 @@ export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
   runnerCandidateBundleSha256: '42adc29e0ed20125c8703d661694c36fca59667e8294132c723cee0f0080ed4a',
   runnerPermissionsSourceSha: '9e4ea19da47fb22e9edb99ac35c39827024c81ab',
   runnerPermissionsScriptSha256: 'fe01823e0f21e5a40d99f9a89b3ea954179935473a6a17c107ea07adcc299a94',
-  runnerInventorySourceSha: '9e4ea19da47fb22e9edb99ac35c39827024c81ab',
-  runnerInventoryScriptSha256: 'd2c8cbdbbfc45465d6bdc5c942002e059ad6954467d230300513d3ecd9fe61bf',
+  runnerInventorySourceSha: 'b96bb96cf428998063a548bf589536352d0c7519',
+  runnerInventoryScriptSha256: 'b1eb4ea47c9cc9820c307ebe98a4041308b1ad32d62d17975e82c667c29f5f89',
 } as const;
 
 export function validateSandboxBuildSha(value: unknown): string {
