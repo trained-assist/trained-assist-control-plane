@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sanitizedSandbox3Probe, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sanitizedSandbox3Probe, sanitizedSandbox3ProxyConfiguration, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 test('verifies exact downloaded bytes and refuses tampering before execution', async () => {
   const body = Buffer.from('print("synthetic-inventory")');
@@ -107,5 +107,14 @@ test('probe projections reject readiness inflation and never expose raw secrets'
   assert.equal(JSON.stringify(sanitizedSandbox3Probe(mock, 'mock')).includes('private-secret'), false);
   for (const change of [{ realTelegramE2E: true }, { mockTerminalPong: false }, { runId: 'private-secret' }, { target: 'production' }]) {
     assert.throws(() => sanitizedSandbox3Probe({ ...mock, ...change }, 'mock'));
+  }
+});
+
+test('proxy configuration evidence separates a successful edit from public proof', () => {
+  const value = { schemaVersion: 1, target: 'agent-runner-api-sandbox3', proxyConfigured: true,
+    legacyConfigPreserved: true, serviceRestarted: false, publicRouteVerified: false, rawConfig: 'private-secret' };
+  assert.equal(JSON.stringify(sanitizedSandbox3ProxyConfiguration(value)).includes('private-secret'), false);
+  for (const change of [{ serviceRestarted: true }, { legacyConfigPreserved: false }, { publicRouteVerified: true }, { target: 'production' }]) {
+    assert.throws(() => sanitizedSandbox3ProxyConfiguration({ ...value, ...change }));
   }
 });

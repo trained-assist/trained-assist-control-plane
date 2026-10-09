@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { verifySandbox3PublicRoute } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ import {
   validateTelegramUxSandboxConfig,
 } from '../src/deployment/telegram-ux-sandbox.ts';
 import { commandFailureReason } from './command-failure.mjs';
-import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sanitizedSandbox3Probe, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, sanitizedRunnerFileMetadata, sanitizedSandbox3Namespace, sanitizedSandbox3Probe, sanitizedSandbox3ProxyConfiguration, sandbox3Credentials, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 const SANDBOX3_CP_URL = 'https://trained-assist-cp-sandbox3.skillset-apply.workers.dev';
 const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
@@ -56,6 +57,8 @@ const evidence = {
     runnerCandidateVerification: 'NOT_RUN',
     sandbox3OperatorInventory: 'NOT_RUN',
     sandbox3ProxyInspection: 'NOT_RUN',
+    sandbox3ProxyConfiguration: 'NOT_RUN',
+    sandbox3PublicRoute: 'NOT_RUN',
     sandbox3MockContract: 'NOT_RUN',
     sandbox3NamespacePreparation: 'NOT_RUN',
     sandbox3CandidateInstallation: 'NOT_RUN',
@@ -350,6 +353,16 @@ async function probeSandbox3(input, mock) {
   evidence.sandbox3OperatorSourceSha = TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha;
 }
 
+async function configureSandbox3Proxy(input) {
+  const script = await sandbox3Script('prepare-api-sandbox3.py', TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3PreparerDigest);
+  const body = await withRunnerSsh(input, args => sandbox3Response(spawnSync('ssh', [...args,
+    `sudo -n python3 -c ${shellQuote(script.toString('utf8'))} --configure-proxy`], {
+    encoding: 'utf8', maxBuffer: 64 * 1024, timeout: 60_000,
+  })));
+  evidence.sandbox3ProxyConfiguration = sanitizedSandbox3ProxyConfiguration(body);
+  evidence.sandbox3OperatorSourceSha = TELEGRAM_UX_SANDBOX_CREDENTIALS.sandbox3OperatorSourceSha;
+}
+
 async function withSandbox3Transport(input, files, operation) {
   const localDirectory = await mkdtemp(join(tmpdir(), 'ta-sandbox3-operator-'));
   try {
@@ -510,10 +523,10 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
+    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3);
@@ -542,7 +555,24 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (freshSandbox3) {
-      if (['--sandbox3-proxy-preflight', '--sandbox3-mock-probe'].includes(args[0])) {
+      if (args[0] === '--configure-sandbox3-proxy') {
+        stage = 'sandbox3ProxyConfiguration';
+        await configureSandbox3Proxy(input);
+        evidence.boundaries[stage] = 'PASS';
+        stage = 'sandbox3PublicRoute';
+        evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+        evidence.boundaries[stage] = 'PASS';
+        evidence.outcome = 'passed';
+      } else if (args[0] === '--sandbox3-public-preflight') {
+        stage = 'sandbox3OperatorInventory';
+        const metadata = await inspectSandbox3(input);
+        if (!metadata.serviceActive || !metadata.serviceExecSourceVerified || metadata.runtimeSourceSha !== TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerCandidateSourceSha) fail('sandbox3_installed_source_not_verified');
+        evidence.boundaries[stage] = 'PASS';
+        stage = 'sandbox3PublicRoute';
+        evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+        evidence.boundaries[stage] = 'PASS';
+        evidence.outcome = 'preflight_passed';
+      } else if (['--sandbox3-proxy-preflight', '--sandbox3-mock-probe'].includes(args[0])) {
         const mock = args[0] === '--sandbox3-mock-probe';
         stage = mock ? 'sandbox3MockContract' : 'sandbox3ProxyInspection';
         await probeSandbox3(input, mock);

@@ -164,3 +164,11 @@ for (const mode of ['--sandbox3-proxy-preflight', '--sandbox3-mock-probe']) {
     assert.equal(commands.some(command => command.args.some(arg => arg.includes('python3 -c'))), false);
   });
 }
+
+test('explicit proxy configuration refuses substituted helper before nginx mutation', async () => {
+  const { evidence, commands } = await exercise('--configure-sandbox3-proxy', { CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
+  assert.equal(evidence.failure.boundary, 'sandbox3ProxyConfiguration');
+  assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
+  assert.equal(commands.some(command => command.args.some(arg => arg.includes('--configure-proxy'))), false);
+  assert.equal(evidence.boundaries.sandbox3PublicRoute, 'NOT_RUN');
+});

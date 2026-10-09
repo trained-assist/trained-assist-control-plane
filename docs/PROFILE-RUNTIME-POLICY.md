@@ -212,6 +212,13 @@ API/state untouched:
   refusal, terminal mock pong, result, idempotent receipt and events. The scoped
   API key travels only over stdin; an unknown result prevents replay. This
   component check does not establish Telegram or real worker execution.
+- `configure-sandbox3-proxy`: explicit fixed route configuration via byte-verified
+  helper. Requires exact runtime and one qualified TLS server, preserves legacy
+  bytes in a private root-only backup, validates nginx before reload and restores
+  on failure while preserving concurrent edits. Runner is not restarted. External
+  TLS/health/anonymous auth refusal is checked separately after configuration.
+- `sandbox3-public-preflight`: repeat read-only exact process/source and public
+  TLS/health/auth-refusal checks, without reapplying an exclusive route edit.
 - `prepare-sandbox3`: verify the existing signed candidate, then invoke the
   existing Runner lane bootstrap's fixed contract stage over pinned SSH. Refuse
   any existing component or aliased path. Derive scoped credentials from the
