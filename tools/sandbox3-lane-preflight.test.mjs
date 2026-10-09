@@ -62,6 +62,19 @@ test('absent or foreign principal blocks the lane without leaking scope values',
   assert.equal(evaluateSandbox3Lane(input).checks.cpPrincipal, 'BLOCKED');
 });
 
+test('the paired read-only operator does not invalidate the Telegram intake identity', () => {
+  const input = ready();
+  input.principalRows.push({ principal_id: 'sandbox3-ops-read-v1', profile_id: 'integration-sandbox3-v1',
+    scopes: ['tasks:read'], enabled: 1 });
+  assert.equal(evaluateSandbox3Lane(input).checks.cpPrincipal, 'PASS');
+  for (const patch of [{ enabled: 0 }, { profile_id: 'foreign' }, { scopes: ['tasks:read'] }]) {
+    const changed = { ...input, principalRows: [{ ...input.principalRows[0], ...patch }, input.principalRows[1]] };
+    assert.equal(evaluateSandbox3Lane(changed).checks.cpPrincipal, 'BLOCKED');
+  }
+  input.principalRows.push(input.principalRows[0]);
+  assert.equal(evaluateSandbox3Lane(input).checks.cpPrincipal, 'BLOCKED');
+});
+
 test('terminal history permits repeat tests while nonterminal/foreign state blocks reuse', () => {
   const input = ready();
   input.counts = { tasks: 3, executions: 3, nonterminalTasks: 0, foreignProfileTasks: 0, nonterminalExecutions: 0 };
