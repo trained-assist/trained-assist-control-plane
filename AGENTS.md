@@ -40,6 +40,18 @@ worker/model. It does not prove real Telegram execution. Do not reset either lan
 or restart the shared API. The owner-authorized issue #236 sandbox workflow may
 configure the separate route and credentials; production cutover stays separate.
 
+The same workflow's `configure-sandbox3-native` mode uses the pinned Runner
+operator and unchanged signed candidate. CP3 execution flags must remain disabled
+while it verifies Worker source/auth, fences and drains admission, checks the
+fresh journal, then updates only sandbox3. Environment `sandbox` supplies private
+SANDBOX3_NATIVE_WORKER_TOKEN, SANDBOX3_PROFILE_GITHUB_TOKEN and
+SANDBOX3_GCS_CREDENTIALS; SANDBOX3_GCS_BUCKET and SANDBOX3_NATIVE_WORKER_SHA
+are nonsecret variables for the existing storage target and deployed source.
+Missing credentials fail before service mutation. Never upload request JSON,
+credential files or private backups as evidence. This setup does not execute a
+model or prove profile saveback. CP3 run-spec policy declares the free Worker's
+180-second timeout, 1 MiB output/log caps and only the Ladder environment name.
+
 ### Production target
 The isolated Control Plane production target is declared in `wrangler.production.jsonc`: Worker `trained-assist-cp-production`, D1 `ta-cp-production-taskstore`, and Workflow `ta-cp-production-task-workflow`. Its D1 was created empty in WEUR on 2026-10-08. It has no Telegram, ingress-buffer, Runner, or delivery bindings; `PREVIEW_ONLY=true`, pilot routing is disabled, and `ROUTER_AGENT_ALLOWED=false`. It is a separate endpoint and does not replace or connect the legacy user-facing service. Data residency remains an architecture decision; do not add profile/user data until resolved.
 

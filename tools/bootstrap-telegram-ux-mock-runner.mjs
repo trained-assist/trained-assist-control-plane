@@ -60,6 +60,7 @@ const evidence = {
     sandbox3OperatorInventory: 'NOT_RUN',
     sandbox3ProxyInspection: 'NOT_RUN',
     sandbox3ProxyConfiguration: 'NOT_RUN',
+    sandbox3NativeConfiguration: 'NOT_RUN',
     sandbox3PublicRoute: 'NOT_RUN',
     sandbox3CpCredentialPairing: 'NOT_RUN',
     sandbox3CpMockContract: 'NOT_RUN',
@@ -327,7 +328,7 @@ function sandbox3Response(result) {
   try { body = JSON.parse(result.stdout); } catch { fail('sandbox3_operator_response_invalid'); }
   if (body?.schemaVersion !== 1 || body.target !== 'agent-runner-api-sandbox3') fail('sandbox3_operator_response_invalid');
   if (result.status !== 0) {
-    if (typeof body.reasonCode === 'string' && /^sandbox3_(prepare|probe|proxy)_[a-z_]{1,70}$/.test(body.reasonCode)) fail(body.reasonCode);
+    if (typeof body.reasonCode === 'string' && /^sandbox3_(prepare|probe|proxy|native)_[a-z_]{1,70}$/.test(body.reasonCode)) fail(body.reasonCode);
     fail(commandFailureReason('ssh', result));
   }
   return body;
@@ -458,6 +459,39 @@ async function withSandbox3Transport(input, files, operation) {
       }
     });
   } finally { await rm(localDirectory, { recursive: true, force: true }); }
+}
+
+async function configureSandbox3Native(input) {
+  const bindings = await sandbox3CpSettings(input);
+  for (const [name, value] of Object.entries({ PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false', ROUTER_AGENT_ALLOWED: 'false' })) {
+    if (bindings.find(binding => binding.name === name)?.text !== value) fail('sandbox3_cp_execution_not_disabled');
+  }
+  const workerSha = requiredEnv('SANDBOX3_NATIVE_WORKER_SHA');
+  if (!/^[a-f0-9]{40}$/.test(workerSha)) fail('sandbox3_native_source_invalid');
+  let storageCredentials;
+  try { storageCredentials = JSON.parse(requiredEnv('SANDBOX3_GCS_CREDENTIALS')); }
+  catch { fail('sandbox3_native_storage_credential_invalid'); }
+  const request = JSON.stringify({ schemaVersion: 1, target: 'agent-runner-api-sandbox3',
+    workerSha, workerToken: requiredEnv('SANDBOX3_NATIVE_WORKER_TOKEN'),
+    profileGitHubToken: requiredEnv('SANDBOX3_PROFILE_GITHUB_TOKEN'),
+    storageBucket: requiredEnv('SANDBOX3_GCS_BUCKET'), storageCredentials });
+  const credentials = TELEGRAM_UX_SANDBOX_CREDENTIALS;
+  const preparer = await sandbox3Script('prepare-api-sandbox3.py', credentials.sandbox3PreparerDigest);
+  const checker = await sandbox3Script('check-api-sandbox-journal.py', credentials.sandbox3JournalCheckerDigest);
+  await withSandbox3Transport(input, { 'prepare.py': preparer, 'check-api-sandbox-journal.py': checker }, async (args, directory) => {
+    const body = sandbox3Response(spawnSync('ssh', [...args,
+      `sudo -n python3 ${shellQuote(`${directory}/prepare.py`)} --configure-native`], {
+      input: request, encoding: 'utf8', maxBuffer: 65536, timeout: 150_000,
+    }));
+    if (body.nativeConfigured !== true || body.admissionFenceDrained !== true
+      || body.runtimeSourceSha !== credentials.runnerCandidateSourceSha || body.workerSourceSha !== workerSha
+      || body.oldSharedServiceChanged !== false || body.modelCalled !== false || body.realTelegramE2E !== false) {
+      fail('sandbox3_native_response_invalid');
+    }
+    evidence.sandbox3NativeConfiguration = { nativeConfigured: true, admissionFenceDrained: true,
+      runtimeSourceSha: body.runtimeSourceSha, workerSourceSha: workerSha,
+      oldSharedServiceChanged: false, modelCalled: false, realTelegramE2E: false };
+  });
 }
 
 async function prepareSandbox3(input) {
@@ -601,10 +635,10 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-native', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
+    const freshSandbox3 = ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe', '--configure-sandbox3-native', '--configure-sandbox3-proxy', '--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe', '--prepare-sandbox3', '--install-sandbox3'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3);
@@ -633,7 +667,15 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (freshSandbox3) {
-      if (['--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0])) {
+      if (args[0] === '--configure-sandbox3-native') {
+        stage = 'sandbox3NativeConfiguration';
+        await configureSandbox3Native(input);
+        evidence.boundaries[stage] = 'PASS';
+        stage = 'sandbox3PublicRoute';
+        evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+        evidence.boundaries[stage] = 'PASS';
+        evidence.outcome = 'passed';
+      } else if (['--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0])) {
         if (args[0] === '--pair-sandbox3-cp') {
           stage = 'sandbox3CpCredentialPairing';
           await pairSandbox3Cp(input);
@@ -723,7 +765,7 @@ async function main() {
     evidence.failure = {
       boundary: stage,
       reasonCode: error instanceof Error && (/^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
-        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|VM2_SSH_PRIVATE_KEY)$/.test(error.message))
+        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
         ? error.message : 'sandbox_bootstrap_failed',
     };
   } finally {

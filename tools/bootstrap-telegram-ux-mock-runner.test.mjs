@@ -29,6 +29,9 @@ else if(args.includes('execute')) {
     }
     const preload = join(root, 'fetch.mjs');
     await writeFile(preload, `globalThis.fetch=async url=>{
+ if(url.endsWith('/settings')) return Response.json({success:true,result:{bindings:[
+  {name:'PREVIEW_ONLY',text:'true'},{name:'PILOT_ENABLED',text:'false'},
+  {name:'ROUTER_AGENT_ALLOWED',text:process.env.TEST_CP_EXECUTION??'false'}]}});
  if(url.startsWith('https://raw.githubusercontent.com/')) return new Response('tampered-script');
  if(url.endsWith('/healthz')) return Response.json({service:'trained-assist-control-plane',check:'liveness',buildSha:process.env.GITHUB_SHA});
  if(url.endsWith('/internal/sandbox/readiness')){const count=Number(process.env.TEST_BUSY??0);return Response.json({ok:count===0,principalId:'integration-telegram-ux-v1',profileId:process.env.TEST_PROFILE??'integration-telegram-ux-v1',reasonCode:count?'sandbox_lane_has_nonterminal_task':null,nonterminalTaskCount:count},{status:count?409:200});}
@@ -59,6 +62,27 @@ function assertReadOnly(commands) {
     else assert.deepEqual(args, ['wrangler', 'whoami']);
   }
 }
+test('native sandbox3 configuration refuses an enabled CP before any SSH mutation', async () => {
+  const { result, evidence, commands } = await exercise('--configure-sandbox3-native', { TEST_CP_EXECUTION: 'true' });
+  assert.equal(result.status, 1);
+  assert.equal(evidence.failure.reasonCode, 'sandbox3_cp_execution_not_disabled');
+  assert.equal(evidence.failure.boundary, 'sandbox3NativeConfiguration');
+  assertReadOnly(commands);
+});
+test('native sandbox3 missing source fails before fetching or executing an operator', async () => {
+  const { result, evidence, commands } = await exercise('--configure-sandbox3-native', { SANDBOX3_NATIVE_WORKER_SHA: '' });
+  assert.equal(result.status, 1);
+  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:SANDBOX3_NATIVE_WORKER_SHA');
+  assertReadOnly(commands);
+});
+test('native sandbox3 invalid private storage JSON is sanitized before SSH', async () => {
+  const { result, evidence, commands } = await exercise('--configure-sandbox3-native', {
+    SANDBOX3_NATIVE_WORKER_SHA: 'b'.repeat(40), SANDBOX3_GCS_CREDENTIALS: secret,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(evidence.failure.reasonCode, 'sandbox3_native_storage_credential_invalid');
+  assertReadOnly(commands);
+});
 test('preflight verifies existing boundaries without provisioning a key or mutating shared state', async () => {
   const { result, evidence, commands } = await exercise('--preflight');
   assert.equal(result.status, 0);
