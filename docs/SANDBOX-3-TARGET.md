@@ -1,58 +1,65 @@
 # Isolated CP sandbox-3 target
 
-This target supports the isolated E2E lane tracked by
-[trained-agent-architecture#193](https://github.com/trained-assist/trained-agent-architecture/issues/193).
+This target is an isolated Control Plane lane. It uses the serverless Runner
+boundary defined in trained-agent-architecture; it is not connected to a
+VM-hosted API.
 
 ## Resources
 
-- Worker: `trained-assist-cp-sandbox3`
+- CP Worker: `trained-assist-cp-sandbox3`
+- Runner API Worker: `trained-assist-runner-api-sandbox3`
+- Telegram gateway: `trained-assist-tg-sandbox3`
 - Workflow: `ta-cp-sandbox3-task-workflow`
 - D1: `ta-sandbox3-taskstore` (`1e1b8108-9186-43e2-8e50-436598233165`)
-- Worker URL: `https://trained-assist-cp-sandbox3.skillset-apply.workers.dev`
+- CP URL: `https://trained-assist-cp-sandbox3.skillset-apply.workers.dev`
+- Runner API URL: `https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev`
 
-The D1 database existed before this target was added. Its existing 14 migrations
-were inspected read-only; it had zero durable tasks, admission principals, and
-executions. The sandbox-3 deployment does not apply migrations or seed rows.
+## Runtime boundary
 
-## Deployment boundary
+CP's `RUNNER_API_URL` points only to the Cloudflare Runner API Worker. CP has no
+France VM, GHA gateway/workflow, or execution-worker URL or credential. Runner
+API owns admission, placement and its dispatch credentials. For ordinary Agent
+Runs its default execution worker is the existing worker in France. The worker
+executes the process; it does not host the Runner API.
+
+The CP target remains fail-closed:
+`PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, and `ROUTER_AGENT_ALLOWED=false`.
+Do not bind the shared Telegram UX D1 or staging/production D1 databases here.
+
+## Deployment and preflight
 
 Use **Deploy isolated CP sandbox-3** from protected `main` with its confirmation
-input enabled. The workflow uses the protected `staging` GitHub environment
-credentials and checks the expected Cloudflare account before deploying. It
-pins the source SHA in `BUILD_SHA` and performs the read-only `/healthz` and
-anonymous private-catalogue smoke.
-
-The config declares Agent API-owned engine/profile selection, but deliberately
-has no Agent API URL or credentials yet. It remains fail-closed:
-`PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, `ROUTER_AGENT_ALLOWED=false`. No
-service bindings, principal secrets, registration, intake, Runner/provider
-calls, or Telegram delivery are configured. Do not enable execution until
-profile delegation and bounded reservation/settlement acceptance are complete.
-Do not bind the shared Telegram UX D1 or the staging/production D1 databases
-here.
-
-## Read-only lane preflight
+input enabled. The workflow uses the protected `staging` GitHub environment,
+checks the expected Cloudflare account, pins `BUILD_SHA`, and performs read-only
+health and diagnostics checks. It does not apply migrations or enable execution.
 
 `npm run sandbox:preflight:sandbox3` checks the deployed CP and Telegram
-bindings, verifies the CP D1 has no nonterminal tasks/executions or foreign
-profile tasks (terminal history is retained), and only the scoped
-`integration-sandbox3-v1` admission principal, and
-compares Telegram state namespace IDs with the two older test gateways. Supply
-`CLOUDFLARE_API_TOKEN` and the exact `CLOUDFLARE_ACCOUNT_ID` through the
-operator's secret store; optionally set `EXPECTED_CP_SHA` to reject deployment
-drift. The command prints only names, status codes, and the CP source SHA. It
-does not seed a task, apply migrations, rotate secrets, or deploy anything.
+bindings, CP liveness/D1/Workflow, nonterminal and foreign-profile state, the
+scoped `integration-sandbox3-v1` principal, Telegram state isolation, and the
+public Runner endpoint's Cloudflare Worker identity, version and anonymous-auth
+refusal. It performs only read-only Cloudflare and D1 queries. `CONFIGURED`
+means bindings are present and the lane state is reusable; the report always
+leaves Runner admission journal and real Telegram E2E unverified until they are
+tested separately.
 
-`CONFIGURED` means only that the declared bindings are present. The report
-always records Runner admission journal and real Telegram E2E as unverified
-until separate observed tests prove them. In the initial disabled deployment,
-the expected result is `BLOCKED`: the Telegram sandbox-3 gateway still points
-to the shared CP, and Agent API credentials and execution flags are absent.
+The `telegram-ux-sandbox-test-pass.yml` workflow exposes these sandbox3 modes:
 
-The declared separate Runner route for this lane is
-`https://169-58-15-230.sslip.io/runner-sandbox3`, backed by
-`agent-runner-api-sandbox3.service` (port 18883). The preflight requires this exact
-URL; it does not prove the route is provisioned or the API is reachable. A
-`CONTROL_PLANE_SERVICE` binding takes precedence in the Telegram client, so any
-such binding must also name this lane's CP Worker. Preflight errors are allowlisted
-and cannot print arbitrary transport exception text.
+- `sandbox3-public-preflight`: check Runner API health/version/auth refusal.
+- `pair-sandbox3-cp`: validate the API key against Runner API, then write only
+  sandbox CP secrets and a `tasks:read` operator principal.
+- `sandbox3-cp-mock-probe`: exercise the authenticated CP adapter against the
+  fixed `mock-test` Runner API contract. It creates no CP task and calls no
+  model or France worker.
+
+VM-hosted sandbox3 Runner API installation and proxy setup modes are retired.
+Do not restart a VM service to test the API boundary. Do not reset shared D1 or
+Workflow state; use unique idempotency keys and reconcile accepted operations.
+
+## Acceptance limits
+
+Public health/version plus anonymous-auth refusal proves only the serverless API
+boundary. An authenticated `mock-test` proves the CP adapter and durable Runner
+admission path without model or France-worker execution. Real Agent Run
+acceptance still requires Runner's France worker readiness, a disposable
+sandbox profile with bounded free execution, verified result persistence, and
+Telegram delivery. CP execution flags stay disabled until those gates pass.

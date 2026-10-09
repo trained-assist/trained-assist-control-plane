@@ -29,6 +29,11 @@ else if(args.includes('execute')) {
     }
     const preload = join(root, 'fetch.mjs');
     await writeFile(preload, `globalThis.fetch=async url=>{
+ if(String(url).startsWith('https://trained-assist-runner-api-sandbox3.')) {
+  if(String(url).endsWith('/healthz')) return Response.json({status:'ok',service:'ai-agent-runner-api',placement:'cloudflare-worker'});
+  if(String(url).endsWith('/version')) return Response.json({runtime:'cloudflare-worker'});
+  return Response.json({error:{code:'UNAUTHENTICATED'}},{status:401});
+ }
  if(url.endsWith('/settings')) return Response.json({success:true,result:{bindings:[
   {name:'PREVIEW_ONLY',text:'true'},{name:'PILOT_ENABLED',text:'false'},
   {name:'ROUTER_AGENT_ALLOWED',text:process.env.TEST_CP_EXECUTION??'false'}]}});
@@ -36,7 +41,7 @@ else if(args.includes('execute')) {
  if(url.endsWith('/healthz')) return Response.json({service:'trained-assist-control-plane',check:'liveness',buildSha:process.env.GITHUB_SHA});
  if(url.endsWith('/internal/sandbox/readiness')){const count=Number(process.env.TEST_BUSY??0);return Response.json({ok:count===0,principalId:'integration-telegram-ux-v1',profileId:process.env.TEST_PROFILE??'integration-telegram-ux-v1',reasonCode:count?'sandbox_lane_has_nonterminal_task':null,nonterminalTaskCount:count},{status:count?409:200});}
  if(url.endsWith('/internal/runner/profile-health')) return Response.json({runnerApi:'reachable',profileId:'integration-telegram-ux-v1'});
- if(url.endsWith('/internal/sandbox/runner-mock-probe')) return Response.json({ok:true,runnerState:'succeeded',answer:'pong',runnerOutcome:'succeeded',runId:'synthetic_run',sideEffects:{runnerAdmissionPersisted:true,cpTaskCreated:false,workerOrModelCalled:false}});
+ if(url.endsWith('/internal/sandbox/runner-mock-probe')) return Response.json({ok:true,principalId:'sandbox3-ops-read-v1',buildSha:process.env.GITHUB_SHA,runnerState:'succeeded',answer:'pong',runnerOutcome:'succeeded',runId:'run_12345678-1234-1234-1234-123456789abc',sideEffects:{runnerAdmissionPersisted:true,cpTaskCreated:false,workerOrModelCalled:false}});
  throw new Error('unexpected request');
 };`);
     const log = join(root, 'commands.jsonl');
@@ -62,27 +67,6 @@ function assertReadOnly(commands) {
     else assert.deepEqual(args, ['wrangler', 'whoami']);
   }
 }
-test('native sandbox3 configuration refuses an enabled CP before any SSH mutation', async () => {
-  const { result, evidence, commands } = await exercise('--configure-sandbox3-native', { TEST_CP_EXECUTION: 'true' });
-  assert.equal(result.status, 1);
-  assert.equal(evidence.failure.reasonCode, 'sandbox3_cp_execution_not_disabled');
-  assert.equal(evidence.failure.boundary, 'sandbox3NativeConfiguration');
-  assertReadOnly(commands);
-});
-test('native sandbox3 missing source fails before fetching or executing an operator', async () => {
-  const { result, evidence, commands } = await exercise('--configure-sandbox3-native', { SANDBOX3_NATIVE_WORKER_SHA: '' });
-  assert.equal(result.status, 1);
-  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:SANDBOX3_NATIVE_WORKER_SHA');
-  assertReadOnly(commands);
-});
-test('native sandbox3 invalid private storage JSON is sanitized before SSH', async () => {
-  const { result, evidence, commands } = await exercise('--configure-sandbox3-native', {
-    SANDBOX3_NATIVE_WORKER_SHA: 'b'.repeat(40), SANDBOX3_GCS_CREDENTIALS: secret,
-  });
-  assert.equal(result.status, 1);
-  assert.equal(evidence.failure.reasonCode, 'sandbox3_native_storage_credential_invalid');
-  assertReadOnly(commands);
-});
 test('preflight verifies existing boundaries without provisioning a key or mutating shared state', async () => {
   const { result, evidence, commands } = await exercise('--preflight');
   assert.equal(result.status, 0);
@@ -156,46 +140,34 @@ test('candidate preflight identifies cross-repository artifact access without se
   assert.deepEqual(commands.filter(x => x.tool === 'gh').map(x => x.args.slice(0, 2)), [['run', 'view']]);
 });
 
-test('fresh namespace inspection verifies operator bytes before any target mutation', async () => {
-  const { evidence, commands } = await exercise('--sandbox3-operator-preflight', { CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
-  assert.equal(evidence.mode, 'sandbox3-operator-preflight');
-  assert.equal(evidence.cpWorker, 'trained-assist-cp-sandbox3');
-  assert.equal(evidence.runnerService, 'agent-runner-api-sandbox3.service');
-  assert.equal(evidence.failure.boundary, 'sandbox3OperatorInventory');
-  assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
-  assertReadOnly(commands);
-});
-test('fresh preparation refuses unavailable signed artifact before provisioning namespace', async () => {
-  const { evidence, commands } = await exercise('--prepare-sandbox3', { RUNNER_MOCK_KEY_SEED: secret });
-  assert.equal(evidence.failure.boundary, 'runnerCandidateVerification');
-  assert.equal(evidence.failure.reasonCode, 'github_permission_denied:gh:1');
-  assert.equal(evidence.boundaries.sandbox3NamespacePreparation, 'NOT_RUN');
-  assert.equal(commands.some(x => x.tool === 'ssh' || x.tool === 'scp'), false);
-});
-test('fresh installation refuses unavailable signed artifact before transfer or restart', async () => {
-  const { evidence, commands } = await exercise('--install-sandbox3');
-  assert.equal(evidence.failure.boundary, 'runnerCandidateVerification');
-  assert.equal(evidence.failure.reasonCode, 'github_permission_denied:gh:1');
-  assert.equal(evidence.boundaries.sandbox3CandidateInstallation, 'NOT_RUN');
-  assert.equal(commands.some(x => x.tool === 'ssh' || x.tool === 'scp'), false);
+test('sandbox3 public preflight proves serverless API boundary without VM SSH credentials', async () => {
+  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '' });
+  assert.equal(result.status, 0);
+  assert.equal(evidence.outcome, 'preflight_passed');
+  assert.equal(evidence.runnerService, 'trained-assist-runner-api-sandbox3');
+  assert.equal(evidence.sandbox3PublicRoute.runnerApiPlacement, 'cloudflare-worker');
+  assert.equal(commands.some(command => command.tool === 'ssh'), false);
 });
 
-for (const mode of ['--sandbox3-proxy-preflight', '--sandbox3-mock-probe']) {
-  test(`${mode} refuses substituted helper before SSH execution`, async () => {
-    const { evidence, commands } = await exercise(mode, { CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
-    assert.equal(evidence.failure.boundary, mode.includes('mock') ? 'sandbox3MockContract' : 'sandbox3ProxyInspection');
-    assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
-    assert.equal(commands.some(command => command.args.some(arg => arg.includes('python3 -c'))), false);
+test('sandbox3 CP mock probe does not require SSH or write credentials', async () => {
+  const { result, evidence, commands } = await exercise('--sandbox3-cp-mock-probe', {
+    VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret,
+  });
+  assert.equal(result.status, 0);
+  assert.equal(evidence.outcome, 'passed');
+  assert.equal(evidence.sandbox3CpMockContract.realTelegramE2E, false);
+  assert.equal(commands.some(command => command.tool === 'ssh'), false);
+  assert.equal(commands.some(command => command.args.includes('secret')), false);
+});
+
+for (const mode of ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe',
+  '--configure-sandbox3-native', '--configure-sandbox3-proxy', '--prepare-sandbox3', '--install-sandbox3']) {
+  test(`${mode} is retired and cannot provision a VM-hosted Runner API`, async () => {
+    const { evidence, commands } = await exercise(mode);
+    assert.equal(evidence.failure.reasonCode, 'sandbox_bootstrap_mode_invalid');
+    assert.deepEqual(commands, []);
   });
 }
-
-test('explicit proxy configuration refuses substituted helper before nginx mutation', async () => {
-  const { evidence, commands } = await exercise('--configure-sandbox3-proxy', { CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
-  assert.equal(evidence.failure.boundary, 'sandbox3ProxyConfiguration');
-  assert.equal(evidence.failure.reasonCode, 'runner_inventory_script_digest_mismatch');
-  assert.equal(commands.some(command => command.args.some(arg => arg.includes('--configure-proxy'))), false);
-  assert.equal(evidence.boundaries.sandbox3PublicRoute, 'NOT_RUN');
-});
 
 test('sandbox3 pairing refuses a missing seed before any scoped D1 or secret write', async () => {
   const { evidence, commands } = await exercise('--pair-sandbox3-cp', { RUNNER_MOCK_KEY_SEED: '', CP_TELEGRAM_UX_PRINCIPAL_SECRET: '' });
