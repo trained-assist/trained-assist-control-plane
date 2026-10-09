@@ -6,7 +6,7 @@ on:
       mode:
         description: Inspect state, explicitly restrict sandbox file permissions, or bootstrap mock pair
         type: choice
-        options: [inventory, preflight, candidate-preflight, sandbox3-operator-preflight, sandbox3-proxy-preflight, sandbox3-mock-probe, configure-sandbox3-proxy, sandbox3-public-preflight, pair-sandbox3-cp, sandbox3-cp-mock-probe, prepare-sandbox3, install-sandbox3, repair-permissions, bootstrap]
+        options: [inventory, preflight, candidate-preflight, sandbox3-operator-preflight, sandbox3-proxy-preflight, sandbox3-mock-probe, configure-sandbox3-native, configure-sandbox3-proxy, sandbox3-public-preflight, pair-sandbox3-cp, sandbox3-cp-mock-probe, prepare-sandbox3, install-sandbox3, repair-permissions, bootstrap]
         default: inventory
         required: true
 
@@ -42,11 +42,16 @@ jobs:
           CP_TELEGRAM_UX_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
           RUNNER_MOCK_KEY_SEED: ${{ secrets.RUNNER_MOCK_KEY_SEED }}
           VM2_SSH_PRIVATE_KEY: ${{ secrets.VM2_SSH_PRIVATE_KEY }}
+          SANDBOX3_NATIVE_WORKER_TOKEN: ${{ secrets.SANDBOX3_NATIVE_WORKER_TOKEN }}
+          SANDBOX3_PROFILE_GITHUB_TOKEN: ${{ secrets.SANDBOX3_PROFILE_GITHUB_TOKEN }}
+          SANDBOX3_GCS_CREDENTIALS: ${{ secrets.SANDBOX3_GCS_CREDENTIALS }}
+          SANDBOX3_GCS_BUCKET: ${{ vars.SANDBOX3_GCS_BUCKET }}
+          SANDBOX3_NATIVE_WORKER_SHA: ${{ vars.SANDBOX3_NATIVE_WORKER_SHA }}
           GITHUB_SHA: ${{ github.sha }}
           BOOTSTRAP_MODE: ${{ inputs.mode }}
         run: |
           case "$BOOTSTRAP_MODE" in
-            inventory|preflight|candidate-preflight|sandbox3-operator-preflight|sandbox3-proxy-preflight|sandbox3-mock-probe|configure-sandbox3-proxy|sandbox3-public-preflight|pair-sandbox3-cp|sandbox3-cp-mock-probe|prepare-sandbox3|install-sandbox3|repair-permissions|bootstrap) ;;
+            inventory|preflight|candidate-preflight|sandbox3-operator-preflight|sandbox3-proxy-preflight|sandbox3-mock-probe|configure-sandbox3-native|configure-sandbox3-proxy|sandbox3-public-preflight|pair-sandbox3-cp|sandbox3-cp-mock-probe|prepare-sandbox3|install-sandbox3|repair-permissions|bootstrap) ;;
             *) exit 1 ;;
           esac
           node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs "--$BOOTSTRAP_MODE"
