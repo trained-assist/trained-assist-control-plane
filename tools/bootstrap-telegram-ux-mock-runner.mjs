@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import {
   TELEGRAM_UX_SANDBOX,
   TELEGRAM_UX_SANDBOX_CREDENTIALS,
@@ -52,6 +52,7 @@ const evidence = {
     authenticatedProfileHealth: 'NOT_RUN',
     runnerAdmissionInventory: 'NOT_RUN',
     runnerInventoryPermissions: 'NOT_RUN',
+    runnerCandidateVerification: 'NOT_RUN',
   },
   probe: {
     httpStatus: null,
@@ -253,7 +254,44 @@ async function restrictRunnerPermissions(input) {
   evidence.runnerPermissionsOperatorSha = source;
 }
 
-async function preflight(input, setStage, includeRunnerInventory = false, repairPermissions = false) {
+async function verifyRunnerCandidate() {
+  const credentials = TELEGRAM_UX_SANDBOX_CREDENTIALS;
+  const directory = await mkdtemp(join(tmpdir(), 'ta-runner-candidate-'));
+  try {
+    const repository = 'trained-assist/ai-agent-runner';
+    let run;
+    try { run = JSON.parse(capture('gh', ['run', 'view', credentials.runnerCandidateRunId,
+      '--repo', repository, '--json', 'conclusion,workflowName'])); } catch (error) {
+      if (error instanceof SyntaxError) fail('runner_candidate_run_response_invalid');
+      throw error;
+    }
+    if (run.conclusion !== 'success' || run.workflowName !== 'Runner API sandbox candidate') {
+      fail('runner_candidate_run_not_verified');
+    }
+    capture('gh', ['run', 'download', credentials.runnerCandidateRunId, '--repo', repository,
+      '--name', `runner-api-sandbox-candidate-${credentials.runnerCandidateSourceSha}`, '--dir', directory]);
+    const archive = join(directory, 'runner-api-sandbox-candidate.tar.gz');
+    if ((await stat(archive)).size > 64 * 1024 * 1024) fail('runner_candidate_archive_too_large');
+    if (createHash('sha256').update(await readFile(archive)).digest('hex') !== credentials.runnerCandidateBundleSha256) {
+      fail('runner_candidate_digest_mismatch');
+    }
+    capture('gh', ['attestation', 'verify', archive, '--repo', repository,
+      '--signer-workflow', `${repository}/.github/workflows/runner-api-sandbox-candidate.yml`]);
+    let manifest;
+    try { manifest = JSON.parse(capture('tar', ['-xOf', archive, 'candidate-manifest.json'])); } catch {
+      fail('runner_candidate_manifest_invalid');
+    }
+    if (manifest.target !== 'agent-runner-api-mcp-test'
+      || manifest.sourceSha !== credentials.runnerCandidateSourceSha || manifest.packageVersion !== '0.3.3') {
+      fail('runner_candidate_manifest_mismatch');
+    }
+    evidence.runnerCandidate = { runId: credentials.runnerCandidateRunId,
+      sourceSha: credentials.runnerCandidateSourceSha, bundleSha256: credentials.runnerCandidateBundleSha256,
+      artifactTarget: 'agent-runner-api-mcp-test', attestation: 'PASS', installed: false };
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+async function preflight(input, setStage, { includeRunnerInventory = false, repairPermissions = false, candidateVerification = false } = {}) {
   const failures = [];
   const check = async (boundary, probe) => {
     setStage(boundary);
@@ -296,6 +334,9 @@ async function preflight(input, setStage, includeRunnerInventory = false, repair
   }
   if (includeRunnerInventory) {
     await check('runnerAdmissionInventory', () => readRunnerInventory(input));
+  }
+  if (candidateVerification) {
+    await check('runnerCandidateVerification', () => verifyRunnerCandidate());
   }
   evidence.boundaryFailures = failures;
   if (failures.length) {
@@ -352,10 +393,10 @@ async function main() {
   let stage = 'sourceAndConfig';
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--bootstrap'].includes(args[0]))) {
+    if (args.length > 1 || (args.length === 1 && !['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight', '--bootstrap'].includes(args[0]))) {
       fail('sandbox_bootstrap_mode_invalid');
     }
-    const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions'].includes(args[0]);
+    const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
     evidence.mode = diagnosticMode ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(diagnosticMode);
     evidence.sourceSha = input.sourceSha;
@@ -375,7 +416,10 @@ async function main() {
     evidence.boundaries.sandboxPreDeployLiveness = 'PASS';
 
     if (diagnosticMode) {
-      await preflight(input, value => { stage = value; }, args[0] !== '--preflight', args[0] === '--repair-permissions');
+      await preflight(input, value => { stage = value; }, {
+        includeRunnerInventory: ['--inventory', '--repair-permissions'].includes(args[0]),
+        repairPermissions: args[0] === '--repair-permissions', candidateVerification: args[0] === '--candidate-preflight',
+      });
     } else {
       stage = 'sandboxMigrations';
       applySandboxMigrations();

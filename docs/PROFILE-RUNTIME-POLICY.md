@@ -199,6 +199,27 @@ and [architecture #236](https://github.com/trained-assist/trained-agent-architec
 Use `mode=bootstrap` explicitly for the existing paired-key deployment/mock flow,
 only when that shared target's state is safe for the requested operation.
 
+### Existing signed candidate access preflight
+
+`mode=candidate-preflight` reuses this workflow's operator environment and
+verifies access to the existing signed Runner candidate before installation.
+It checks the successful build run, exact artifact name, pinned archive SHA-256,
+GitHub provenance signer and manifest source/target/version. It downloads to a
+private temporary directory and removes it afterwards; no archive is extracted
+to a service directory and no install, restart or admission occurs. The artifact
+records source/hash/provenance and `installed=false` only. GitHub access errors
+are sanitized into an owning boundary instead of exposing command output.
+
+```bash
+gh workflow run telegram-ux-sandbox-test-pass.yml \
+  --repo trained-assist/trained-assist-control-plane --ref main -f mode=candidate-preflight
+```
+
+This independent boundary does not require the old Runner journal to be terminal
+and does not make that service restart-safe. The candidate's archive target is
+MCP test; installing its runtime in a fresh service requires a reviewed explicit
+operator-target contract.
+
 ### Explicit sandbox file permission repair
 
 The existing workflow also accepts `mode=repair-permissions` for the two
