@@ -20,7 +20,7 @@
   "vars": {
     "DEPLOYMENT_ENV": "sandbox3",
     "RUNNER_API_ENGINE_SELECTION": "agent_api",
-    "RUNNER_API_URL": "https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev",
+    "RUNNER_API_URL": "https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev",
     "SANDBOX_RUNNER_MOCK_PROBE_ENABLED": "true",
     "SANDBOX_RUNNER_MOCK_PROBE_PROFILE": "integration-sandbox3-v1",
     "RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID": "sandbox3-agent-api-principal",

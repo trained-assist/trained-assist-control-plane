@@ -64,6 +64,7 @@ const evidence = {
     sandbox3NativeConfiguration: 'NOT_RUN',
     sandbox3PublicRoute: 'NOT_RUN',
     sandbox3CpCredentialPairing: 'NOT_RUN',
+    sandbox3RunnerCredentialSync: 'NOT_RUN',
     sandbox3CpMockContract: 'NOT_RUN',
     sandbox3MockContract: 'NOT_RUN',
     sandbox3NamespacePreparation: 'NOT_RUN',
@@ -398,6 +399,13 @@ async function pairSandbox3Cp(input) {
     PRINCIPAL_SECRET_SANDBOX3_OPS: sandbox3OperatorSecret(seed) };
   verifySandbox3PairingBindings(await sandbox3CpSettings(input));
   evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+  const runnerKeyRegistry = JSON.stringify([{ keyHash: createHash('sha256').update(keys.apiKey).digest('hex'),
+    principalId: SANDBOX3.diagnosticPrincipalId, profileId: SANDBOX3.profileId,
+    scopes: ['runs:read', 'runs:write'], engines: ['mock-test'] }]);
+  capture('npx', ['wrangler', 'secret', 'put', 'RUNNER_API_KEYS', '--name', SANDBOX3.runnerWorkerName], { input: runnerKeyRegistry });
+  evidence.sandbox3RunnerCredentialSync = { credentialsSynced: true, workerName: SANDBOX3.runnerWorkerName,
+    principalId: SANDBOX3.diagnosticPrincipalId, profileId: SANDBOX3.profileId, scopes: ['runs:read', 'runs:write'], engines: ['mock-test'] };
+  evidence.boundaries.sandbox3RunnerCredentialSync = 'PASS';
   await verifySandbox3RunnerPrincipal(keys.apiKey);
   const principalSql = `SELECT profile_id, scopes, enabled FROM admission_principals WHERE principal_id = '${SANDBOX3.diagnosticPrincipalId}'`;
   let rows = sandbox3PrincipalQuery(principalSql);
@@ -662,7 +670,7 @@ async function main() {
     if (freshSandbox3) {
       validateSandbox3Config(config);
       evidence.cpWorker = 'trained-assist-cp-sandbox3';
-      evidence.runnerService = 'trained-assist-runner-api-sandbox3';
+      evidence.runnerService = SANDBOX3.runnerWorkerName;
       evidence.runnerPrincipalId = 'sandbox3-agent-api-principal';
       evidence.runnerProfileId = 'integration-sandbox3-v1';
       evidence.cpMockKeySecretName = 'RUNNER_API_KEY_AGENT_API';

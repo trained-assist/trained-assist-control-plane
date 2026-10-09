@@ -23,13 +23,14 @@ if('${tool}'==='ssh') {
 } else if(args.includes('whoami')) console.log('d740a05e9442c1d0feacae2dfc673e93');
 else if(args.includes('execute')) {
  if(process.env.TEST_DENIED){console.error('permission denied '+process.env.CF_API_TOKEN);process.exit(1);}
- console.log(JSON.stringify([{success:true,results:fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).map(name=>({name}))}]));
+ const sql=args[args.indexOf('--command')+1]??'';
+ console.log(JSON.stringify([{success:true,results:sql.includes('SELECT profile_id')?[{profile_id:'integration-sandbox3-v1',scopes:'[\\"tasks:read\\"]',enabled:1}]:fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).map(name=>({name}))}]));
 }`);
       await writeFile(join(bin, tool), `#!/bin/sh\nexec '${process.execPath}' '${stub}' "$@"\n`, { mode: 0o700 });
     }
     const preload = join(root, 'fetch.mjs');
     await writeFile(preload, `globalThis.fetch=async (url,options={})=>{
- if(String(url).startsWith('https://trained-assist-runner-api-sandbox3.')) {
+ if(String(url).startsWith('https://trained-assist-runner-api-cp-sandbox3.')) {
   if(String(url).endsWith('/healthz')) return Response.json({status:'ok',service:'ai-agent-runner-api',placement:'cloudflare-worker'});
   if(String(url).endsWith('/version')) return Response.json({runtime:'cloudflare-worker'});
   if(options.headers?.authorization==='Bearer ta_sb3_'+Buffer.from('fake').toString('base64url')) return Response.json({});
@@ -37,8 +38,12 @@ else if(args.includes('execute')) {
   return Response.json({error:{code:'UNAUTHENTICATED'}},{status:401});
  }
  if(url.endsWith('/settings')) return Response.json({success:true,result:{bindings:[
-  {name:'PREVIEW_ONLY',text:'true'},{name:'PILOT_ENABLED',text:'false'},
-  {name:'ROUTER_AGENT_ALLOWED',text:process.env.TEST_CP_EXECUTION??'false'}]}});
+  {name:'DEPLOYMENT_ENV',type:'plain_text',text:'sandbox3'},{name:'PREVIEW_ONLY',type:'plain_text',text:'true'},{name:'PILOT_ENABLED',type:'plain_text',text:'false'},
+  {name:'RUNNER_API_URL',type:'plain_text',text:'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'},
+  {name:'SANDBOX_RUNNER_MOCK_PROBE_ENABLED',type:'plain_text',text:'true'},
+  {name:'SANDBOX_RUNNER_MOCK_PROBE_PROFILE',type:'plain_text',text:'integration-sandbox3-v1'},
+  {name:'PRINCIPAL_SECRET_SANDBOX3',type:'secret_text'},
+  {name:'ROUTER_AGENT_ALLOWED',type:'plain_text',text:process.env.TEST_CP_EXECUTION??'false'}]}});
  if(url.startsWith('https://raw.githubusercontent.com/')) return new Response('tampered-script');
  if(url.endsWith('/healthz')) return Response.json({service:'trained-assist-control-plane',check:'liveness',buildSha:process.env.GITHUB_SHA});
  if(url.endsWith('/internal/sandbox/readiness')){const count=Number(process.env.TEST_BUSY??0);return Response.json({ok:count===0,principalId:'integration-telegram-ux-v1',profileId:process.env.TEST_PROFILE??'integration-telegram-ux-v1',reasonCode:count?'sandbox_lane_has_nonterminal_task':null,nonterminalTaskCount:count},{status:count?409:200});}
@@ -146,7 +151,7 @@ test('sandbox3 public preflight proves serverless API boundary without VM SSH cr
   const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret });
   assert.equal(result.status, 0);
   assert.equal(evidence.outcome, 'preflight_passed');
-  assert.equal(evidence.runnerService, 'trained-assist-runner-api-sandbox3');
+  assert.equal(evidence.runnerService, 'trained-assist-runner-api-cp-sandbox3');
   assert.equal(evidence.sandbox3PublicRoute.runnerApiPlacement, 'cloudflare-worker');
   assert.equal(evidence.sandbox3PublicRoute.authenticatedContractVerified, true);
   assert.equal(commands.some(command => command.tool === 'ssh'), false);
@@ -162,6 +167,22 @@ test('sandbox3 CP mock probe does not require SSH or write credentials', async (
   assert.equal(evidence.sandbox3CpMockContract.realTelegramE2E, false);
   assert.equal(commands.some(command => command.tool === 'ssh'), false);
   assert.equal(commands.some(command => command.args.includes('secret')), false);
+});
+
+test('sandbox3 pairing writes only a hashed mock-only Runner principal before pairing CP', async () => {
+  const { result, evidence, commands } = await exercise('--pair-sandbox3-cp', {
+    VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret,
+  });
+  assert.equal(result.status, 0, JSON.stringify(evidence));
+  assert.equal(evidence.boundaries.sandbox3RunnerCredentialSync, 'PASS');
+  assert.deepEqual(evidence.sandbox3RunnerCredentialSync, {
+    credentialsSynced: true, workerName: 'trained-assist-runner-api-cp-sandbox3',
+    principalId: 'sandbox3-ops-read-v1', profileId: 'integration-sandbox3-v1',
+    scopes: ['runs:read', 'runs:write'], engines: ['mock-test'],
+  });
+  const sync = commands.find(command => command.tool === 'npx' && command.args.includes('secret'));
+  assert.deepEqual(sync.args, ['wrangler', 'secret', 'put', 'RUNNER_API_KEYS', '--name', 'trained-assist-runner-api-cp-sandbox3']);
+  assert.equal(commands.some(command => command.tool === 'ssh'), false);
 });
 
 for (const mode of ['--sandbox3-operator-preflight', '--sandbox3-proxy-preflight', '--sandbox3-mock-probe',

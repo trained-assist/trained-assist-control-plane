@@ -66,11 +66,14 @@ disabling an explicitly configured profile API route.
 
 The isolated CP sandbox-3 config declares tenant
 `sandbox3-acceptance-a-20261008` and API principal
-`sandbox3-agent-api-principal`. Its Runner URL is pinned to the serverless
-Cloudflare Worker `trained-assist-runner-api-sandbox3`; it must never point to a
-VM, GHA gateway/workflow, or execution-worker endpoint. The deployed CP keeps
-intake/execution disabled. API and delegation credentials are sandbox-only and
-must not be reused for production tenants.
+`sandbox3-agent-api-principal`. Its Runner URL is pinned to the dedicated
+serverless Cloudflare Worker `trained-assist-runner-api-cp-sandbox3`. That
+Worker has a separate key registry and Durable Object namespace, permits only
+`mock-test`, and has no France worker credentials. Keep the existing
+`trained-assist-runner-api-sandbox3` Worker and its Telegram MCP test principal
+separate. CP must never point to a VM, GHA gateway/workflow, or execution-worker
+endpoint. The deployed CP keeps intake/execution disabled. API and delegation
+credentials are sandbox-only and must not be reused for production tenants.
 
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for

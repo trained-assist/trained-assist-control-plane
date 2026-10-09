@@ -10,7 +10,7 @@ export function verifySandbox3PairingBindings(bindings) {
     || new Set(bindings.map(binding => binding.name)).size !== bindings.length) throw new Error('sandbox3_cp_pairing_bindings_invalid');
   const values = new Map(bindings.map(binding => [binding.name, binding]));
   for (const [name, text] of Object.entries({ DEPLOYMENT_ENV: 'sandbox3', PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false',
-    ROUTER_AGENT_ALLOWED: 'false', RUNNER_API_URL: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev',
+    ROUTER_AGENT_ALLOWED: 'false', RUNNER_API_URL: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
     SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_PROBE_PROFILE: 'integration-sandbox3-v1' })) {
     if (values.get(name)?.type !== 'plain_text' || values.get(name)?.text !== text) throw new Error('sandbox3_cp_pairing_flags_invalid');
   }

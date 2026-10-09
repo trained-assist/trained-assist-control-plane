@@ -14,14 +14,14 @@ test('public probe proves TLS route and auth refusal without carrying credential
   assert.equal(result.authenticatedContractVerified, false);
   assert.equal(JSON.stringify(result).includes('private-secret'), false);
   for (const { url, options } of calls) {
-    assert.ok(url.startsWith('https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev/'));
+    assert.ok(url.startsWith('https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev/'));
     assert.equal(options.redirect, 'error');
     assert.equal(options.headers.authorization, undefined);
   }
 });
 test('sandbox API key is validated against the Cloudflare Runner API before CP pairing writes', async () => {
   const result = await verifySandbox3RunnerPrincipal('test-api-key-that-is-long-enough-for-validation', async (url, options) => {
-    assert.ok(url.startsWith('https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev/'));
+    assert.ok(url.startsWith('https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev/'));
     assert.equal(options.headers.authorization, 'Bearer test-api-key-that-is-long-enough-for-validation');
     return Response.json({ contract: { name: 'ai-agent-runner/serverless-agent-api' }, placement: 'cloudflare-worker' });
   });
