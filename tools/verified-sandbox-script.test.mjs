@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { sanitizedRunnerInventory, verifiedSandboxScript } from './verified-sandbox-script.mjs';
+import { sanitizedRunnerInventory, sanitizedRunnerPermissions, verifiedSandboxScript } from './verified-sandbox-script.mjs';
 
 test('verifies exact downloaded bytes and refuses tampering before execution', async () => {
   const body = Buffer.from('print("synthetic-inventory")');
@@ -50,4 +50,12 @@ test('rejects foreign targets, unsafe engine names and inconsistent state counts
     { admissionCount: -1 }, { sourceSha: 'private_secret' }, { serviceActive: 'true' }]) {
     assert.throws(() => sanitizedRunnerInventory({ ...fixture(), ...patch }), /^Error: runner_inventory_response_invalid$/);
   }
+});
+
+test('permission repair evidence retains only known components and statuses', () => {
+  const result = { schemaVersion: 1, target: 'agent-runner-api-mcp-test',
+    components: { environment: 'restricted', journal: 'already_private', secret: 'private_secret' }, secret: 'private_secret' };
+  assert.equal(JSON.stringify(sanitizedRunnerPermissions(result)).includes('private_secret'), false);
+  assert.throws(() => sanitizedRunnerPermissions({ ...result, target: 'production' }), /runner_permissions_response_invalid/);
+  assert.throws(() => sanitizedRunnerPermissions({ ...result, components: { environment: 'private_secret', journal: 'restricted' } }), /runner_permissions_response_invalid/);
 });

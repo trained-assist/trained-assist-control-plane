@@ -22,8 +22,10 @@ export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
   vm2SshKnownHostEntry: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqY97L/HqL+EjcMNau36t5E2BgVprJsPu18ZsGztv/f',
   runnerMockKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST',
   runnerMockProvisioner: '/usr/local/sbin/runner-api-mcp-test-provision-principal',
-  runnerInventorySourceSha: 'fbbe85e3e55854a3856c55c2f68b8682db50a847',
-  runnerInventoryScriptSha256: '154ea874187c69e3c7cf7b97c2477a4bd532000cc00b7ac75bed16e9a4a1da9b',
+  runnerPermissionsSourceSha: '930bf9d685ddc10509a8564ec27d883af5e1ceeb',
+  runnerPermissionsScriptSha256: '52e4561be4194489efaff321fc59d33d189e7251c8174b66b4eb0372b1420d54',
+  runnerInventorySourceSha: '930bf9d685ddc10509a8564ec27d883af5e1ceeb',
+  runnerInventoryScriptSha256: 'c5ffc1c6d14697262925d3d39cd2db49dbe9ec52368ddccaffebd04257081fd1',
 } as const;
 
 export function validateSandboxBuildSha(value: unknown): string {
