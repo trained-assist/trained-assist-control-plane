@@ -207,13 +207,13 @@ API/state untouched:
 
 - `sandbox3-operator-preflight`: byte-verified read-only namespace/proxy metadata, including allowlisted systemd failure result and bounded exit status.
 - `sandbox3-proxy-preflight`: inspect nginx marker booleans without emitting its
-  configuration. It also counts server blocks containing the exact host, TLS port and legacy upstream together. Global markers do not prove routing or TLS readiness; an ambiguous count does not authorize editing.
+  configuration. It also counts server blocks containing the exact host and TLS port together. Legacy routes and upstreams remain independent and are preserved. Global markers do not prove routing or TLS readiness; an ambiguous count does not authorize editing.
 - `sandbox3-mock-probe`: verify installed source/process, then test loopback auth
   refusal, terminal mock pong, result, idempotent receipt and events. The scoped
   API key travels only over stdin; an unknown result prevents replay. This
   component check does not establish Telegram or real worker execution.
 - `configure-sandbox3-proxy`: explicit fixed route configuration via byte-verified
-  helper. Requires exact runtime and one qualified TLS server, preserves legacy
+  helper. Requires exact runtime and one TLS server for the exact declared host, preserves legacy
   bytes in a private root-only backup, validates nginx before reload and restores
   on failure while preserving concurrent edits. Runner is not restarted. External
   TLS/health/anonymous auth refusal is checked separately after configuration.
