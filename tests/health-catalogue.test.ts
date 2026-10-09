@@ -141,16 +141,15 @@ describe('profile-scoped Runner readiness route', () => {
   const profileId = 'integration-telegram-ux-v1';
   const principalId = profileId;
   const secret = 'profile-runner-health-test-secret';
-  const runnerUrl = TELEGRAM_UX_SANDBOX.runnerMockTestUrl;
+  const runnerUrl = 'https://runner.example.test/runner-mcp-test';
   const bindings = {
     DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
     PRINCIPAL_SECRET_TELEGRAM_UX: secret,
     RUNNER_API_URL: runnerUrl,
-    RUNNER_API_URL_TELEGRAM_UX: runnerUrl,
     RUNNER_API_KEY_TELEGRAM_UX: 'scoped-runner-key',
     RUNNER_API_KEY: 'different-global-key',
     RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [profileId]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX',
-      runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX', hostMcpBinding: 'registry-mcp-test-160-read' } }),
+      hostMcpBinding: 'registry-mcp-test-160-read' } }),
     MCP_TEST_AUTH_TOKEN: 'host-discovery-test-token',
   } as unknown as Env;
 
@@ -197,7 +196,7 @@ describe('profile-scoped Runner readiness route', () => {
   it('reports rejected credentials without exposing Runner response text', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 11_000);
-    const targetBindings = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: runnerUrl } as unknown as Env;
+    const targetBindings = bindings;
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'UNAUTHORIZED', message: 'secret diagnostic text' } }, { status: 401 })));
     const response = await request(['tasks:read'], secret, targetBindings);
     expect(response.status).toBe(200);
@@ -210,7 +209,7 @@ describe('profile-scoped Runner readiness route', () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 30_000);
     const privateUrl = 'https://runner.example.test/private/base?token=private-url-token';
-    const targetBindings = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: runnerUrl, RUNNER_API_URL: privateUrl } as unknown as Env;
+    const targetBindings = { ...bindings, RUNNER_API_URL: privateUrl } as unknown as Env;
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: { code: 'UPSTREAM_DOWN', message: 'private response detail' },
     }, { status: 503 })));
@@ -228,7 +227,7 @@ describe('profile-scoped Runner readiness route', () => {
     const event = JSON.parse(serialized!) as Record<string, unknown>;
     expect(event).toMatchObject({
       event: 'runner.profile_health_probe', profileId, runnerApi: 'unreachable',
-      reason: 'runner_unavailable', upstreamHost: new URL(runnerUrl).hostname, upstreamStatusCode: 503,
+      reason: 'runner_unavailable', upstreamHost: new URL(privateUrl).hostname, upstreamStatusCode: 503,
       timedOut: false,
     });
     expect(event.durationMs).toEqual(expect.any(Number));
@@ -241,7 +240,7 @@ describe('profile-scoped Runner readiness route', () => {
   });
 
   it('reports only boolean binding readiness when the trusted Runner URL is missing', async () => {
-    const targetBindings = { ...bindings, RUNNER_API_URL: undefined, RUNNER_API_URL_TELEGRAM_UX: undefined } as unknown as Env;
+    const targetBindings = { ...bindings, RUNNER_API_URL: undefined } as unknown as Env;
     const response = await request(['tasks:read'], secret, targetBindings);
     expect(response.status).toBe(503);
     const body = await response.json() as Record<string, any>;

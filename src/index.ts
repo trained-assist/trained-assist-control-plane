@@ -129,7 +129,6 @@ export interface Env {
   ERROR_WATCHER_KEY?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
-  RUNNER_API_URL_TELEGRAM_UX?: string;
   SANDBOX_RUNNER_MOCK_TEST_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
@@ -1350,7 +1349,6 @@ const store = new TaskStore(env.DB);
                 const entry = mapping as Record<string, unknown>;
                 profileMappingConfigured = entry.policy === 'generic_text_v1'
                   && entry.runnerKeyBinding === 'RUNNER_API_KEY_TELEGRAM_UX'
-                  && (entry.runnerUrlBinding === undefined || entry.runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX')
                   && (entry.hostMcpBinding === undefined || entry.hostMcpBinding === 'registry-mcp-test-160-read');
                 hostMcpRequired = entry.hostMcpBinding === 'registry-mcp-test-160-read';
               }
@@ -1361,7 +1359,7 @@ const store = new TaskStore(env.DB);
               durationMs: Date.now() - probeStartedAt, timedOut });
             return diagnosticsJson({ error: 'runner not configured', reasonCode: 'runner_not_configured', readiness: {
               runnerUrlConfigured: Boolean(upstreamUrl),
-              profileRunnerUrlBindingConfigured: Boolean(env.RUNNER_API_URL_TELEGRAM_UX?.trim()),
+              profileRunnerUrlBindingConfigured: false,
               scopedRunnerKeyConfigured: Boolean(scopedRunnerKey),
               scopedRunnerKeyDistinctFromGlobal: Boolean(scopedRunnerKey && scopedRunnerKey !== env.RUNNER_API_KEY),
               profileMappingConfigured,

@@ -118,25 +118,25 @@ describe('trusted profile runtime', () => {
       .toThrow(ProfileRuntimeConfigurationError);
   });
 
-  it('routes only the Telegram UX profile to its pinned Runner URL and leaves the shared URL untouched', async () => {
-    const configured = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+  it('uses the shared serverless Runner URL for Telegram UX without a profile endpoint override', async () => {
+    const configured = { ...bindings,
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
-        runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) };
+        runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX' } }) };
     const captured: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: unknown) => {
       captured.push(String(url));
       return Response.json({ state: 'succeeded' });
     }));
     const telegram = resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE);
-    expect(telegram.runnerApiUrl).toBe(TELEGRAM_UX_SANDBOX.runnerMockTestUrl);
+    expect(telegram.runnerApiUrl).toBe(bindings.RUNNER_API_URL);
     await telegram.adapter!.status('sandbox-run');
     const other = resolveProfileRuntime(configured, 'integration-v1');
     expect(other.runnerApiUrl).toBe(bindings.RUNNER_API_URL);
-    expect(captured[0]).toBe(`${TELEGRAM_UX_SANDBOX.runnerMockTestUrl}/v1/runs/sandbox-run/status`);
+    expect(captured[0]).toBe(`${bindings.RUNNER_API_URL}/v1/runs/sandbox-run/status`);
   });
 
-  it('fails closed if the profile-scoped Runner URL is not the approved sandbox endpoint', () => {
-    const configured = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: 'https://attacker.example.test',
+  it('fails closed if the retired profile-specific Runner URL override is present', () => {
+    const configured = { ...bindings,
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
         runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) };
     expect(() => resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE)).toThrow(ProfileRuntimeConfigurationError);

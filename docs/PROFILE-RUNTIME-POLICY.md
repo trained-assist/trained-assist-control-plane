@@ -19,12 +19,12 @@ Enable delegated routing in a sandbox Worker with these bindings:
 - `RUNNER_API_ENGINE_SELECTION=agent_api`: asks the API to select from its own
   configured engine chain.
 
-For the sandbox profile `integration-telegram-ux-v1`, the trusted profile
-override may instead select `RUNNER_API_URL_TELEGRAM_UX`. The value is pinned to
-the approved VM2 sandbox API base
-`https://169-58-15-230.sslip.io/runner-mcp-test`; only that profile uses it.
-Other profiles keep `RUNNER_API_URL`. The read-only profile-health probe uses
-the same resolved URL and logs only the hostname, never the path or query.
+For the sandbox profile `integration-telegram-ux-v1`, do not configure a
+profile-specific Runner URL until its dedicated Cloudflare Runner API Worker is
+provisioned and paired. In particular, CP must not call the France execution VM
+directly. The Telegram UX sandbox deployment guard rejects any configured
+profile Runner URL. The read-only profile-health probe logs only the hostname,
+never the path or query.
 
 ## Ownership and routing order
 

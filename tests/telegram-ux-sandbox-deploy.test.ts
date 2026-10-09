@@ -9,8 +9,7 @@ const config = {
   d1_databases: [{ database_name: TELEGRAM_UX_SANDBOX.databaseName, database_id: TELEGRAM_UX_SANDBOX.databaseId }],
   workflows: [{ name: TELEGRAM_UX_SANDBOX.workflowName }],
   vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
-    RUNNER_API_URL_TELEGRAM_UX: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
-    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) },
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { policy: 'generic_text_v1' } }) },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },
@@ -62,6 +61,12 @@ describe('Telegram UX sandbox deploy guard', () => {
     expect(() => validateTelegramUxSandboxConfig({ ...config, vars: {
       ...config.vars, SANDBOX_RUNNER_MOCK_TEST_URL: 'https://other.example/runner-mcp-test',
     } })).toThrow('sandbox_mock_runner_url_mismatch');
+  });
+
+  it('refuses any direct Runner URL until a serverless profile Worker is provisioned', () => {
+    expect(() => validateTelegramUxSandboxConfig({ ...config, vars: {
+      ...config.vars, RUNNER_API_URL_TELEGRAM_UX: 'https://169-58-15-230.sslip.io/runner-mcp-test',
+    } })).toThrow('sandbox_telegram_runner_must_be_unconfigured');
   });
 
   it('derives the same HMAC signature for the configured principal deterministically', async () => {
