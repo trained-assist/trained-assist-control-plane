@@ -29,21 +29,28 @@ test('apply deletes only terminal tagged tasks without non-cascading references'
   const report = await cleanSandbox3TestTasks({ token: 'test-token', accountId: 'd740a05e9442c1d0feacae2dfc673e93', apply: true,
     fetchImpl: async (_url, init) => {
       const body = JSON.parse(init.body); calls.push(body);
-      return calls.length === 1
-        ? response({ meta: { changed_db: false, rows_written: 0 }, results: [{ tagged: 2, terminal: 2, nonterminal: 0, terminal_with_external_refs: 1 }] })
-        : response({ meta: { changed_db: true, rows_written: 1, changes: 2 } });
+      if (calls.length === 1) return response({ meta: { changed_db: false, rows_written: 0 }, results: [{ tagged: 2, terminal: 2, nonterminal: 0, terminal_with_external_refs: 1 }] });
+      if (calls.length === 2) return response({ meta: { changed_db: true, rows_written: 2, changes: 2 } });
+      return response({ meta: { changed_db: false, rows_written: 0 }, results: [{ tagged: 1, terminal: 1, nonterminal: 0, terminal_with_external_refs: 1 }] });
     } });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[1].sql, /status IN \('done','failed','cancelled'\)/);
   assert.match(calls[1].sql, /NOT EXISTS \(SELECT 1 FROM gtd_records/);
   assert.equal(report.deletedTasks, 1);
   assert.equal(report.retainedTerminalTasksWithExternalReferences, 1);
 });
 
-test('refuses any profile/account mismatch and rejects unexpectedly large delete counts', async () => {
+test('refuses any profile/account mismatch and verifies cleanup cannot remove nonterminal tasks', async () => {
   await assert.rejects(cleanSandbox3TestTasks({ token: 'x', accountId: 'other' }), /account_or_token_invalid/);
+  let inspections = 0;
   await assert.rejects(cleanSandbox3TestTasks({ token: 'x', accountId: 'd740a05e9442c1d0feacae2dfc673e93', apply: true,
-    fetchImpl: async (_url, init) => response(JSON.parse(init.body).sql === SANDBOX3_TEST_CLEANUP_SQL.inspect
-      ? { meta: { changed_db: false, rows_written: 0 }, results: [{ tagged: 1, terminal: 1, nonterminal: 0, terminal_with_external_refs: 0 }] }
-      : { meta: { changed_db: true, rows_written: 2 } }) }), /write_contract_failed/);
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.sql === SANDBOX3_TEST_CLEANUP_SQL.inspect) return response({
+        meta: { changed_db: false, rows_written: 0 }, results: [inspections++ === 0
+          ? { tagged: 2, terminal: 1, nonterminal: 1, terminal_with_external_refs: 0 }
+          : { tagged: 0, terminal: 0, nonterminal: 0, terminal_with_external_refs: 0 }],
+      });
+      return response({ meta: { changed_db: true, rows_written: 2 } });
+    } }), /scope_verification_failed/);
 });

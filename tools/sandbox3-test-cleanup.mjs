@@ -64,12 +64,22 @@ export async function cleanSandbox3TestTasks({ token, accountId, apply = false, 
   }
 
   let deleted = 0;
+  let retained = counts;
   if (apply && counts.terminal > 0) {
     const result = await query(SANDBOX3_TEST_CLEANUP_SQL.deleteTerminal, [PROFILE_ID, TEST_REQUEST_GLOB]);
-    if (result?.meta?.changed_db !== (result.meta.rows_written > 0)
-      || !Number.isSafeInteger(result.meta.rows_written) || result.meta.rows_written < 0
-      || result.meta.rows_written > counts.terminal) throw new Error('sandbox3_cleanup_write_contract_failed');
-    deleted = result.meta.rows_written;
+    if (!Number.isSafeInteger(result?.meta?.rows_written) || result.meta.rows_written < 0
+      || result.meta.rows_written > 1_000_000
+      || (result.meta.rows_written > 0 && result.meta.changed_db !== true)) {
+      throw new Error('sandbox3_cleanup_write_contract_failed');
+    }
+    const verified = await query(SANDBOX3_TEST_CLEANUP_SQL.inspect, [PROFILE_ID, TEST_REQUEST_GLOB]);
+    assertReadOnly(verified);
+    retained = verified.results?.[0] ?? {};
+    for (const key of ['tagged', 'terminal', 'nonterminal', 'terminal_with_external_refs']) {
+      if (!Number.isSafeInteger(retained[key]) || retained[key] < 0) throw new Error('sandbox3_cleanup_count_invalid');
+    }
+    deleted = counts.tagged - retained.tagged;
+    if (deleted < 0 || deleted > counts.terminal) throw new Error('sandbox3_cleanup_scope_verification_failed');
   }
   return {
     lane: 'sandbox3',
@@ -78,8 +88,8 @@ export async function cleanSandbox3TestTasks({ token, accountId, apply = false, 
     taggedTasks: counts.tagged,
     terminalTasksFound: counts.terminal,
     deletedTasks: deleted,
-    retainedNonterminalTasks: counts.nonterminal,
-    retainedTerminalTasksWithExternalReferences: counts.terminal_with_external_refs,
+    retainedNonterminalTasks: retained.nonterminal,
+    retainedTerminalTasksWithExternalReferences: retained.terminal_with_external_refs,
   };
 }
 
