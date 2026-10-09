@@ -11,6 +11,7 @@ import {
   validateSandboxBuildSha,
   validateTelegramUxSandboxConfig,
 } from '../src/deployment/telegram-ux-sandbox.ts';
+import { commandFailureReason } from './command-failure.mjs';
 
 const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
 const RUNNER_PRINCIPAL_ID = 'integration-telegram-ux-v1-mock-test';
@@ -68,7 +69,7 @@ function capture(command, args, options = {}) {
     timeout: 180_000,
     ...options,
   });
-  if (result.error || result.status !== 0) fail(`command_failed:${command}`);
+  if (result.error || result.status !== 0) fail(commandFailureReason(command, result));
   return result.stdout ?? '';
 }
 
@@ -167,7 +168,7 @@ function syncCpMockKey(key) {
     maxBuffer: 1024 * 1024,
     timeout: 60_000,
   });
-  if (result.error || result.status !== 0) fail('sandbox_mock_key_sync_failed');
+  if (result.error || result.status !== 0) fail(commandFailureReason('npx', result));
 }
 
 async function authenticatedProbe(secret) {
