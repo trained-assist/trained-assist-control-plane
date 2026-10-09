@@ -207,7 +207,7 @@ API/state untouched:
 
 - `sandbox3-operator-preflight`: byte-verified read-only namespace/proxy metadata, including allowlisted systemd failure result and bounded exit status.
 - `sandbox3-proxy-preflight`: inspect nginx marker booleans without emitting its
-  configuration. Global markers do not prove routing or TLS readiness.
+  configuration. It also counts server blocks containing the exact host, TLS port and legacy upstream together. Global markers do not prove routing or TLS readiness; an ambiguous count does not authorize editing.
 - `sandbox3-mock-probe`: verify installed source/process, then test loopback auth
   refusal, terminal mock pong, result, idempotent receipt and events. The scoped
   API key travels only over stdin; an unknown result prevents replay. This

@@ -95,9 +95,12 @@ test('sandbox3 bootstrap credentials are repeatable and separated by role and ta
 test('probe projections reject readiness inflation and never expose raw secrets', () => {
   const base = { schemaVersion: 1, target: 'agent-runner-api-sandbox3', rawSecret: 'private-secret' };
   const proxy = { ...base, hostMentioned: true, tlsMentioned: true, legacyPathMentioned: true,
-    sandbox3PathMentioned: false, sandbox3UpstreamMentioned: false, publicRouteVerified: false };
+    sandbox3PathMentioned: false, sandbox3UpstreamMentioned: false, qualifiedRouteTargetCount: 1, publicRouteVerified: false };
   assert.equal(JSON.stringify(sanitizedSandbox3Probe(proxy, 'proxy')).includes('private-secret'), false);
   assert.throws(() => sanitizedSandbox3Probe({ ...proxy, publicRouteVerified: true }, 'proxy'));
+  for (const qualifiedRouteTargetCount of [-1, 101, 'private-secret', 0.5]) {
+    assert.throws(() => sanitizedSandbox3Probe({ ...proxy, qualifiedRouteTargetCount }, 'proxy'));
+  }
   const mock = { ...base, mockTerminalPong: true, idempotentReceipt: true, eventsReadable: true,
     authRefusal: true, workerOrModelCalled: false, realTelegramE2E: false,
     runId: 'run_12345678-1234-1234-1234-123456789abc', requestId: 'req_12345678-1234-1234-1234-123456789abc' };
