@@ -3,6 +3,9 @@ export interface IntentSelection {
   decision: string;
 }
 
+// Communication owns one 120s method budget plus its 5s transport grace.
+export const DEFAULT_COMMUNICATION_TIMEOUT_MS = 130_000;
+
 export class SelectorError extends Error {
   constructor(public readonly code: string) {
     super(code);
@@ -20,19 +23,20 @@ export interface CommunicationConfig {
 
 async function callTool(config: CommunicationConfig, name: string, input: Record<string, unknown>): Promise<unknown> {
   if (!config.url || !config.token) throw new SelectorError('not_configured');
-  const timeoutMs = config.timeoutMs ?? 70_000;
+  const timeoutMs = config.timeoutMs ?? DEFAULT_COMMUNICATION_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new SelectorError('invalid_timeout');
   if (JSON.stringify(input).length > 120_000) throw new SelectorError('input_too_large');
   let response: Response;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     const fetcher: typeof fetch = config.service ? config.service.fetch.bind(config.service) : config.fetcher ?? fetch;
     response = await fetcher(`${config.url.replace(/\/+$/, '')}/mcp`, {
       method: 'POST',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json', accept: 'application/json', 'mcp-protocol-version': '2024-11-05' },
       body: JSON.stringify({ jsonrpc: '2.0', id: input.request_id, method: 'tools/call', params: { name, arguments: input } }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
-  } catch { throw new SelectorError('unavailable_or_timeout'); }
+  } catch { throw new SelectorError(signal.aborted ? 'timeout' : 'unavailable'); }
   if (!response.ok) throw new SelectorError(`http_${response.status}`);
   let rpc: { id?: unknown; error?: unknown; result?: { isError?: boolean; structuredContent?: unknown } };
   try { rpc = await response.json(); } catch { throw new SelectorError('malformed'); }
