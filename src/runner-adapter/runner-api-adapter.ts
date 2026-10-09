@@ -193,6 +193,11 @@ export class RunnerApiAdapter {
       if (code === 'MCP_BINDING_UNAVAILABLE') {
         throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
       }
+      // This exact Runner configuration refusal is checked before admission;
+      // other SERVER_MISCONFIGURED responses remain ambiguous 5xx failures.
+      if (code === 'SERVER_MISCONFIGURED' && message === 'authenticated profile has no repository binding') {
+        throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
+      }
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
       if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
       const fieldPaths = Array.isArray(err?.details?.errors)

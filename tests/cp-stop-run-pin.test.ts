@@ -130,14 +130,17 @@ describe('immutable stop execution pins', () => {
     expect(current.stop).not.toHaveBeenCalled();
   });
 
-  it('cancels a task after the Agent API proves MCP preflight refused before admission', async () => {
+  it.each([
+    ['MCP_BINDING_UNAVAILABLE', 'MCP_BINDING_UNAVAILABLE: sandbox fixture is not provisioned'],
+    ['RUNNER_REPOSITORY_BINDING_MISSING', 'SERVER_MISCONFIGURED: authenticated profile has no repository binding'],
+  ])('cancels a task after the Agent API proves %s refused before admission', async (_reason, message) => {
     const current = await fixture();
     await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
     const attemptKey = current.target.attempts[0]!.idempotencyKey;
     await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
       payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey: attemptKey } });
     await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'error', source: 'executor',
-      payload: { class: 'runner_unavailable', message: 'MCP_BINDING_UNAVAILABLE: sandbox fixture is not provisioned', idempotencyKey: attemptKey } });
+      payload: { class: 'runner_unavailable', message, idempotencyKey: attemptKey } });
 
     expect(await current.port.cancel(current.taskId, { reason: 'sandbox test cleanup' })).toMatchObject({
       cancelled: true, stopConfirmed: true, status: 'cancelled',

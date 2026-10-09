@@ -404,10 +404,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
     for (const attempt of initialRuns) {
       if (attempt.finished_at !== null) continue;
       const preflightFailure = await this.store.runnerSubmitKnownPreAdmissionFailure(taskId, attempt.id);
-      if (preflightFailure === 'MCP_BINDING_UNAVAILABLE') {
+      if (preflightFailure) {
         await this.store.logEvent({ taskId, generation: attempt.generation, kind: 'progress',
           executionId: attempt.id, source: 'executor', payload: { event: 'runner_submit_rejected',
-            attemptId: attempt.id, idempotencyKey: await stableAttemptKey(taskId, attempt.generation) } });
+            attemptId: attempt.id, idempotencyKey: await stableAttemptKey(taskId, attempt.generation), reason: preflightFailure } });
         await this.store.finishRun(attempt.id, 'failed', { errorClass: 'runner_rejected', errorText: preflightFailure });
       }
     }
