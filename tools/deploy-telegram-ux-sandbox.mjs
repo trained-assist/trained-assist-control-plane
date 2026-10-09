@@ -109,10 +109,14 @@ async function main(args = process.argv.slice(2)) {
       CP_INTEGRATION_V1_PRINCIPAL_ID: TELEGRAM_UX_SANDBOX.principalId,
       CP_INTEGRATION_V1_PRINCIPAL_SECRET: secret,
       CP_INTEGRATION_V1_PROFILE_ID: TELEGRAM_UX_SANDBOX.principalId,
+      CP_INTEGRATION_V1_RUNNER_PROBE: process.env.CP_INTEGRATION_V1_RUNNER_PROBE ?? 'true',
     },
   });
   if (smoke.stdout) process.stdout.write(smoke.stdout);
-  if (smoke.error || smoke.status !== 0) throw new Error('sandbox_post_deploy_smoke_failed');
+  if (smoke.error || smoke.status !== 0) {
+    if (smoke.stderr) process.stderr.write(smoke.stderr);
+    throw new Error('sandbox_post_deploy_smoke_failed');
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

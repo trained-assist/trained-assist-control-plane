@@ -19,6 +19,13 @@ Enable delegated routing in a sandbox Worker with these bindings:
 - `RUNNER_API_ENGINE_SELECTION=agent_api`: asks the API to select from its own
   configured engine chain.
 
+For the sandbox profile `integration-telegram-ux-v1`, the trusted profile
+override may instead select `RUNNER_API_URL_TELEGRAM_UX`. The value is pinned to
+the approved VM2 sandbox API base
+`https://169-58-15-230.sslip.io/runner-mcp-test`; only that profile uses it.
+Other profiles keep `RUNNER_API_URL`. The read-only profile-health probe uses
+the same resolved URL and logs only the hostname, never the path or query.
+
 ## Ownership and routing order
 
 In `agent_api` mode, engine ownership belongs to the Agent API. Do not set
@@ -52,8 +59,10 @@ This path is enabled only when the complete delegation configuration exists; an
 incomplete delegation fails closed. Setting `RUNNER_API_ENGINE_SELECTION` to
 `agent_api` without the dedicated API key, delegation secret, principal, tenant,
 and endpoint also fails closed. Without Agent API selection or any partial
-delegation field, the historical profile-specific policy behavior remains for
-compatibility.
+delegation identity (principal or tenant), the historical profile-specific
+policy behavior remains for compatibility. A delegation secret by itself is
+inert and does not select Agent API mode; this avoids an orphaned secret
+disabling an explicitly configured profile API route.
 
 The isolated CP sandbox-3 config declares tenant
 `sandbox3-acceptance-a-20261008` and API principal
@@ -212,6 +221,15 @@ readiness and artifact access use the same resolver. The global `/runner/health`
 probe retains its original deployment-wide credential. Unknown override profiles,
 fields or presets, malformed mappings and incomplete generic bindings fail
 closed. Historical profiles are unchanged when no override mapping exists.
+
+For an authenticated, read-only diagnostic of the sandbox profile adapter, call
+`GET /internal/runner/profile-health` with the normal signed principal headers.
+The principal must own `integration-telegram-ux-v1` and have `tasks:read`. The
+route resolves the scoped Runner key from the durable principal profile, probes
+only `GET /v1/runs/health-probe-<random-id>/status`, returns a sanitized reachability result,
+and caches it for 10 seconds. It does not create a task, Workflow, or model call.
+This verifies CP-to-Runner API reachability/authentication only; a 404 for the
+synthetic probe run is expected and does not prove engine readiness or execution.
 
 ## Provisioning gate
 

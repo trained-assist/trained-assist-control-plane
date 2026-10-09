@@ -147,7 +147,7 @@ export class RunnerApiAdapter {
     return this.fetchImpl.call(globalThis, url, init) as Promise<Response>;
   }
 
-  private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+  private async request<T>(method: string, path: string, opts: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal } = {}): Promise<T> {
     let res: Response;
     try {
       const headers: Record<string, string> = {
@@ -169,6 +169,7 @@ export class RunnerApiAdapter {
       res = await this.doFetch(`${this.baseUrl}${path}`, {
         method,
         headers,
+        ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
       });
     } catch (e) {
@@ -185,9 +186,9 @@ export class RunnerApiAdapter {
       const err = (json as { error?: { code?: string; message?: string; details?: { errors?: unknown } } } | null)?.error;
       const code = err?.code ?? `HTTP_${res.status}`;
       const message = err?.message ?? text;
-      if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message);
+      if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message, res.status);
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
-      if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`);
+      if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
       const fieldPaths = Array.isArray(err?.details?.errors)
         ? err.details.errors.flatMap((entry) => {
           if (typeof entry !== 'string') return [];
@@ -195,7 +196,7 @@ export class RunnerApiAdapter {
           return path && /^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*|\[\d+\])*$/.test(path) ? [path] : [];
         })
         : [];
-      throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, fieldPaths: [...new Set(fieldPaths)].slice(0, 20) });
+      throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, fieldPaths: [...new Set(fieldPaths)].slice(0, 20), statusCode: res.status });
     }
     return json as T;
   }
@@ -238,8 +239,8 @@ export class RunnerApiAdapter {
     });
   }
 
-  async status(runId: string): Promise<RunnerStatusView> {
-    return this.request<RunnerStatusView>('GET', `/v1/runs/${runId}/status`);
+  async status(runId: string, signal?: AbortSignal): Promise<RunnerStatusView> {
+    return this.request<RunnerStatusView>('GET', `/v1/runs/${runId}/status`, { signal });
   }
 
   async result(runId: string): Promise<RunnerResult> {

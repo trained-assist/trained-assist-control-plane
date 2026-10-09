@@ -49,6 +49,15 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   if (config.vars?.SANDBOX_RUNNER_MOCK_TEST_URL !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
     throw new Error('sandbox_mock_runner_url_mismatch');
   }
+  if (config.vars?.RUNNER_API_URL_TELEGRAM_UX !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
+    throw new Error('sandbox_telegram_runner_url_mismatch');
+  }
+  let profileOverrides: Record<string, any> = {};
+  try { profileOverrides = JSON.parse(config.vars?.RUN_SPEC_PROFILE_OVERRIDES ?? '{}'); }
+  catch { throw new Error('sandbox_profile_runner_url_mapping_invalid'); }
+  if (profileOverrides[TELEGRAM_UX_SANDBOX.principalId]?.runnerUrlBinding !== 'RUNNER_API_URL_TELEGRAM_UX') {
+    throw new Error('sandbox_profile_runner_url_mapping_mismatch');
+  }
   const services = (config.services ?? []).map((service: { binding: string; service: string }) =>
     `${service.binding}:${service.service}`).sort();
   const expectedServices = [

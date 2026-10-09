@@ -8,6 +8,7 @@ import { buildRunSpec, runSpecPolicyOf } from '../src/run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from '../src/run-spec/profile-runtime';
 import { requirePermission } from '../src/intake/authorization';
 import { registryFixtureMcpSpec } from '../src/router/registry-test-mcp';
+import { TELEGRAM_UX_SANDBOX } from '../src/deployment/telegram-ux-sandbox';
 
 const bindings = {
   RUNNER_API_URL: 'https://runner.example.test',
@@ -99,6 +100,13 @@ describe('trusted profile runtime', () => {
       .toThrow(ProfileRuntimeConfigurationError);
   });
 
+  it('does not let an unused delegation secret disable the explicitly configured legacy sandbox route', () => {
+    const configured = { ...bindings, RUNNER_PROFILE_DELEGATION_SECRET: 'stale-unselected-secret' };
+    const runtime = resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE);
+    expect(runtime.runnerApiUrl).toBe(bindings.RUNNER_API_URL);
+    expect(runtime.adapter).not.toBeNull();
+  });
+
   it('enables only the pinned registry fixture when the trusted discovery secret is present', () => {
     const configured = { ...bindings, MCP_TEST_AUTH_TOKEN: 'fixture_bearer_0123456789',
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
@@ -108,6 +116,30 @@ describe('trusted profile runtime', () => {
     expect(resolveProfileRuntime(bindings, TELEGRAM_UX_PROFILE).policy.mcp).toBeNull();
     expect(() => resolveProfileRuntime({ ...configured, MCP_TEST_AUTH_TOKEN: '' }, TELEGRAM_UX_PROFILE))
       .toThrow(ProfileRuntimeConfigurationError);
+  });
+
+  it('routes only the Telegram UX profile to its pinned Runner URL and leaves the shared URL untouched', async () => {
+    const configured = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
+        runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) };
+    const captured: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown) => {
+      captured.push(String(url));
+      return Response.json({ state: 'succeeded' });
+    }));
+    const telegram = resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE);
+    expect(telegram.runnerApiUrl).toBe(TELEGRAM_UX_SANDBOX.runnerMockTestUrl);
+    await telegram.adapter!.status('sandbox-run');
+    const other = resolveProfileRuntime(configured, 'integration-v1');
+    expect(other.runnerApiUrl).toBe(bindings.RUNNER_API_URL);
+    expect(captured[0]).toBe(`${TELEGRAM_UX_SANDBOX.runnerMockTestUrl}/v1/runs/sandbox-run/status`);
+  });
+
+  it('fails closed if the profile-scoped Runner URL is not the approved sandbox endpoint', () => {
+    const configured = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: 'https://attacker.example.test',
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
+        runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) };
+    expect(() => resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE)).toThrow(ProfileRuntimeConfigurationError);
   });
 
   it('passes only the explicitly configured model credential and never other host credentials', () => {

@@ -3,6 +3,7 @@ export class RunnerUnavailableError extends Error {
   constructor(
     message: string,
     override readonly cause?: unknown,
+    readonly statusCode?: number,
   ) {
     super(message);
     this.name = 'RunnerUnavailableError';
@@ -13,12 +14,14 @@ export class RunnerUnavailableError extends Error {
 export class RunnerConflictError extends Error {
   readonly apiCode?: string;
   readonly fieldPaths: string[];
+  readonly statusCode?: number;
 
-  constructor(message: string, options: { apiCode?: string; fieldPaths?: string[] } = {}) {
+  constructor(message: string, options: { apiCode?: string; fieldPaths?: string[]; statusCode?: number } = {}) {
     super(message);
     this.name = 'RunnerConflictError';
     this.apiCode = options.apiCode;
     this.fieldPaths = options.fieldPaths ?? [];
+    this.statusCode = options.statusCode;
   }
 }
 
@@ -31,7 +34,7 @@ export class RunnerArtifactManifestError extends Error {
 
 /** Попытка неизвестна Runner'у. */
 export class RunnerNotFoundError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly statusCode?: number) {
     super(message);
     this.name = 'RunnerNotFoundError';
   }

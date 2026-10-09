@@ -2,8 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { observeHealth, observeHealthCatalogue, parseHealthCatalogue } from '../src/diagnostics/health-catalogue';
 import worker, { type Env } from '../src/index';
 import { env } from './env';
+import { TaskStore } from '../src/taskstore';
+import { signPrincipal } from '../src/auth/principal-auth';
+import { TELEGRAM_UX_SANDBOX } from '../src/deployment/telegram-ux-sandbox';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const descriptor = (patch: Record<string, unknown> = {}) => ({
   serviceId: 'control-plane', environment: 'sandbox', region: null,
@@ -131,5 +134,130 @@ describe('Control Plane diagnostics routes', () => {
     const stale = await request();
     expect(stale.status).toBe(200);
     expect(await stale.json()).toMatchObject({ status: 'unknown', cached: true, stale: true, reasonCodes: expect.arrayContaining(['stale_cache_served']) });
+  });
+});
+
+describe('profile-scoped Runner readiness route', () => {
+  const profileId = 'integration-telegram-ux-v1';
+  const principalId = profileId;
+  const secret = 'profile-runner-health-test-secret';
+  const runnerUrl = TELEGRAM_UX_SANDBOX.runnerMockTestUrl;
+  const bindings = {
+    DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW,
+    PRINCIPAL_SECRET_TELEGRAM_UX: secret,
+    RUNNER_API_URL: runnerUrl,
+    RUNNER_API_URL_TELEGRAM_UX: runnerUrl,
+    RUNNER_API_KEY_TELEGRAM_UX: 'scoped-runner-key',
+    RUNNER_API_KEY: 'different-global-key',
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [profileId]: { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX',
+      runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX', hostMcpBinding: 'registry-mcp-test-160-read' } }),
+    MCP_TEST_AUTH_TOKEN: 'host-discovery-test-token',
+  } as unknown as Env;
+
+  async function request(scopes = ['tasks:read'], signatureSecret = secret, targetBindings = bindings) {
+    await new TaskStore(bindings.DB).upsertPrincipal({ principalId, profileId, scopes });
+    return worker.fetch(new Request('https://cp.test/internal/runner/profile-health', {
+      headers: {
+        'x-principal': principalId,
+        'x-principal-sig': await signPrincipal(principalId, signatureSecret),
+      },
+    }), targetBindings);
+  }
+
+  it('requires signed identity and tasks:read before probing the Runner', async () => {
+    const fetcher = vi.fn(async () => Response.json({}));
+    vi.stubGlobal('fetch', fetcher);
+    const deniedSignature = await request(['tasks:read'], 'wrong-secret');
+    expect(deniedSignature.status).toBe(401);
+    const deniedScope = await request([]);
+    expect(deniedScope.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('uses the durable profile scoped key for a read-only status probe and caches briefly', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestedUrl = new URL(String(input));
+      expect(requestedUrl.origin).toBe(new URL(runnerUrl).origin);
+      expect(requestedUrl.pathname).toMatch(/^\/runner-mcp-test\/v1\/runs\/health-probe-[0-9a-f-]+\/status$/);
+      expect(init?.method).toBe('GET');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer scoped-runner-key');
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'probe run is absent' } }, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const first = await request();
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ profileId, runnerApi: 'reachable', reasonCode: null, cached: false });
+    const second = await request();
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ profileId, runnerApi: 'reachable', cached: true });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports rejected credentials without exposing Runner response text', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 11_000);
+    const targetBindings = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: runnerUrl } as unknown as Env;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'UNAUTHORIZED', message: 'secret diagnostic text' } }, { status: 401 })));
+    const response = await request(['tasks:read'], secret, targetBindings);
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ runnerApi: 'rejected', reasonCode: 'runner_rejected' });
+    expect(JSON.stringify(body)).not.toContain('secret diagnostic text');
+  });
+
+  it('logs sanitized upstream host, status, and duration without URL path or response details', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 30_000);
+    const privateUrl = 'https://runner.example.test/private/base?token=private-url-token';
+    const targetBindings = { ...bindings, RUNNER_API_URL_TELEGRAM_UX: runnerUrl, RUNNER_API_URL: privateUrl } as unknown as Env;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      error: { code: 'UPSTREAM_DOWN', message: 'private response detail' },
+    }, { status: 503 })));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const response = await request(['tasks:read'], secret, targetBindings);
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(body).toContain('runner_unavailable');
+    expect(body).not.toContain('runner.example.test');
+    expect(body).not.toContain('private-url-token');
+
+    const serialized = log.mock.calls.map(([value]) => String(value)).find(value => value.includes('runner.profile_health_probe'));
+    expect(serialized).toBeDefined();
+    const event = JSON.parse(serialized!) as Record<string, unknown>;
+    expect(event).toMatchObject({
+      event: 'runner.profile_health_probe', profileId, runnerApi: 'unreachable',
+      reason: 'runner_unavailable', upstreamHost: new URL(runnerUrl).hostname, upstreamStatusCode: 503,
+      timedOut: false,
+    });
+    expect(event.durationMs).toEqual(expect.any(Number));
+    expect(String(event.durationMs)).not.toBe('');
+    expect(serialized).not.toContain('/runner-mcp-test');
+    expect(serialized).not.toContain('/private/base');
+    expect(serialized).not.toContain('private-url-token');
+    expect(serialized).not.toContain('private response detail');
+    expect(serialized).not.toContain('scoped-runner-key');
+  });
+
+  it('reports only boolean binding readiness when the trusted Runner URL is missing', async () => {
+    const targetBindings = { ...bindings, RUNNER_API_URL: undefined, RUNNER_API_URL_TELEGRAM_UX: undefined } as unknown as Env;
+    const response = await request(['tasks:read'], secret, targetBindings);
+    expect(response.status).toBe(503);
+    const body = await response.json() as Record<string, any>;
+    expect(body).toEqual({
+      error: 'runner not configured', reasonCode: 'runner_not_configured',
+      readiness: {
+        runnerUrlConfigured: false,
+        profileRunnerUrlBindingConfigured: false,
+        scopedRunnerKeyConfigured: true,
+        scopedRunnerKeyDistinctFromGlobal: true,
+        profileMappingConfigured: true,
+        requiredMcpAuthConfigured: true,
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain(runnerUrl);
+    expect(JSON.stringify(body)).not.toContain('scoped-runner-key');
+    expect(JSON.stringify(body)).not.toContain('host-discovery-test-token');
   });
 });

@@ -8,7 +8,9 @@ const config = {
   workers_dev: true,
   d1_databases: [{ database_name: TELEGRAM_UX_SANDBOX.databaseName, database_id: TELEGRAM_UX_SANDBOX.databaseId }],
   workflows: [{ name: TELEGRAM_UX_SANDBOX.workflowName }],
-  vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl },
+  vars: { SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_TEST_URL: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+    RUNNER_API_URL_TELEGRAM_UX: TELEGRAM_UX_SANDBOX.runnerMockTestUrl,
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { runnerUrlBinding: 'RUNNER_API_URL_TELEGRAM_UX' } }) },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },

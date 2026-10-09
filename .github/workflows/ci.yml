@@ -32,6 +32,8 @@ jobs:
       - run: npm test
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
+      - name: Safe sandbox bootstrap command diagnostics
+        run: node --test tools/command-failure.test.mjs
       - name: Deployment and credential boundary verifiers
         run: node --test tools/deployment-config-verify.test.mjs tools/credential-boundary-verify.test.mjs
 

@@ -37,7 +37,7 @@ import { runnerAdapterOf } from './runner-adapter';
 import { RunnerApiAdapter } from './runner-adapter/runner-api-adapter';
 import { RunnerConflictError, RunnerNotFoundError, RunnerUnavailableError } from './runner-adapter/errors';
 import { runSpecPolicyOf } from './run-spec/run-spec';
-import { ProfileRuntimeConfigurationError, resolveProfileRuntime } from './run-spec/profile-runtime';
+import { ProfileRuntimeConfigurationError, profileRunnerUrlOf, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
 import { runnerEngineOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
@@ -128,6 +128,7 @@ export interface Env {
   ERROR_WATCHER_KEY?: string;
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
+  RUNNER_API_URL_TELEGRAM_UX?: string;
   SANDBOX_RUNNER_MOCK_TEST_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
@@ -353,6 +354,19 @@ const diagnosticsTokenMatches = (request: Request, configured: string | undefine
 };
 
 const healthCatalogueCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
+const profileRunnerHealthCache = new Map<string, { expiresAt: number; summary: Record<string, unknown> }>();
+
+function safeRunnerHost(rawUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  try { return new URL(rawUrl).hostname || null; } catch { return null; }
+}
+
+function runnerProbeStatusCode(error: unknown): number | null {
+  if (error instanceof RunnerUnavailableError || error instanceof RunnerConflictError || error instanceof RunnerNotFoundError) {
+    return error.statusCode ?? null;
+  }
+  return null;
+}
 
 async function credentialHost(req: Request, env: Env): Promise<string | null> {
   const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
@@ -1265,6 +1279,95 @@ const store = new TaskStore(env.DB);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
           ...(env.BUILD_SHA ? { buildSha: env.BUILD_SHA } : {}),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
+      }
+      if (url.pathname === '/internal/runner/profile-health') {
+        if (req.method !== 'GET') return diagnosticsJson({ error: 'method not allowed' }, 405);
+        const principalId = await principalOf(req, auth);
+        const principal = await resolvePrincipal(store, { principalId });
+        requirePermission(principal, principal.profileId, 'tasks:read');
+        if (principal.profileId !== TELEGRAM_UX_PROFILE) return diagnosticsJson({ error: 'profile not supported' }, 404);
+        const now = Date.now();
+        const probeStartedAt = Date.now();
+        const upstreamUrl = profileRunnerUrlOf(env as unknown as Record<string, string | undefined>, principal.profileId);
+        const cacheKey = `${principal.profileId}:${upstreamUrl ?? ''}`;
+        const cached = profileRunnerHealthCache.get(cacheKey);
+        if (cached && cached.expiresAt > now) return diagnosticsJson({ ...cached.summary, cached: true });
+        const upstreamHost = safeRunnerHost(upstreamUrl ?? undefined);
+        let upstreamStatusCode: number | null = null;
+        let timedOut = false;
+        let summary: Record<string, unknown>;
+        try {
+          const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, principal.profileId);
+          if (!runtime.adapter) {
+            logStructured({ event: 'runner.profile_health_probe', level: 'warn', profileId: principal.profileId,
+              runnerApi: 'unreachable', reason: 'runner_not_configured', upstreamHost, upstreamStatusCode,
+              durationMs: Date.now() - probeStartedAt, timedOut });
+            return diagnosticsJson({ error: 'runner not configured' }, 503);
+          }
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const controller = new AbortController();
+          try {
+            await Promise.race([
+              runtime.adapter.status(`health-probe-${crypto.randomUUID()}`, controller.signal),
+              new Promise<never>((_resolve, reject) => { timer = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+                reject(new Error('probe_timeout'));
+              }, 5_000); }),
+            ]);
+            upstreamStatusCode = 200;
+            summary = { profileId: principal.profileId, runnerApi: 'reachable', reasonCode: null, checkedAt: new Date().toISOString() };
+          } catch (error) {
+            upstreamStatusCode = runnerProbeStatusCode(error);
+            const reasonCode = error instanceof RunnerNotFoundError ? null
+              : timedOut ? 'probe_timeout'
+                : error instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
+            const runnerApi = reasonCode === null ? 'reachable'
+              : reasonCode === 'runner_rejected' ? 'rejected' : 'unreachable';
+            summary = { profileId: principal.profileId, runnerApi, reasonCode,
+              checkedAt: new Date().toISOString() };
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch (error) {
+          if (error instanceof ProfileRuntimeConfigurationError) {
+            let profileMappingConfigured = false;
+            let hostMcpRequired = false;
+            try {
+              const overrides = JSON.parse(env.RUN_SPEC_PROFILE_OVERRIDES ?? '{}') as Record<string, unknown>;
+              const mapping = overrides[TELEGRAM_UX_PROFILE];
+              if (mapping && typeof mapping === 'object' && !Array.isArray(mapping)) {
+                const entry = mapping as Record<string, unknown>;
+                profileMappingConfigured = entry.policy === 'generic_text_v1'
+                  && entry.runnerKeyBinding === 'RUNNER_API_KEY_TELEGRAM_UX'
+                  && (entry.runnerUrlBinding === undefined || entry.runnerUrlBinding === 'RUNNER_API_URL_TELEGRAM_UX')
+                  && (entry.hostMcpBinding === undefined || entry.hostMcpBinding === 'registry-mcp-test-160-read');
+                hostMcpRequired = entry.hostMcpBinding === 'registry-mcp-test-160-read';
+              }
+            } catch { /* report the mapping as unavailable without echoing it */ }
+            const scopedRunnerKey = env.RUNNER_API_KEY_TELEGRAM_UX?.trim();
+            logStructured({ event: 'runner.profile_health_probe', level: 'warn', profileId: principal.profileId,
+              runnerApi: 'unreachable', reason: 'runner_not_configured', upstreamHost, upstreamStatusCode,
+              durationMs: Date.now() - probeStartedAt, timedOut });
+            return diagnosticsJson({ error: 'runner not configured', reasonCode: 'runner_not_configured', readiness: {
+              runnerUrlConfigured: Boolean(upstreamUrl),
+              profileRunnerUrlBindingConfigured: Boolean(env.RUNNER_API_URL_TELEGRAM_UX?.trim()),
+              scopedRunnerKeyConfigured: Boolean(scopedRunnerKey),
+              scopedRunnerKeyDistinctFromGlobal: Boolean(scopedRunnerKey && scopedRunnerKey !== env.RUNNER_API_KEY),
+              profileMappingConfigured,
+              requiredMcpAuthConfigured: !hostMcpRequired || Boolean(env.MCP_TEST_AUTH_TOKEN?.trim()),
+            } }, 503);
+          }
+          throw error;
+        }
+        const runnerApi = typeof summary.runnerApi === 'string' ? summary.runnerApi : 'unknown';
+        const reasonCode = typeof summary.reasonCode === 'string' ? summary.reasonCode : null;
+        logStructured({ event: 'runner.profile_health_probe', level: runnerApi === 'reachable' ? 'info' : 'warn',
+          profileId: principal.profileId, runnerApi, reason: reasonCode,
+          upstreamHost, upstreamStatusCode, durationMs: Date.now() - probeStartedAt, timedOut });
+        profileRunnerHealthCache.set(cacheKey, { expiresAt: now + 10_000, summary });
+        if (profileRunnerHealthCache.size > 64) profileRunnerHealthCache.clear();
+        return diagnosticsJson({ ...summary, cached: false });
       }
       if (url.pathname === '/internal/sandbox/runner-mock-probe') {
         if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true'
