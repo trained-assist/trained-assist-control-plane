@@ -23,6 +23,7 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
   expectedCpSha = null }) {
   const otherState = new Set(otherGatewayBindings.flatMap(stateIds));
   const tgState = stateIds(tgBindings);
+  const intakePrincipals = principalRows.filter(row => row.principal_id === 'integration-sandbox3-v1');
   const serviceRoute = binding(tgBindings, 'CONTROL_PLANE_SERVICE');
   const selectedServiceMatches = !serviceRoute || (serviceRoute.type === 'service'
     && serviceRoute.service === CP_WORKER && (!serviceRoute.environment || serviceRoute.environment === 'production'));
@@ -40,10 +41,10 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
     cpWorkflow: binding(cpBindings, 'TASK_WORKFLOW')?.type === 'workflow'
       && binding(cpBindings, 'TASK_WORKFLOW')?.workflow_name === WORKFLOW ? 'PASS' : 'BLOCKED',
     cpStateReusable: reusable ? 'PASS' : 'BLOCKED',
-    cpPrincipal: principalRows.length === 1 && principalRows[0].principal_id === 'integration-sandbox3-v1'
-      && principalRows[0].profile_id === 'integration-sandbox3-v1' && principalRows[0].enabled === 1
-      && Array.isArray(principalRows[0].scopes) && ['tasks:intake', 'tasks:read', 'tasks:control', 'tasks:signal']
-        .every(scope => principalRows[0].scopes.includes(scope)) ? 'PASS' : 'BLOCKED',
+    cpPrincipal: intakePrincipals.length === 1
+      && intakePrincipals[0].profile_id === 'integration-sandbox3-v1' && intakePrincipals[0].enabled === 1
+      && Array.isArray(intakePrincipals[0].scopes) && ['tasks:intake', 'tasks:read', 'tasks:control', 'tasks:signal']
+        .every(scope => intakePrincipals[0].scopes.includes(scope)) ? 'PASS' : 'BLOCKED',
     tgStateIsolated: tgState.length >= 3 && new Set(tgState).size === tgState.length
       && tgState.every(id => !otherState.has(id)) ? 'PASS' : 'BLOCKED',
     tgRoute: selectedServiceMatches && value(tgBindings, 'CONTROL_PLANE_URL') === CP_URL
