@@ -25,7 +25,7 @@ import { logStructured } from '../logging/structured-log';
 import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v4';
+export const RUN_SPEC_VERSION = 'run-spec-v5';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -149,6 +149,7 @@ export interface RunSpec {
   result?: ResultPolicy;
   repository?: RepositorySpec;
   traceId?: string;
+  budget?: BudgetSpec;
 }
 
 export interface RegionConstraints {
@@ -160,6 +161,13 @@ export interface BudgetSpec {
   correlationRef: string;
   approved: boolean;
   reason?: string;
+  enforcement?: {
+    provider: string;
+    policyId: string;
+    maxInputTokens: number;
+    maxOutputTokens: number;
+    maxTotalTokens: number;
+  };
 }
 
 /**
@@ -250,6 +258,7 @@ export function toSubmitRequest(spec: RunSpec, options: { engineSelection?: 'cal
   if (spec.mcp) body.mcp = mcpSubmitSpecOf(spec.mcp);
   if (spec.traceId) body.traceId = spec.traceId;
   if (spec.credentialBindings) body.credentialBindings = spec.credentialBindings;
+  if (spec.budget) body.budget = spec.budget;
   return body;
 }
 
@@ -300,6 +309,8 @@ export interface RunSpecPolicy {
   resultDestinationRef: string | null;
   maxOutputBytes: number | null;
   maxLogBytes?: number | null;
+  budget?: NonNullable<BudgetSpec['enforcement']> | null;
+  budgetPolicies?: Record<string, NonNullable<BudgetSpec['enforcement']>>;
 }
 
 export interface BuiltRunSpec {
@@ -378,6 +389,8 @@ export function defaultRunSpecPolicy(): RunSpecPolicy {
     repository: null,
     resultDestinationRef: null,
     maxOutputBytes: null,
+    budget: null,
+    budgetPolicies: {},
   };
 }
 
@@ -421,6 +434,37 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
     throw new RunSpecMappingError('RUN_SPEC_MAX_LOG_BYTES: expected a positive safe integer', 'RUN_SPEC_MAX_LOG_BYTES');
   }
 
+  const budgetPolicies: NonNullable<RunSpecPolicy['budgetPolicies']> = {};
+  if (env.RUN_SPEC_BUDGET_POLICIES !== undefined) {
+    const raw = readJson<unknown>(env.RUN_SPEC_BUDGET_POLICIES, null, 'RUN_SPEC_BUDGET_POLICIES');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new RunSpecMappingError('RUN_SPEC_BUDGET_POLICIES: expected a profile-to-policy object', 'RUN_SPEC_BUDGET_POLICIES');
+    }
+    for (const [profileId, policyValue] of Object.entries(raw as Record<string, unknown>)) {
+      if (!SAFE_ID.test(profileId) || !policyValue || typeof policyValue !== 'object' || Array.isArray(policyValue)) {
+        throw new RunSpecMappingError('RUN_SPEC_BUDGET_POLICIES: invalid profile policy entry', 'RUN_SPEC_BUDGET_POLICIES');
+      }
+      const value = policyValue as Record<string, unknown>;
+      const keys = Object.keys(value).sort().join(',');
+      if (keys !== 'maxInputTokens,maxOutputTokens,maxTotalTokens,policyId,provider'
+        || typeof value.provider !== 'string' || !SAFE_ID.test(value.provider)
+        || typeof value.policyId !== 'string' || !SAFE_ID.test(value.policyId)
+        || !Number.isSafeInteger(value.maxInputTokens) || (value.maxInputTokens as number) <= 0
+        || !Number.isSafeInteger(value.maxOutputTokens) || (value.maxOutputTokens as number) <= 0
+        || !Number.isSafeInteger(value.maxTotalTokens) || (value.maxTotalTokens as number) <= 0
+        || (value.maxTotalTokens as number) < Math.max(value.maxInputTokens as number, value.maxOutputTokens as number)) {
+        throw new RunSpecMappingError('RUN_SPEC_BUDGET_POLICIES: invalid trusted policy shape or limits', 'RUN_SPEC_BUDGET_POLICIES');
+      }
+      budgetPolicies[profileId] = {
+        provider: value.provider,
+        policyId: value.policyId,
+        maxInputTokens: value.maxInputTokens as number,
+        maxOutputTokens: value.maxOutputTokens as number,
+        maxTotalTokens: value.maxTotalTokens as number,
+      };
+    }
+  }
+
   return {
     cwd,
     inputRefs: readJson<InputRef[]>(env.RUN_SPEC_INPUT_REFS, [], 'RUN_SPEC_INPUT_REFS'),
@@ -432,6 +476,8 @@ export function runSpecPolicyOf(env: Record<string, string | undefined>): RunSpe
     repository,
     resultDestinationRef: env.RUN_SPEC_RESULT_DESTINATION_REF?.trim() || null,
     maxOutputBytes,
+    budget: null,
+    budgetPolicies,
     ...(maxLogBytes !== null ? { maxLogBytes } : {}),
   };
 }
@@ -453,6 +499,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if ('mcp' in input) {
     fail('mcp', 'mcp: host-owned field must not come from the client input');
   }
+  if ('budget' in input) fail('budget', 'budget: host-owned field must not come from client input');
 
   if (!SAFE_ID.test(input.userTaskId)) fail('userTaskId', 'userTaskId: expected a safe id');
   if (input.profileId.length === 0 || input.profileId.length > 200) fail('profileId', 'profileId: expected 1..200 chars');
@@ -543,6 +590,11 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     ...(policy.repository ? { repository: policy.repository } : {}),
     ...(policy.resultDestinationRef ? { result: { destinationRef: policy.resultDestinationRef } } : {}),
     ...(input.attemptRunId ? { traceId: input.attemptRunId } : {}),
+    ...(policy.budget ? { budget: {
+      correlationRef: input.userTaskId,
+      approved: true,
+      enforcement: { ...policy.budget },
+    } } : {}),
   };
 
   const validation = validateRunSpec(spec);
@@ -818,6 +870,19 @@ export function validateRunSpec(spec: RunSpec): { ok: true } | { ok: false; erro
 
   if (spec.traceId !== undefined && (typeof spec.traceId !== 'string' || spec.traceId.length === 0 || spec.traceId.length > 200)) {
     errors.push('spec.traceId: expected 1..200 chars');
+  }
+
+  if (spec.budget !== undefined) {
+    const { enforcement } = spec.budget;
+    if (typeof spec.budget.correlationRef !== 'string' || spec.budget.correlationRef.length === 0 || spec.budget.correlationRef.length > 300) errors.push('spec.budget.correlationRef: expected 1..300 chars');
+    if (typeof spec.budget.approved !== 'boolean') errors.push('spec.budget.approved: expected boolean');
+    if (!enforcement || typeof enforcement.provider !== 'string' || !SAFE_ID.test(enforcement.provider)
+      || typeof enforcement.policyId !== 'string' || !SAFE_ID.test(enforcement.policyId)
+      || !Number.isSafeInteger(enforcement.maxInputTokens) || enforcement.maxInputTokens <= 0
+      || !Number.isSafeInteger(enforcement.maxOutputTokens) || enforcement.maxOutputTokens <= 0
+      || !Number.isSafeInteger(enforcement.maxTotalTokens) || enforcement.maxTotalTokens < Math.max(enforcement.maxInputTokens, enforcement.maxOutputTokens)) {
+      errors.push('spec.budget.enforcement: expected a valid trusted token policy');
+    }
   }
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };

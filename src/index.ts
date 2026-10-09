@@ -154,6 +154,7 @@ export interface Env {
   RUN_SPEC_STARTUP_TIMEOUT_MS?: string;
   RUN_SPEC_MAX_OUTPUT_BYTES?: string;
   RUN_SPEC_MAX_LOG_BYTES?: string;
+  RUN_SPEC_BUDGET_POLICIES?: string;
   /**
    * Секрет проверки личности принципала (HMAC). Только из binding
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.

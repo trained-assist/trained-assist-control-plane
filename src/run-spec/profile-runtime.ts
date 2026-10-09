@@ -46,7 +46,9 @@ export function resolveProfileRuntime(
       if (entry.hostMcpBinding !== undefined && entry.hostMcpBinding !== 'registry-mcp-test-160-read') return fail();
     }
   }
-  const policy = runSpecPolicyOf(env);
+  const basePolicy = runSpecPolicyOf(env);
+  const policy = { ...basePolicy, budget: basePolicy.budgetPolicies?.[durableProfileId] ?? null };
+  if (durableProfileId === TELEGRAM_UX_PROFILE && !policy.budget) return fail();
   const delegationBindings = [env.RUNNER_PROFILE_DELEGATION_SECRET, env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID,
     env.RUNNER_PROFILE_DELEGATION_TENANT_ID];
   const agentApiMode = env.RUNNER_API_ENGINE_SELECTION === 'agent_api';
