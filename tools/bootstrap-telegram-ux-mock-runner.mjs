@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal } from './sandbox3-cp-pairing.mjs';
+import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
 import { verifySandbox3PublicRoute } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
@@ -425,12 +426,11 @@ async function probeSandbox3Cp(input) {
   const signature = createHmac('sha256', secret).update(SANDBOX3.diagnosticPrincipalId).digest('hex');
   let response, body;
   try {
-    response = await fetch(`${SANDBOX3_CP_URL}/internal/sandbox/runner-mock-probe`, {
-      method: 'POST', body: '{}', redirect: 'error', signal: AbortSignal.timeout(30_000), headers: {
+    ({ response, body } = await sandbox3CpProbeRequest(`${SANDBOX3_CP_URL}/internal/sandbox/runner-mock-probe`, {
+      method: 'POST', body: '{}', redirect: 'error', headers: {
         'content-type': 'application/json', 'x-principal': SANDBOX3.diagnosticPrincipalId, 'x-principal-sig': signature,
       },
-    });
-    body = await response.json();
+    }));
   } catch { fail('sandbox3_cp_mock_probe_unreachable'); }
   evidence.sandbox3CpMockHttpStatus = response.status;
   if (response.status !== 200 || body.ok !== true || body.principalId !== SANDBOX3.diagnosticPrincipalId || body.buildSha !== input.sourceSha
