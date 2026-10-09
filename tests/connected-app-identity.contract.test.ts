@@ -29,8 +29,10 @@ describe('connected app identity v1 offline contract', () => {
     expect(contract.rules.oldWebJwtOrRunTokenAccepted).toBe(false);
     expect(contract.introspection.inactiveResponse).toEqual({ active: false });
     expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.read');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.responses.conversation.open');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.read');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.create');
+    expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.edit');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.reports.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.assignment.review');
     expect(contract.audiences['recruiting-web']).toContain('recruiting.candidateSearch');

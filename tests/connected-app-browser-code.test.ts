@@ -105,6 +105,23 @@ async function hostSelect(sessionId: string, profileId: string, enabled: boolean
 }
 
 describe('Connected App browser authorization code with PKCE S256', () => {
+  it('accepts the Recruiting scopes used by explicit chat and report editing', async () => {
+    const conversationScopes = 'recruiting.responses.read recruiting.responses.conversation.open';
+    const conversationCode = codeFrom(await authorize(id('conversation_scope'), {
+      scopes: conversationScopes,
+      grantedScopes: ['recruiting.responses.read', 'recruiting.responses.conversation.open'],
+    }));
+    expect((await exchange(conversationCode)).status).toBe(201);
+
+    const reportScopes = 'recruiting.reports.read recruiting.reports.create recruiting.reports.edit recruiting.reports.review';
+    const reportCode = codeFrom(await authorize(id('report_edit_scope'), {
+      scopes: reportScopes,
+      grantedScopes: ['recruiting.reports.read', 'recruiting.reports.create',
+        'recruiting.reports.edit', 'recruiting.reports.review'],
+    }));
+    expect((await exchange(reportCode)).status).toBe(201);
+  });
+
   it('is fail-closed without Agent profile authority', async () => {
     const response = await authorize(id('closed'), { agentAuthority: null });
     expect(response.status).toBe(503);
