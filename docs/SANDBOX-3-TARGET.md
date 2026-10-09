@@ -56,7 +56,10 @@ The `telegram-ux-sandbox-test-pass.yml` workflow exposes these sandbox3 modes:
   from the protected sandbox environment and does not write credentials.
 - `pair-sandbox3-cp`: validate the API key against Runner API, then write only
   the mock-only API-key hash to the dedicated `trained-assist-runner-api-cp-sandbox3`
-  Worker, then write sandbox CP secrets and a `tasks:read` operator principal.
+  Worker, then sync the complete expected CP credential set and a `tasks:read`
+  operator principal. It supports idempotent repair when that complete set is
+  already present; it refuses partial or incorrectly typed sets and preserves
+  the separate Telegram intake secret.
 - `sandbox3-cp-mock-probe`: exercise the authenticated CP adapter against the
   fixed `mock-test` Runner API contract. It creates no CP task and calls no
   model or France worker.
