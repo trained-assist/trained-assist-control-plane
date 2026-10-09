@@ -163,6 +163,10 @@ export function sanitizedSandbox3ProxyConfiguration(value) {
   if (value?.schemaVersion !== 1 || value.target !== 'agent-runner-api-sandbox3'
     || value.proxyConfigured !== true || value.legacyConfigPreserved !== true
     || value.serviceRestarted !== false || value.publicRouteVerified !== false) throw new Error('sandbox3_operator_response_invalid');
+  if (!Number.isInteger(value.matchedServerCount) || value.matchedServerCount < 1 || value.matchedServerCount > 2
+    || !Number.isInteger(value.changedFileCount) || value.changedFileCount < 1
+    || value.changedFileCount > value.matchedServerCount) throw new Error('sandbox3_operator_response_invalid');
   return { schemaVersion: 1, target: value.target, proxyConfigured: true, legacyConfigPreserved: true,
+    matchedServerCount: value.matchedServerCount, changedFileCount: value.changedFileCount,
     serviceRestarted: false, publicRouteVerified: false };
 }

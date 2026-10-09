@@ -20,6 +20,9 @@
   "vars": {
     "DEPLOYMENT_ENV": "sandbox3",
     "RUNNER_API_ENGINE_SELECTION": "agent_api",
+    "RUNNER_API_URL": "https://169-58-15-230.sslip.io/runner-sandbox3",
+    "SANDBOX_RUNNER_MOCK_PROBE_ENABLED": "true",
+    "SANDBOX_RUNNER_MOCK_PROBE_PROFILE": "integration-sandbox3-v1",
     "RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID": "sandbox3-agent-api-principal",
     "RUNNER_PROFILE_DELEGATION_TENANT_ID": "sandbox3-acceptance-a-20261008",
     "PREVIEW_ONLY": "true",
