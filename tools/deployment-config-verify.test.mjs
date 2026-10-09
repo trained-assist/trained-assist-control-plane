@@ -52,11 +52,12 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sandbox3.vars.PREVIEW_ONLY, 'true');
     assert.equal(sandbox3.vars.PILOT_ENABLED, 'false');
     assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'false');
-    assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, undefined);
+    assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sharedTelegram.services.find((entry) => entry.binding === 'RUNNER_API_SERVICE')?.service,
       'trained-assist-runner-api-telegram-ux-v1-sandbox');
     assert.equal(sharedTelegram.vars.RUNNER_API_URL_TELEGRAM_UX, undefined);
     assert.equal(sharedTelegram.vars.SANDBOX_RUNNER_MOCK_TEST_URL, undefined);
-    assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, 'dynamic-ip-azure-agent-run');
+    assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, undefined);
+    assert.equal(sharedTelegram.vars.SANDBOX_RUNNER_MOCK_PROBE_ENABLED, 'true');
     assert.ok(sharedTelegram.vars.RUN_SPEC_REPOSITORY);
 });
