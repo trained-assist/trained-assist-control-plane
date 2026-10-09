@@ -254,9 +254,9 @@ describe('Runner adapter: HTTP-клиент (маршруты, auth, идемп�
   });
 
   it('маппинг ошибок: 5xx -> Unavailable, 404 -> NotFound, 409 -> Conflict, STALE -> StaleGeneration', async () => {
-    const mk = (status: number, code: string) =>
+    const mk = (status: number, code: string, message = code) =>
       (async () =>
-        new Response(JSON.stringify({ error: { code, message: code } }), {
+        new Response(JSON.stringify({ error: { code, message } }), {
           status,
           headers: { 'content-type': 'application/json' },
         })) as unknown as typeof fetch;
@@ -264,6 +264,11 @@ describe('Runner adapter: HTTP-клиент (маршруты, auth, идемп�
     await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'INTERNAL')).status('x')).rejects.toMatchObject({ name: 'RunnerUnavailableError' });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'MCP_BINDING_UNAVAILABLE')).submit({ userTaskId: 'u', idempotencyKey: 'k' }))
       .rejects.toMatchObject({ name: 'RunnerConflictError', apiCode: 'MCP_BINDING_UNAVAILABLE', statusCode: 503 });
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'SERVER_MISCONFIGURED', 'authenticated profile has no repository binding'))
+      .submit({ userTaskId: 'u', idempotencyKey: 'k' }))
+      .rejects.toMatchObject({ name: 'RunnerConflictError', apiCode: 'SERVER_MISCONFIGURED', statusCode: 503 });
+    await expect(new RunnerApiAdapter('http://r', 'k', mk(503, 'SERVER_MISCONFIGURED', 'an unrelated server misconfiguration'))
+      .submit({ userTaskId: 'u', idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'RunnerUnavailableError' });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(404, 'NOT_FOUND')).status('x')).rejects.toMatchObject({ name: 'RunnerNotFoundError' });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(400, 'INVALID_REQUEST')).submit({ userTaskId: 'u', idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'RunnerConflictError' });
     await expect(new RunnerApiAdapter('http://r', 'k', mk(409, 'STALE_OWNER_GENERATION')).cancel('x')).rejects.toMatchObject({ name: 'RunnerStaleGenerationError' });

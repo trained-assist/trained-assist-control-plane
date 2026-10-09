@@ -1462,10 +1462,10 @@ export class TaskStore {
   }
 
   /**
-   * Read the typed Agent API response proving its MCP preflight rejected before
-   * admission. This exact code is emitted before the Runner creates any run.
+   * Read an exact typed Agent API refusal that the Runner emits before it
+   * creates any admission record. Keep this list narrower than generic 5xx.
    */
-  async runnerSubmitKnownPreAdmissionFailure(taskId: string, attemptId: string): Promise<'MCP_BINDING_UNAVAILABLE' | null> {
+  async runnerSubmitKnownPreAdmissionFailure(taskId: string, attemptId: string): Promise<'MCP_BINDING_UNAVAILABLE' | 'RUNNER_REPOSITORY_BINDING_MISSING' | null> {
     const events = await this.db.prepare(
       `SELECT payload_json FROM task_events WHERE user_task_id = ?
        AND source = 'executor' AND kind IN ('progress', 'error') ORDER BY id`,
@@ -1482,8 +1482,11 @@ export class TaskStore {
     for (const event of events.results) {
       try {
         const payload = JSON.parse(event.payload_json) as { class?: string; message?: string; idempotencyKey?: string };
-        if (payload.idempotencyKey === idempotencyKey && payload.class === 'runner_unavailable'
-          && payload.message?.startsWith('MCP_BINDING_UNAVAILABLE:')) return 'MCP_BINDING_UNAVAILABLE';
+        if (payload.idempotencyKey !== idempotencyKey || payload.class !== 'runner_unavailable') continue;
+        if (payload.message?.startsWith('MCP_BINDING_UNAVAILABLE:')) return 'MCP_BINDING_UNAVAILABLE';
+        if (payload.message === 'SERVER_MISCONFIGURED: authenticated profile has no repository binding') {
+          return 'RUNNER_REPOSITORY_BINDING_MISSING';
+        }
       } catch { /* Ignore unrelated or malformed events. */ }
     }
     return null;
