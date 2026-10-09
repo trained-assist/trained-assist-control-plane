@@ -3,8 +3,10 @@ export interface IntentSelection {
   decision: string;
 }
 
-// Communication owns one 120s method budget plus its 5s transport grace.
-export const DEFAULT_COMMUNICATION_TIMEOUT_MS = 130_000;
+// Short classifier deadline keeps ordinary routing responsive; failures use the
+// existing agent fallback while the writer has its own bounded completion budget.
+export const DEFAULT_COMMUNICATION_TIMEOUT_MS = 25_000;
+export const DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS = 20_000;
 
 export class SelectorError extends Error {
   constructor(public readonly code: string) {
