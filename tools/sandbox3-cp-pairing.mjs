@@ -15,7 +15,13 @@ export function verifySandbox3PairingBindings(bindings) {
     if (values.get(name)?.type !== 'plain_text' || values.get(name)?.text !== text) throw new Error('sandbox3_cp_pairing_flags_invalid');
   }
   if (values.get('PRINCIPAL_SECRET_SANDBOX3')?.type !== 'secret_text') throw new Error('sandbox3_cp_intake_binding_missing');
-  if (SANDBOX3_PAIRING_SECRETS.some(name => values.has(name))) throw new Error('sandbox3_cp_pairing_bindings_occupied');
+  const presentPairingSecrets = SANDBOX3_PAIRING_SECRETS.filter(name => values.has(name));
+  if (presentPairingSecrets.length !== 0 && presentPairingSecrets.length !== SANDBOX3_PAIRING_SECRETS.length) {
+    throw new Error('sandbox3_cp_pairing_bindings_partial');
+  }
+  if (presentPairingSecrets.some(name => values.get(name)?.type !== 'secret_text')) {
+    throw new Error('sandbox3_cp_pairing_bindings_invalid');
+  }
   return true;
 }
 export function verifySandbox3OperatorPrincipal(row) {
