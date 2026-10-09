@@ -20,7 +20,7 @@ export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
   vm2SshPrivateKeySecret: 'VM2_SSH_PRIVATE_KEY',
   vm2SshHost: '169.58.15.230',
   vm2SshUser: 'root',
-  vm2SshKnownHostEntry: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqY97L/HqL+EjcMNau36t5E2BgVprJsPu18ZsGztv/f',
+  vm2SshKnownHostEntry: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK77e5U6jwbq0mY1ZuJcTR3gzdFBm+5EsTcZLmYVqhah',
   runnerMockKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST',
   runnerMockProvisioner: '/usr/local/sbin/runner-api-mcp-test-provision-principal',
   sandbox3OperatorSourceSha: '88d3ed0132c705eb6dd84e47bebb52b755543efe',
