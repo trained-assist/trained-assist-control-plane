@@ -21,6 +21,7 @@ import type { McpSpec } from '../run-spec/run-spec';
 import type { CredentialCompletionRow, CredentialReadyEvent } from '../awaiting/credential-ready';
 import { agentConversationInstructions, durableConversationContext } from '../router/communication-v1';
 import { withWorkStyleInstructions } from '../output/communication-v1';
+import { isRunnerRunId } from '../runner-adapter/run-id';
 import type { RouteResult } from '../router/service';
 import { confirmedExternalStop, type ExternalStopOutcome, type ExternalStopPort, type NativeStopEvidence } from './external-stop';
 
@@ -614,7 +615,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
         const proof = value as NativeStopEvidence | null;
         if (!proof || proof.taskId !== taskId || proof.profileId !== task.profile_id || proof.exitObserved !== true
           || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
-          || !/^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(proof.runId)
+          || !isRunnerRunId(proof.runId)
           || !runs.some(run => run.id === proof.attemptId && run.task_id === taskId && run.session_id === proof.runId
             && run.generation === proof.ownerGeneration && run.finished_at !== null
             && ['success', 'failed', 'cancelled'].includes(run.status))) continue;

@@ -48,7 +48,7 @@ else if(args.includes('execute')) {
  if(url.endsWith('/healthz')) return Response.json({service:'trained-assist-control-plane',check:'liveness',buildSha:process.env.GITHUB_SHA});
  if(url.endsWith('/internal/sandbox/readiness')){const count=Number(process.env.TEST_BUSY??0);return Response.json({ok:count===0,principalId:'integration-telegram-ux-v1',profileId:process.env.TEST_PROFILE??'integration-telegram-ux-v1',reasonCode:count?'sandbox_lane_has_nonterminal_task':null,nonterminalTaskCount:count},{status:count?409:200});}
  if(url.endsWith('/internal/runner/profile-health')) return Response.json({runnerApi:'reachable',profileId:'integration-telegram-ux-v1'});
- if(url.endsWith('/internal/sandbox/runner-mock-probe')) return Response.json({ok:true,principalId:'sandbox3-ops-read-v1',buildSha:process.env.GITHUB_SHA,runnerState:'succeeded',answer:'pong',runnerOutcome:'succeeded',runId:'run_12345678-1234-1234-1234-123456789abc',sideEffects:{runnerAdmissionPersisted:true,cpTaskCreated:false,workerOrModelCalled:false}});
+ if(url.endsWith('/internal/sandbox/runner-mock-probe')) return Response.json({ok:true,principalId:'sandbox3-ops-read-v1',buildSha:process.env.GITHUB_SHA,runnerState:'succeeded',answer:'pong',runnerOutcome:'succeeded',runId:'run_'+ 'a'.repeat(64)+'_'+'b'.repeat(24),sideEffects:{runnerAdmissionPersisted:true,cpTaskCreated:false,workerOrModelCalled:false}});
  throw new Error('unexpected request');
 };`);
     const log = join(root, 'commands.jsonl');

@@ -2,6 +2,7 @@
 import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3OperatorPrincipal } from './sandbox3-cp-pairing.mjs';
 import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
+import { isRunnerRunId } from '../src/runner-adapter/run-id.ts';
 import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -459,7 +460,7 @@ async function probeSandbox3Cp(input) {
     || body.answer !== 'pong' || body.runnerState !== 'succeeded' || body.runnerOutcome !== 'succeeded'
     || body.sideEffects?.cpTaskCreated !== false || body.sideEffects?.workerOrModelCalled !== false
     || body.sideEffects?.runnerAdmissionPersisted !== true || typeof body.runId !== 'string'
-    || !/^run_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(body.runId)) fail('sandbox3_cp_mock_probe_failed');
+    || !isRunnerRunId(body.runId)) fail('sandbox3_cp_mock_probe_failed');
   evidence.sandbox3CpMockContract = { runId: body.runId, runnerState: 'succeeded', answer: 'pong',
     runnerOutcome: 'succeeded', cpTaskCreated: false, workerOrModelCalled: false, realTelegramE2E: false };
 }
