@@ -177,7 +177,7 @@ describe('profile-scoped Runner readiness route', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const requestedUrl = new URL(String(input));
       expect(requestedUrl.origin).toBe(new URL(runnerUrl).origin);
-      expect(requestedUrl.pathname).toMatch(/^\/runner-mcp-test\/v1\/runs\/health-probe-[0-9a-f-]+\/status$/);
+      expect(requestedUrl.pathname).toMatch(/^\/runner-mcp-test\/v1\/runs\/run_[0-9a-f]{64}_[0-9a-f]{24}\/status$/);
       expect(init?.method).toBe('GET');
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer scoped-runner-key');

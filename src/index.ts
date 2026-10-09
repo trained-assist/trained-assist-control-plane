@@ -379,6 +379,13 @@ function runnerProbeStatusCode(error: unknown): number | null {
   return null;
 }
 
+async function runnerHealthProbeRunId(): Promise<string> {
+  const nonce = crypto.randomUUID();
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`profile-health:${nonce}`));
+  const runHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `run_${runHash}_${'0'.repeat(24)}`;
+}
+
 async function credentialHost(req: Request, env: Env): Promise<string | null> {
   const principal = await verifyPrincipal(req, principalAuthOf(env as unknown as Record<string, string | undefined>));
   const trusted = (env.CREDENTIAL_HOST_PRINCIPALS ?? '').split(',').map(value => value.trim()).filter(Boolean);
@@ -1319,7 +1326,7 @@ const store = new TaskStore(env.DB);
           const controller = new AbortController();
           try {
             await Promise.race([
-              runtime.adapter.status(`health-probe-${crypto.randomUUID()}`, controller.signal),
+              runnerHealthProbeRunId().then(runId => runtime.adapter!.status(runId, controller.signal)),
               new Promise<never>((_resolve, reject) => { timer = setTimeout(() => {
                 timedOut = true;
                 controller.abort();
