@@ -29,7 +29,7 @@ function fixture() {
     journalTerminalOnly: false, serviceActive: true, sandboxMode: true, mockTestEnabled: true,
     journalTargetMatches: true, registryTargetMatches: true, portMatches: true,
     profileOwnerIsSandbox: false, ladderCredentialConfigured: true, workerEngines: ['dynamic-ip-azure-agent-run'],
-    bindingPresence: Object.fromEntries(['AGENT_API_WORKERS', 'EXTERNAL_WORKER_URL', 'EXTERNAL_WORKER_TOKEN',
+    bindingPresence: Object.fromEntries(['AGENT_API_WORKERS', 'EXTERNAL_WORKER_URL', 'EXTERNAL_WORKER_TOKEN', 'AGENT_API_ENGINE_CHAIN',
       'AGENT_API_PROFILE_WORKSPACE_ROOT', 'AGENT_API_PROFILE_OWNER', 'AGENT_API_PROFILE_GITHUB_TOKEN',
       'AGENT_API_PROFILE_TENANT_ROUTES_JSON', 'AGENT_API_PROFILE_DELEGATION_SECRET', 'AGENT_API_PUBLIC_URL',
       'GCS_BUCKET', 'GOOGLE_APPLICATION_CREDENTIALS'].map(name => [name, false])),
@@ -50,6 +50,17 @@ test('rejects foreign targets, unsafe engine names and inconsistent state counts
     { admissionCount: -1 }, { sourceSha: 'private_secret' }, { serviceActive: 'true' }]) {
     assert.throws(() => sanitizedRunnerInventory({ ...fixture(), ...patch }), /^Error: runner_inventory_response_invalid$/);
   }
+});
+
+test('preserves engine-chain presence without accepting or emitting stored chain values', () => {
+  const value = fixture();
+  value.bindingPresence.AGENT_API_ENGINE_CHAIN = true;
+  value.rawEngineChain = 'private-chain-value';
+  const output = sanitizedRunnerInventory(value);
+  assert.equal(output.bindingPresence.AGENT_API_ENGINE_CHAIN, true);
+  assert.equal(JSON.stringify(output).includes('private-chain-value'), false);
+  value.bindingPresence.AGENT_API_ENGINE_CHAIN = 'private-chain-value';
+  assert.throws(() => sanitizedRunnerInventory(value), /runner_inventory_response_invalid/);
 });
 
 test('permission repair evidence retains only known components and statuses', () => {
