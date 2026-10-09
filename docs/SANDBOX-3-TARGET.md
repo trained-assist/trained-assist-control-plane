@@ -22,9 +22,11 @@ credentials and checks the expected Cloudflare account before deploying. It
 pins the source SHA in `BUILD_SHA` and performs the read-only `/healthz` and
 anonymous private-catalogue smoke.
 
-The config is deliberately fail-closed: `PREVIEW_ONLY=true`,
-`PILOT_ENABLED=false`, `ROUTER_AGENT_ALLOWED=false`. No service bindings,
-principal secrets, registration, intake, Runner/provider calls, or Telegram
-delivery are configured. Do not enable execution until profile delegation and
-bounded reservation/settlement acceptance are complete. Do not bind the shared
-Telegram UX D1 or the staging/production D1 databases here.
+The config declares Agent API-owned engine/profile selection, but deliberately
+has no Agent API URL or credentials yet. It remains fail-closed:
+`PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, `ROUTER_AGENT_ALLOWED=false`. No
+service bindings, principal secrets, registration, intake, Runner/provider
+calls, or Telegram delivery are configured. Do not enable execution until
+profile delegation and bounded reservation/settlement acceptance are complete.
+Do not bind the shared Telegram UX D1 or the staging/production D1 databases
+here.

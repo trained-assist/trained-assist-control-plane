@@ -134,6 +134,11 @@ export interface Env {
   SANDBOX_RUNNER_MOCK_TEST_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
+  RUNNER_API_KEY_AGENT_API?: string;
+  RUNNER_API_ENGINE_SELECTION?: string;
+  RUNNER_PROFILE_DELEGATION_SECRET?: string;
+  RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?: string;
+  RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
   /** Separate disposable credential for the sandbox-only mock-test probe. */
   RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?: string;
   SANDBOX_RUNNER_MOCK_PROBE_ENABLED?: string;
