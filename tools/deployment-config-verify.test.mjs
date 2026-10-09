@@ -44,7 +44,7 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sandbox3.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'sandbox3-agent-api-principal');
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_TENANT_ID, 'sandbox3-acceptance-a-20261008');
-    assert.equal(sandbox3.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev');
+    assert.equal(sandbox3.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev');
     assert.equal(sandbox3.vars.RUNNER_API_URL.includes('sslip.io'), false);
     assert.equal(sandbox3.vars.SANDBOX_RUNNER_MOCK_PROBE_ENABLED, 'true');
     assert.equal(sandbox3.vars.SANDBOX_RUNNER_MOCK_PROBE_PROFILE, 'integration-sandbox3-v1');

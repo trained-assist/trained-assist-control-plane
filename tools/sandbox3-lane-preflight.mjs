@@ -6,7 +6,7 @@ const TG_WORKER = 'trained-assist-tg-sandbox3';
 const CP_URL = `https://${CP_WORKER}.skillset-apply.workers.dev`;
 const D1_ID = '1e1b8108-9186-43e2-8e50-436598233165';
 const WORKFLOW = 'ta-cp-sandbox3-task-workflow';
-export const SANDBOX3_RUNNER_URL = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
+export const SANDBOX3_RUNNER_URL = 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev';
 const OTHER_GATEWAYS = ['trained-assist-tg-ux-sandbox', 'trained-assist-tg-shturman-sandbox'];
 
 const binding = (bindings, name) => bindings.find(item => item.name === name);
@@ -29,7 +29,7 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
     && serviceRoute.service === CP_WORKER && (!serviceRoute.environment || serviceRoute.environment === 'production'));
   const physicalDispatchBindings = cpBindings.filter(item => /(?:^|_)(?:VM_WORKER|EXECUTION_WORKER|GHA_RUNNER|GITHUB_ACTIONS_RUNNER)_(?:URL|TOKEN)$/i.test(item.name));
   const directServiceBindings = cpBindings.filter(item => item.type === 'service'
-    && item.service !== 'trained-assist-runner-api-sandbox3');
+    && item.service !== 'trained-assist-runner-api-cp-sandbox3');
   const reusable = ['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
     .every(name => Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000)
     && counts.nonterminalTasks <= counts.tasks && counts.foreignProfileTasks <= counts.tasks

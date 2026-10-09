@@ -7,12 +7,13 @@ VM-hosted API.
 ## Resources
 
 - CP Worker: `trained-assist-cp-sandbox3`
-- Runner API Worker: `trained-assist-runner-api-sandbox3`
+- CP mock Runner API Worker: `trained-assist-runner-api-cp-sandbox3`
+- Existing sandbox3 Runner API Worker: `trained-assist-runner-api-sandbox3` (separate registry)
 - Telegram gateway: `trained-assist-tg-sandbox3`
 - Workflow: `ta-cp-sandbox3-task-workflow`
 - D1: `ta-sandbox3-taskstore` (`1e1b8108-9186-43e2-8e50-436598233165`)
 - CP URL: `https://trained-assist-cp-sandbox3.skillset-apply.workers.dev`
-- Runner API URL: `https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev`
+- Runner API URL: `https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev`
 
 ## Runtime boundary
 
@@ -21,6 +22,11 @@ France VM, GHA gateway/workflow, or execution-worker URL or credential. Runner
 API owns admission, placement and its dispatch credentials. For ordinary Agent
 Runs its default execution worker is the existing worker in France. The worker
 executes the process; it does not host the Runner API.
+
+The CP test Runner Worker has a separate key registry and Durable Object namespace,
+is pinned to `mock-test`, and has no France worker credentials. The existing
+`trained-assist-runner-api-sandbox3` Worker remains untouched because it has a
+separate Telegram MCP test principal.
 
 The CP target remains fail-closed:
 `PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, and `ROUTER_AGENT_ALLOWED=false`.
@@ -49,7 +55,8 @@ The `telegram-ux-sandbox-test-pass.yml` workflow exposes these sandbox3 modes:
   read-only authenticated capabilities request. It requires `RUNNER_MOCK_KEY_SEED`
   from the protected sandbox environment and does not write credentials.
 - `pair-sandbox3-cp`: validate the API key against Runner API, then write only
-  sandbox CP secrets and a `tasks:read` operator principal.
+  the mock-only API-key hash to the dedicated `trained-assist-runner-api-cp-sandbox3`
+  Worker, then write sandbox CP secrets and a `tasks:read` operator principal.
 - `sandbox3-cp-mock-probe`: exercise the authenticated CP adapter against the
   fixed `mock-test` Runner API contract. It creates no CP task and calls no
   model or France worker.

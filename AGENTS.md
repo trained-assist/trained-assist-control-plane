@@ -28,13 +28,15 @@ Do not import internals of trained-assist-agent; reuse only parts with an explic
 `wrangler.sandbox3.jsonc` declares `trained-assist-cp-sandbox3`, its isolated
 `ta-sandbox3-taskstore` D1 and Workflow. Deploy reviewed protected main with
 `deploy-sandbox3.yml` and `deploy_sandbox3=true`; real routing stays disabled.
-CP's Agent API URL must be the Cloudflare Worker
-`trained-assist-runner-api-sandbox3`; a VM, GHA gateway/workflow, or execution
+CP's Agent API URL must be the dedicated mock-only Cloudflare Worker
+`trained-assist-runner-api-cp-sandbox3`; a VM, GHA gateway/workflow, or execution
 worker URL is an architecture violation. The `telegram-ux-sandbox-test-pass.yml`
 workflow supports `sandbox3-public-preflight`, `pair-sandbox3-cp`, and
 `sandbox3-cp-mock-probe`. Pair only after the Cloudflare API health/version/
 anonymous-auth checks, API-key verification, and exact CP deployment pass.
-Preserve the Telegram intake secret. The separate `sandbox3-ops-read-v1`
+Pairing writes a single mock-only API-key hash to this new Worker's isolated
+registry before syncing CP credentials. Preserve the Telegram intake secret.
+The separate `sandbox3-ops-read-v1`
 principal has `tasks:read` only. Observe sanitized bootstrap artifacts. Retry
 the fixed mock probe through its same idempotency key; reconcile partial
 credential writes before another pairing. The probe creates a Runner mock
