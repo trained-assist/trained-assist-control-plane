@@ -21,6 +21,7 @@
     "integration:smoke": "node tools/integration-v1-smoke.mjs",
     "sandbox:deploy:telegram-ux": "node --experimental-strip-types tools/deploy-telegram-ux-sandbox.mjs --deploy",
     "sandbox:preflight:telegram-ux": "node --experimental-strip-types tools/deploy-telegram-ux-sandbox.mjs --preflight",
+    "sandbox:preflight:sandbox3": "node tools/sandbox3-lane-preflight.mjs",
     "sandbox:p16": "./tools/p16-sandbox-probe.sh",
     "sandbox:p20": "./tools/p20-brief-probe.sh"
   },
