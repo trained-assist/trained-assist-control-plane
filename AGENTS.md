@@ -35,6 +35,9 @@ CP deployment pass. Existing credentials refuse pairing; preserve the Telegram
 intake secret. The separate `sandbox3-ops-read-v1` principal has `tasks:read` only.
 Observe sanitized bootstrap artifacts. Retry the fixed mock probe through its
 same idempotency key; reconcile partial credential writes before another pairing.
+After secret pairing, the probe waits at most 30 seconds for credential
+propagation, repeating only explicit CP pre-admission authentication failures.
+Network errors, malformed replies and Runner failures are not replayed.
 This probe persists a Runner mock admission, creates no CP task and calls no
 worker/model. It does not prove real Telegram execution. Do not reset either lane
 or restart the shared API. The owner-authorized issue #236 sandbox workflow may
