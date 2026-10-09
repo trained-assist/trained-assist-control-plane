@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Inspect state, explicitly restrict sandbox file permissions, or bootstrap mock pair
+        description: Inspect state, verify sandbox3 Runner credentials, or bootstrap mock pair
         type: choice
         options: [inventory, preflight, candidate-preflight, sandbox3-public-preflight, pair-sandbox3-cp, sandbox3-cp-mock-probe, repair-permissions, bootstrap]
         default: inventory

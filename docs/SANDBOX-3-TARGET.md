@@ -44,7 +44,10 @@ tested separately.
 
 The `telegram-ux-sandbox-test-pass.yml` workflow exposes these sandbox3 modes:
 
-- `sandbox3-public-preflight`: check Runner API health/version/auth refusal.
+- `sandbox3-public-preflight`: check Runner API health/version/anonymous-auth
+  refusal and verify that the configured sandbox API key is accepted using a
+  read-only authenticated capabilities request. It requires `RUNNER_MOCK_KEY_SEED`
+  from the protected sandbox environment and does not write credentials.
 - `pair-sandbox3-cp`: validate the API key against Runner API, then write only
   sandbox CP secrets and a `tasks:read` operator principal.
 - `sandbox3-cp-mock-probe`: exercise the authenticated CP adapter against the

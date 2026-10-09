@@ -432,6 +432,21 @@ async function probeSandbox3Cp(input) {
     }));
   } catch { fail('sandbox3_cp_mock_probe_unreachable'); }
   evidence.sandbox3CpMockHttpStatus = response.status;
+  if (response.status !== 200 || body.ok !== true) {
+    const safeCode = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{1,63}$/.test(value) ? value : null;
+    const safeRunnerCode = value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(value) ? value : null;
+    const reachability = body?.runnerReachability;
+    evidence.sandbox3CpMockFailure = {
+      reasonCode: safeCode(body?.reasonCode),
+      runnerErrorCode: safeRunnerCode(body?.runnerErrorCode),
+      runnerReachability: reachability && typeof reachability === 'object' ? {
+        outcome: ['reachable_auth_required', 'http_response', 'fetch_failed'].includes(reachability.outcome) ? reachability.outcome : null,
+        httpStatus: Number.isInteger(reachability.httpStatus) && reachability.httpStatus >= 100 && reachability.httpStatus <= 599 ? reachability.httpStatus : null,
+      } : null,
+      runnerAdmissionMayBePersisted: body?.sideEffects?.runnerAdmissionMayBePersisted === true,
+    };
+    fail('sandbox3_cp_mock_probe_failed');
+  }
   if (response.status !== 200 || body.ok !== true || body.principalId !== SANDBOX3.diagnosticPrincipalId || body.buildSha !== input.sourceSha
     || body.answer !== 'pong' || body.runnerState !== 'succeeded' || body.runnerOutcome !== 'succeeded'
     || body.sideEffects?.cpTaskCreated !== false || body.sideEffects?.workerOrModelCalled !== false
@@ -680,6 +695,8 @@ async function main() {
       } else if (args[0] === '--sandbox3-public-preflight') {
         stage = 'sandbox3PublicRoute';
         evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+        await verifySandbox3RunnerPrincipal(sandbox3Credentials(requiredEnv('RUNNER_MOCK_KEY_SEED')).apiKey);
+        evidence.sandbox3PublicRoute.authenticatedContractVerified = true;
         evidence.boundaries[stage] = 'PASS';
         evidence.outcome = 'preflight_passed';
       }

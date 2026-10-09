@@ -28,10 +28,12 @@ else if(args.includes('execute')) {
       await writeFile(join(bin, tool), `#!/bin/sh\nexec '${process.execPath}' '${stub}' "$@"\n`, { mode: 0o700 });
     }
     const preload = join(root, 'fetch.mjs');
-    await writeFile(preload, `globalThis.fetch=async url=>{
+    await writeFile(preload, `globalThis.fetch=async (url,options={})=>{
  if(String(url).startsWith('https://trained-assist-runner-api-sandbox3.')) {
   if(String(url).endsWith('/healthz')) return Response.json({status:'ok',service:'ai-agent-runner-api',placement:'cloudflare-worker'});
   if(String(url).endsWith('/version')) return Response.json({runtime:'cloudflare-worker'});
+  if(options.headers?.authorization==='Bearer ta_sb3_'+Buffer.from('fake').toString('base64url')) return Response.json({});
+  if(options.headers?.authorization) return Response.json({contract:{name:'ai-agent-runner/serverless-agent-api'},placement:'cloudflare-worker'});
   return Response.json({error:{code:'UNAUTHENTICATED'}},{status:401});
  }
  if(url.endsWith('/settings')) return Response.json({success:true,result:{bindings:[
@@ -141,12 +143,14 @@ test('candidate preflight identifies cross-repository artifact access without se
 });
 
 test('sandbox3 public preflight proves serverless API boundary without VM SSH credentials', async () => {
-  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '' });
+  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret });
   assert.equal(result.status, 0);
   assert.equal(evidence.outcome, 'preflight_passed');
   assert.equal(evidence.runnerService, 'trained-assist-runner-api-sandbox3');
   assert.equal(evidence.sandbox3PublicRoute.runnerApiPlacement, 'cloudflare-worker');
+  assert.equal(evidence.sandbox3PublicRoute.authenticatedContractVerified, true);
   assert.equal(commands.some(command => command.tool === 'ssh'), false);
+  assert.equal(commands.some(command => command.args.includes('secret')), false);
 });
 
 test('sandbox3 CP mock probe does not require SSH or write credentials', async () => {
