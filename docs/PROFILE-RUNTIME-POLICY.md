@@ -313,6 +313,21 @@ or prove Telegram delivery. For the separate real Telegram ingress flow, use
 the bot repository's [integration E2E runbook](https://github.com/trained-assist/trained-assist-tg-bot/blob/main/docs/INTEGRATION-V1-SMOKE.md)
 and its delivery-owner acceptance gate.
 
+### Verified canonical CP → mock Runner probe — 2026-10-10
+
+Control Plane PR [#210](https://github.com/trained-assist/trained-assist-control-plane/pull/210)
+merged as `add23c120527b27e7a6d891db9a915bcf2a5e211` and added the explicit
+`RUNNER_API_MOCK_TEST_SERVICE` binding to the existing mock-only Cloudflare
+Runner API Worker. The canonical sandbox deploy and scoped intake smoke passed
+([run 38035482452](https://github.com/trained-assist/trained-assist-control-plane/actions/runs/38035482452)).
+Bootstrap evidence from [run 38035548161](https://github.com/trained-assist/trained-assist-control-plane/actions/runs/38035548161)
+records all applicable boundaries as `PASS`, authenticated probe HTTP 200,
+`runnerState: succeeded`, `answer: pong`, persisted Runner admission, and
+`cpTaskCreated: false` / `workerOrModelCalled: false`. The prior cross-Worker
+global `fetch()` 404 is resolved for this canonical CP → mock Runner path.
+The broader real Telegram flow remains separately gated by the delivery-owner
+acceptance and is not verified by this probe.
+
 The legacy generic preset inherits the global repository, cwd, result policy and
 bounded runtime limits, but sets declared outputs, host input references and
 environment allowlist to empty arrays and disables policy-wide MCP. In Agent API
