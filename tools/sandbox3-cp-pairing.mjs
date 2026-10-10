@@ -1,5 +1,7 @@
 import { createHmac } from 'node:crypto';
-export const SANDBOX3_PAIRING_SECRETS = ['RUNNER_API_KEY_SANDBOX3_MOCK_TEST', 'PRINCIPAL_SECRET_SANDBOX3_OPS'];
+// The operator signature may predate the dedicated mock key binding; the
+// bootstrap writes both idempotently. Only the mock API key is the required pair.
+export const SANDBOX3_PAIRING_SECRETS = ['RUNNER_API_KEY_SANDBOX3_MOCK_TEST'];
 export function sandbox3OperatorSecret(seed) {
   if (typeof seed !== 'string' || Buffer.byteLength(seed) < 32) throw new Error('sandbox3_operator_seed_invalid');
   return createHmac('sha256', seed).update('trained-assist/agent-runner-api-sandbox3/bootstrap/v1/cp-read-operator').digest('base64url');
