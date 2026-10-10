@@ -179,7 +179,7 @@ test('candidate preflight identifies cross-repository artifact access without se
 });
 
 test('sandbox3 public preflight proves serverless API boundary without VM SSH credentials', async () => {
-  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret, RUNNER_API_KEY_AGENT_API: 'synthetic-live-runner-api-key-long-enough', RUNNER_PROFILE_DELEGATION_SECRET: secret });
+  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret, SANDBOX3_RUNNER_API_KEY: 'synthetic-live-runner-api-key-long-enough', SANDBOX3_PROFILE_DELEGATION_SECRET: secret });
   assert.equal(result.status, 0, JSON.stringify(evidence));
   assert.equal(evidence.outcome, 'preflight_passed');
   assert.equal(evidence.runnerService, 'trained-assist-runner-api-sandbox3');
@@ -190,20 +190,22 @@ test('sandbox3 public preflight proves serverless API boundary without VM SSH cr
   assert.equal(commands.some(command => command.args.includes('secret')), false);
 });
 
-test('sandbox3 live Runner auth preflight fails closed when its scoped key is missing', async () => {
-  const { evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_API_KEY_AGENT_API: '' });
+test('sandbox3 live Runner auth preflight never substitutes the canonical UX key when its scoped key is missing', async () => {
+  const { evidence, commands } = await exercise('--sandbox3-public-preflight', {
+    VM2_SSH_PRIVATE_KEY: '', RUNNER_API_KEY_AGENT_API: 'canonical-ux-key-that-must-not-be-used', SANDBOX3_RUNNER_API_KEY: '',
+  });
   assert.equal(evidence.failure.boundary, 'sourceAndConfig', JSON.stringify(evidence));
-  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:RUNNER_API_KEY_AGENT_API', JSON.stringify(evidence));
+  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:SANDBOX3_RUNNER_API_KEY', JSON.stringify(evidence));
   assert.deepEqual(commands, []);
 });
 
 test('sandbox3 live Runner auth preflight fails closed when profile delegation secret is missing', async () => {
   const { evidence, commands } = await exercise('--sandbox3-public-preflight', {
-    VM2_SSH_PRIVATE_KEY: '', RUNNER_API_KEY_AGENT_API: 'synthetic-live-runner-api-key-long-enough',
-    RUNNER_PROFILE_DELEGATION_SECRET: '',
+    VM2_SSH_PRIVATE_KEY: '', SANDBOX3_RUNNER_API_KEY: 'synthetic-live-runner-api-key-long-enough',
+    RUNNER_PROFILE_DELEGATION_SECRET: secret, SANDBOX3_PROFILE_DELEGATION_SECRET: '',
   });
   assert.equal(evidence.failure.boundary, 'sourceAndConfig', JSON.stringify(evidence));
-  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:RUNNER_PROFILE_DELEGATION_SECRET', JSON.stringify(evidence));
+  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:SANDBOX3_PROFILE_DELEGATION_SECRET', JSON.stringify(evidence));
   assert.deepEqual(commands, []);
 });
 

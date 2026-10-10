@@ -125,9 +125,9 @@ function validateInputs(preflight = false, freshSandbox3 = false, requiresVmOper
   if (!freshSandbox3 && new TextEncoder().encode(principalSecret).length < 32) fail('cp_principal_secret_invalid');
   const key = preflight || freshSandbox3 ? null : deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
   const agentApiKey = freshSandbox3 && mode === '--sandbox3-public-preflight'
-    ? requiredEnv('RUNNER_API_KEY_AGENT_API') : null;
+    ? requiredEnv('SANDBOX3_RUNNER_API_KEY') : null;
   const profileDelegationSecret = freshSandbox3 && mode === '--sandbox3-public-preflight'
-    ? requiredEnv('RUNNER_PROFILE_DELEGATION_SECRET') : null;
+    ? requiredEnv('SANDBOX3_PROFILE_DELEGATION_SECRET') : null;
   const privateKey = requiresVmOperator ? requiredEnv('VM2_SSH_PRIVATE_KEY') : null;
   if (privateKey && !privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
   return { sourceSha, accountId, principalSecret, key, agentApiKey, profileDelegationSecret, privateKey };
@@ -765,7 +765,7 @@ async function main() {
     evidence.failure = {
       boundary: stage,
       reasonCode: error instanceof Error && (/^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
-        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|RUNNER_API_KEY_AGENT_API|RUNNER_PROFILE_DELEGATION_SECRET|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
+        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|RUNNER_API_KEY_AGENT_API|RUNNER_PROFILE_DELEGATION_SECRET|SANDBOX3_RUNNER_API_KEY|SANDBOX3_PROFILE_DELEGATION_SECRET|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
         ? error.message : 'sandbox_bootstrap_failed',
     };
   } finally {
