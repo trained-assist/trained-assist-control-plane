@@ -77,6 +77,11 @@ const evidence = {
     runnerState: null,
     answer: null,
     runnerOutcome: null,
+    reasonCode: null,
+    runnerErrorCode: null,
+    runnerProbeStage: null,
+    runnerHttpStatus: null,
+    runnerReachability: null,
     cpTaskCreated: false,
     workerOrModelCalled: false,
     runnerAdmissionPersisted: null,
@@ -639,6 +644,14 @@ async function authenticatedProbe(secret) {
   evidence.probe.runnerState = typeof body.runnerState === 'string' ? body.runnerState : null;
   evidence.probe.answer = body.answer === 'pong' ? 'pong' : null;
   evidence.probe.runnerOutcome = typeof body.runnerOutcome === 'string' ? body.runnerOutcome : null;
+  evidence.probe.reasonCode = typeof body.reasonCode === 'string' && /^[a-z0-9_]{1,80}$/.test(body.reasonCode) ? body.reasonCode : null;
+  evidence.probe.runnerErrorCode = typeof body.runnerErrorCode === 'string' && /^[A-Z0-9_]{1,80}$/.test(body.runnerErrorCode)
+    ? body.runnerErrorCode : null;
+  evidence.probe.runnerProbeStage = ['submit', 'status', 'result'].includes(body.runnerProbeStage) ? body.runnerProbeStage : null;
+  evidence.probe.runnerHttpStatus = Number.isInteger(body.runnerHttpStatus) && body.runnerHttpStatus >= 100 && body.runnerHttpStatus <= 599
+    ? body.runnerHttpStatus : null;
+  evidence.probe.runnerReachability = ['reachable_auth_required', 'reachable', 'unreachable', 'not_checked'].includes(body.runnerReachability?.outcome)
+    ? body.runnerReachability.outcome : null;
   evidence.probe.runnerAdmissionPersisted = body.sideEffects?.runnerAdmissionPersisted === true;
   if (!response.ok || body.ok !== true || body.runnerState !== 'succeeded' || body.answer !== 'pong'
     || body.runnerOutcome !== 'succeeded' || evidence.probe.runnerAdmissionPersisted !== true

@@ -50,7 +50,10 @@ else if(args.includes('execute')) {
  if(url.endsWith('/healthz')) return Response.json({service:'trained-assist-control-plane',check:'liveness',buildSha:process.env.GITHUB_SHA});
  if(url.endsWith('/internal/sandbox/readiness')){const count=Number(process.env.TEST_BUSY??0);return Response.json({ok:count===0,principalId:'integration-telegram-ux-v1',profileId:process.env.TEST_PROFILE??'integration-telegram-ux-v1',reasonCode:count?'sandbox_lane_has_nonterminal_task':null,nonterminalTaskCount:count},{status:count?409:200});}
  if(url.endsWith('/internal/runner/profile-health')) return Response.json({runnerApi:'reachable',profileId:'integration-telegram-ux-v1'});
- if(url.endsWith('/internal/sandbox/runner-mock-probe')) return Response.json({ok:true,principalId:'sandbox3-ops-read-v1',buildSha:process.env.GITHUB_SHA,runnerState:'succeeded',answer:'pong',runnerOutcome:'succeeded',runId:'run_'+ 'a'.repeat(64)+'_'+'b'.repeat(24),sideEffects:{runnerAdmissionPersisted:true,cpTaskCreated:false,workerOrModelCalled:false}});
+ if(url.endsWith('/internal/sandbox/runner-mock-probe')) {
+  if(process.env.TEST_PROBE_FAILURE) return Response.json({ok:false,reasonCode:'sandbox_runner_mock_probe_failed',runnerErrorCode:'ENGINE_NOT_ALLOWED',runnerProbeStage:'submit',runnerHttpStatus:403,runnerReachability:{outcome:'reachable_auth_required',httpStatus:401},sideEffects:{runnerAdmissionMayBePersisted:true,cpTaskCreated:false,workerOrModelCalled:false}},{status:503});
+  return Response.json({ok:true,principalId:'sandbox3-ops-read-v1',buildSha:process.env.GITHUB_SHA,runnerState:'succeeded',answer:'pong',runnerOutcome:'succeeded',runId:'run_'+ 'a'.repeat(64)+'_'+'b'.repeat(24),sideEffects:{runnerAdmissionPersisted:true,cpTaskCreated:false,workerOrModelCalled:false}});
+ }
  throw new Error('unexpected request');
 };`);
     const log = join(root, 'commands.jsonl');
@@ -134,6 +137,17 @@ test('canonical bootstrap registers a hash-only mock principal on the paired Run
   assert.equal(JSON.stringify(principal).includes(secret), false);
   assert.equal(commands.some(x => x.tool === 'ssh'), false);
   assert.equal(commands.some(x => x.tool === 'npx' && x.args.includes('RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST')), true);
+});
+test('failed canonical mock probe records only bounded diagnostics for repair', async () => {
+  const { result, evidence } = await exercise('--bootstrap', { RUNNER_MOCK_KEY_SEED: secret, VM2_SSH_PRIVATE_KEY: '', TEST_PROBE_FAILURE: '1' });
+  assert.equal(result.status, 1);
+  assert.deepEqual({
+    reasonCode: evidence.probe.reasonCode, runnerErrorCode: evidence.probe.runnerErrorCode,
+    runnerProbeStage: evidence.probe.runnerProbeStage, runnerHttpStatus: evidence.probe.runnerHttpStatus,
+    runnerReachability: evidence.probe.runnerReachability,
+  }, { reasonCode: 'sandbox_runner_mock_probe_failed', runnerErrorCode: 'ENGINE_NOT_ALLOWED', runnerProbeStage: 'submit',
+    runnerHttpStatus: 403, runnerReachability: 'reachable_auth_required' });
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
 });
 test('inventory refuses a substituted operator helper before sending any script over SSH', async () => {
   const { evidence, commands } = await exercise('--inventory');
