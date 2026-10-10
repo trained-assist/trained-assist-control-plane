@@ -37,6 +37,9 @@ jobs:
       - name: Deployment and credential boundary verifiers
         run: node --test tools/deployment-config-verify.test.mjs tools/credential-boundary-verify.test.mjs
 
+      - name: Live quick-answer smoke safety tests
+        run: node --test tools/communication-v1-live-smoke.test.mjs
+
   deploy-staging:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.recovery_deploy))
     needs: check

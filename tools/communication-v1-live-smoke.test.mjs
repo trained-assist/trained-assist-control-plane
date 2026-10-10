@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,12 +19,16 @@ function fixture(context) {
   writeFileSync(bindingsPath, JSON.stringify(bindings), { mode: 0o600 });
   const environment = { INTEGRATION_BINDINGS_FILE: bindingsPath, INTEGRATION_REPORT_FILE: reportPath };
   const state = { calls: [], tasks: new Map(), routeCalls: new Map(), failurePath: undefined,
-    oversized: false, malformed: false, fallback: false, answerMismatch: false, engineRuns: 0, missingDecisionId: false };
+    oversized: false, malformed: false, fallback: false, answerMismatch: false, engineRuns: 0, missingDecisionId: false,
+    buildSha: 'b'.repeat(40), lastHeaders: [] };
   const fetchImpl = async (url, options) => {
     assert.equal(options.redirect, 'error');
     assert.equal(url.origin, 'https://cp.fixture');
+    if (url.pathname === '/healthz') return Response.json({ service: 'trained-assist-control-plane',
+      status: 'healthy', check: 'liveness', buildSha: state.buildSha });
     const body = JSON.parse(options.body);
     state.calls.push({ path: url.pathname, body });
+    state.lastHeaders.push(options.headers);
     if (state.failurePath === url.pathname) throw new Error(sentinel);
     if (state.oversized) return new Response('x'.repeat(4194305));
     if (state.malformed) return new Response(`<html>${sentinel}</html>`);
@@ -70,6 +75,32 @@ test('preserves both factual scenarios, receipt/route identity, timings and zero
     assert.ok(evidence.decisionId && evidence.requestId && evidence.userTaskId && evidence.elapsedMs >= 0);
   }
   assert.equal(statSync(fixtureData.reportPath).mode & 0o777, 0o600);
+});
+
+test('pins the deployed sandbox SHA and derives the synthetic principal signature without recording the secret', async context => {
+  const fixtureData = fixture(context);
+  delete fixtureData.bindings.CONTROL_PLANE_PRINCIPAL_SIGNATURE;
+  writeFileSync(fixtureData.bindingsPath, JSON.stringify(fixtureData.bindings), { mode: 0o600 });
+  const secret = 'sandbox-principal-secret-never-include-in-report';
+  fixtureData.environment.CP_INTEGRATION_V1_PRINCIPAL_SECRET = secret;
+  fixtureData.environment.CONTROL_PLANE_EXPECTED_BUILD_SHA = fixtureData.state.buildSha;
+  const result = await runSmoke(fixtureData.environment, fixtureData.fetchImpl);
+  assert.equal(result.ok, true);
+  assert.equal(result.report.deployedBuildSha, fixtureData.state.buildSha);
+  assert.equal(fixtureData.state.lastHeaders[0]['x-principal-sig'],
+    createHmac('sha256', secret).update('fixture-principal').digest('hex'));
+  assert.ok(!JSON.stringify(result.report).includes(secret));
+  assert.ok(!readFileSync(fixtureData.reportPath, 'utf8').includes(secret));
+});
+
+test('stops before intake when the deployed sandbox SHA does not match the requested revision', async context => {
+  const fixtureData = fixture(context);
+  fixtureData.environment.CONTROL_PLANE_EXPECTED_BUILD_SHA = 'c'.repeat(40);
+  const result = await runSmoke(fixtureData.environment, fixtureData.fetchImpl);
+  assert.equal(result.ok, false);
+  assert.equal(result.report.reason, 'sandbox_health_probe');
+  assert.equal(result.report.scenarios.length, 0);
+  assert.deepEqual(fixtureData.state.calls, []);
 });
 
 test('fallback agent failure retains accepted task before route and stops without another scenario/retry', async context => {
