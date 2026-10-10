@@ -82,6 +82,7 @@ const evidence = {
     runnerProbeStage: null,
     runnerHttpStatus: null,
     runnerReachability: null,
+    runnerReachabilityHttpStatus: null,
     cpTaskCreated: false,
     workerOrModelCalled: false,
     runnerAdmissionPersisted: null,
@@ -650,8 +651,10 @@ async function authenticatedProbe(secret) {
   evidence.probe.runnerProbeStage = ['submit', 'status', 'result'].includes(body.runnerProbeStage) ? body.runnerProbeStage : null;
   evidence.probe.runnerHttpStatus = Number.isInteger(body.runnerHttpStatus) && body.runnerHttpStatus >= 100 && body.runnerHttpStatus <= 599
     ? body.runnerHttpStatus : null;
-  evidence.probe.runnerReachability = ['reachable_auth_required', 'reachable', 'unreachable', 'not_checked'].includes(body.runnerReachability?.outcome)
+  evidence.probe.runnerReachability = ['reachable_auth_required', 'reachable', 'unreachable', 'not_checked', 'http_response', 'fetch_failed'].includes(body.runnerReachability?.outcome)
     ? body.runnerReachability.outcome : null;
+  evidence.probe.runnerReachabilityHttpStatus = Number.isInteger(body.runnerReachability?.httpStatus)
+    && body.runnerReachability.httpStatus >= 100 && body.runnerReachability.httpStatus <= 599 ? body.runnerReachability.httpStatus : null;
   evidence.probe.runnerAdmissionPersisted = body.sideEffects?.runnerAdmissionPersisted === true;
   if (!response.ok || body.ok !== true || body.runnerState !== 'succeeded' || body.answer !== 'pong'
     || body.runnerOutcome !== 'succeeded' || evidence.probe.runnerAdmissionPersisted !== true

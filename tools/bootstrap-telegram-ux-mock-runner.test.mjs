@@ -145,8 +145,9 @@ test('failed canonical mock probe records only bounded diagnostics for repair', 
     reasonCode: evidence.probe.reasonCode, runnerErrorCode: evidence.probe.runnerErrorCode,
     runnerProbeStage: evidence.probe.runnerProbeStage, runnerHttpStatus: evidence.probe.runnerHttpStatus,
     runnerReachability: evidence.probe.runnerReachability,
+    runnerReachabilityHttpStatus: evidence.probe.runnerReachabilityHttpStatus,
   }, { reasonCode: 'sandbox_runner_mock_probe_failed', runnerErrorCode: 'ENGINE_NOT_ALLOWED', runnerProbeStage: 'submit',
-    runnerHttpStatus: 403, runnerReachability: 'reachable_auth_required' });
+    runnerHttpStatus: 403, runnerReachability: 'reachable_auth_required', runnerReachabilityHttpStatus: 401 });
   assert.equal(JSON.stringify(evidence).includes(secret), false);
 });
 test('inventory refuses a substituted operator helper before sending any script over SSH', async () => {
