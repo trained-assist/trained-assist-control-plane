@@ -2,6 +2,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { cleanupTelegramUxRunnerTask } from './telegram-ux-runner-task-cleanup.mjs';
 
 const BASE = 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
 const PRINCIPAL = 'integration-telegram-ux-v1';
@@ -37,6 +38,7 @@ const evidence = {
   usageStatus: null,
   persistence: null,
   cleanup: null,
+  runnerStateCleanup: null,
   failureCode: null,
 };
 
@@ -195,6 +197,15 @@ async function main() {
     evidence.failureCode = safeFailureCode(error?.message, 'sandbox3_live_free_run_failed');
     if (evidence.state === 'queued' || evidence.state === 'starting' || evidence.state === 'running') evidence.state = 'unknown';
   } finally {
+    if (evidence.userTaskId) {
+      try {
+        evidence.runnerStateCleanup = { outcome: 'passed', ...await cleanupTelegramUxRunnerTask({ userTaskId: evidence.userTaskId }) };
+      } catch (error) {
+        evidence.runnerStateCleanup = { outcome: 'failed', failureCode: safeFailureCode(error?.message, 'runner_cleanup_failed') };
+        evidence.outcome = 'failed';
+        evidence.failureCode ??= 'runner_cleanup_failed';
+      }
+    }
     await writeFile(OUTPUT, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
   }
   process.stdout.write(`${JSON.stringify(evidence)}\n`);
