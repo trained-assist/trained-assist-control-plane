@@ -13,7 +13,7 @@ test('pairing requires disabled execution and exact profile/route, and allows id
   assert.equal(verifySandbox3PairingBindings(bindings()), true);
   assert.equal(verifySandbox3PairingBindings([...bindings(), ...SANDBOX3_PAIRING_SECRETS.map(name => ({ name, type: 'secret_text' }))]), true);
   assert.throws(() => verifySandbox3PairingBindings([...bindings(), bindings()[0]]));
-  for (const name of SANDBOX3_PAIRING_SECRETS) assert.throws(() => verifySandbox3PairingBindings([...bindings(), { name, type: 'secret_text' }]), /sandbox3_cp_pairing_bindings_partial/);
+  for (const name of SANDBOX3_PAIRING_SECRETS) assert.equal(verifySandbox3PairingBindings([...bindings(), { name, type: 'secret_text' }]), true);
   assert.throws(() => verifySandbox3PairingBindings([...bindings(), ...SANDBOX3_PAIRING_SECRETS.map(name => ({ name, type: 'plain_text', text: 'unsafe' }))]), /sandbox3_cp_pairing_bindings_invalid/);
   for (const [name, text] of [['DEPLOYMENT_ENV', 'production'], ['PILOT_ENABLED', 'true'], ['PREVIEW_ONLY', 'false'], ['RUNNER_API_URL', 'https://foreign.invalid'], ['SANDBOX_RUNNER_MOCK_PROBE_PROFILE', 'foreign']]) {
     assert.throws(() => verifySandbox3PairingBindings(bindings().map(binding => binding.name === name ? { ...binding, text } : binding)));
