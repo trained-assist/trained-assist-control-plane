@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Script } from 'node:vm';
+import { TELEGRAM_UX_SANDBOX_CREDENTIALS } from '../src/deployment/telegram-ux-sandbox.ts';
 import { FRANCE_WORKER, planAllowlistReconciliation, remoteProgram, safeSshFailure } from './reconcile-telegram-ux-france-worker.mjs';
 
 const current = [
@@ -41,6 +42,7 @@ test('remote Node payload is syntactically valid and includes fixed, sandbox-onl
   assert.match(remoteProgram, /workerId !== 'eu-vm2-sandbox'/);
   assert.match(remoteProgram, /worker_env_sandbox3_entry_missing/);
   assert.match(remoteProgram, /ai-agent-vm-worker/);
+  assert.equal(FRANCE_WORKER.knownHost, TELEGRAM_UX_SANDBOX_CREDENTIALS.vm2SshKnownHostEntry);
 });
 
 test('SSH failures are reduced to a safe bounded diagnostic code', () => {

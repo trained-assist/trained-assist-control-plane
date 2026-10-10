@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 export const FRANCE_WORKER = {
   host: '169.58.15.230',
   user: 'root',
-  knownHost: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqY97L/HqL+EjcMNau36t5E2BgVprJsPu18ZsGztv/f',
+  knownHost: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK77e5U6jwbq0mY1ZuJcTR3gzdFBm+5EsTcZLmYVqhah',
   service: 'ai-agent-vm-worker',
   envPath: '/etc/ai-agent-runner/worker.env',
   localUrl: 'http://127.0.0.1:8788',
