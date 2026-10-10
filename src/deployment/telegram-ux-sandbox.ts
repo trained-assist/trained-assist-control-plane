@@ -72,6 +72,9 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
   if (config.vars?.RUNNER_API_URL_TELEGRAM_UX !== undefined) {
     throw new Error('sandbox_telegram_runner_must_be_unconfigured');
   }
+  if (config.vars?.RUN_SPEC_REPOSITORY !== undefined) {
+    throw new Error('sandbox_repository_must_be_agent_api_owned');
+  }
   let profileOverrides: Record<string, any> = {};
   try { profileOverrides = JSON.parse(config.vars?.RUN_SPEC_PROFILE_OVERRIDES ?? '{}'); }
   catch { throw new Error('sandbox_profile_runner_url_mapping_invalid'); }

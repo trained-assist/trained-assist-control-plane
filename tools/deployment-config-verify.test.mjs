@@ -57,5 +57,5 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sharedTelegram.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev');
     assert.equal(sharedTelegram.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'integration-telegram-ux-v1');
     assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, 'dynamic-ip-azure-agent-run');
-    assert.ok(sharedTelegram.vars.RUN_SPEC_REPOSITORY);
+    assert.equal(sharedTelegram.vars.RUN_SPEC_REPOSITORY, undefined);
 });

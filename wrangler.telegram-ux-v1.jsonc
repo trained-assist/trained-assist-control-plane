@@ -31,7 +31,6 @@
     "RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID": "integration-telegram-ux-v1",
     "RUNNER_PROFILE_DELEGATION_TENANT_ID": "telegram-ux-sandbox-20261009",
     "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-telegram-ux-v1\":{\"policy\":\"generic_text_v1\",\"hostMcpBinding\":\"registry-mcp-test-160-read\"}}",
-    "RUN_SPEC_REPOSITORY": "{\"fullName\":\"vovalikessmoothy-png/cp-telegram-ux-runner-sandbox\"}",
     "RUN_SPEC_ENV_ALLOWLIST": "LLM_LADDER_TOKEN",
     "RUN_SPEC_OUTPUTS": "[{\"path\":\"outputs/category-results.csv\",\"name\":\"Category totals\",\"mime\":\"text/csv\"}]",
     "RUN_SPEC_TIMEOUT_MS": "300000",
