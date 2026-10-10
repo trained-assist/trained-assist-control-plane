@@ -155,6 +155,7 @@ describe('protected HTTP route scopes', () => {
     { name: '/connection-lost', path: '/connection-lost', method: 'POST', body: { runId: 'missing-run' } },
     { name: '/heartbeat', path: '/heartbeat', method: 'POST', body: { runId: 'missing-run' } },
     { name: '/receipt', path: '/receipt?taskId=missing-task', method: 'GET' },
+    { name: '/route', path: '/route', method: 'POST', body: { taskId: 'missing-task', continue: true } },
     { name: '/deliveries/deliver', path: '/deliveries/deliver', method: 'POST', body: {} },
     { name: '/runner/health', path: '/runner/health', method: 'GET' },
   ];
@@ -166,12 +167,27 @@ describe('protected HTTP route scopes', () => {
       await new TaskStore(env.DB).admitTask({ id: taskId, profileId: 'private-profile', goal: 'private receipt' });
       path = `/receipt?taskId=${taskId}`;
     }
+    if (name === '/route') {
+      const taskId = `anonymous-route-${crypto.randomUUID()}`;
+      await new TaskStore(env.DB).admitTask({ id: taskId, profileId: 'private-profile', goal: 'private route' });
+      body = { taskId, continue: true };
+    }
     const response = await mod.default.fetch(new Request(`https://cp.test${path}`, {
       method,
       ...(body === undefined ? {} : {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       }),
+    }), { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW });
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects anonymous /route with a missing task before the task lookup', async () => {
+    const mod = await import('../src/index');
+    const response = await mod.default.fetch(new Request('https://cp.test/route', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId: `anonymous-route-missing-${crypto.randomUUID()}`, continue: true }),
     }), { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW });
     expect(response.status).toBe(401);
   });

@@ -459,9 +459,11 @@ const authorizeTaskRoute = async (
   scope: AdmissionScope,
   auth: PrincipalAuth,
 ): Promise<TaskRow> => {
+  // Authenticate before the task lookup so unauthenticated callers cannot use
+  // task IDs to distinguish existing records from missing ones.
+  const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
   const task = await store.getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
-  const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
   requirePermission(principal, task.profile_id, scope);
   return task;
 };
