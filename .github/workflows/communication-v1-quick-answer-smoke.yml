@@ -23,12 +23,18 @@ jobs:
     environment: sandbox
     steps:
       - uses: actions/checkout@v4
+        id: checkout
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Require clean Telegram UX sandbox buffers before tests
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+        run: node tools/telegram-ux-state-cleanup.mjs --check-empty
       - name: Verify exact deployed sandbox revision and quick-answer scenarios
         env:
           CONTROL_PLANE_URL: https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev
@@ -38,11 +44,27 @@ jobs:
           CP_INTEGRATION_V1_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
           INTEGRATION_REPORT_FILE: quick-answer-smoke-report.json
         run: node tools/communication-v1-live-smoke.mjs
+      - name: Clear Telegram UX sandbox buffers after tests
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: node tools/telegram-ux-state-cleanup.mjs --apply
       - name: Upload sanitized quick-answer evidence
         if: always() && hashFiles('quick-answer-smoke-report.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: communication-v1-quick-answer-${{ github.run_id }}
           path: quick-answer-smoke-report.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload state cleanup evidence
+        if: always() && hashFiles('telegram-ux-state-cleanup-evidence.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-ux-state-cleanup-${{ github.run_id }}
+          path: telegram-ux-state-cleanup-evidence.json
           if-no-files-found: error
           retention-days: 30
