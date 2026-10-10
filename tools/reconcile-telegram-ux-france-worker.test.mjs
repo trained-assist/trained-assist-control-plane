@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Script } from 'node:vm';
-import { FRANCE_WORKER, planAllowlistReconciliation, remoteProgram } from './reconcile-telegram-ux-france-worker.mjs';
+import { FRANCE_WORKER, planAllowlistReconciliation, remoteProgram, safeSshFailure } from './reconcile-telegram-ux-france-worker.mjs';
 
 const current = [
   'VM_WORKER_ALLOWED_REPOSITORIES=trained-assist/ai-agent-runner,trained-assist/other-test',
@@ -41,4 +41,11 @@ test('remote Node payload is syntactically valid and includes fixed, sandbox-onl
   assert.match(remoteProgram, /workerId !== 'eu-vm2-sandbox'/);
   assert.match(remoteProgram, /worker_env_sandbox3_entry_missing/);
   assert.match(remoteProgram, /ai-agent-vm-worker/);
+});
+
+test('SSH failures are reduced to a safe bounded diagnostic code', () => {
+  assert.equal(safeSshFailure('worker_not_idle_and_ready\n', 1), 'remote_reconcile_failed:worker_not_idle_and_ready');
+  assert.equal(safeSshFailure('Permission denied (publickey).\n', 255), 'ssh_authentication_rejected');
+  assert.equal(safeSshFailure('Host key verification failed.\n', 255), 'ssh_host_key_rejected');
+  assert.equal(safeSshFailure('arbitrary output containing a secret\n', 1), 'ssh_or_remote_failed_exit_1');
 });
