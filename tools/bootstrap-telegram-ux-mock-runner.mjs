@@ -3,7 +3,7 @@ import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3Op
 import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
 import { isRunnerRunId } from '../src/runner-adapter/run-id.ts';
-import { verifySandbox3PublicRoute, verifySandbox3MockPublicRoute, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3MockPublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -116,7 +116,7 @@ function deriveRunnerMockApiKey(seed) {
   return `ta_mock_${createHmac('sha256', seed).update(RUNNER_KEY_CONTEXT).digest('base64url')}`;
 }
 
-function validateInputs(preflight = false, freshSandbox3 = false, requiresVmOperator = true) {
+function validateInputs(preflight = false, freshSandbox3 = false, requiresVmOperator = true, mode = '') {
   const sourceSha = validateSandboxBuildSha(requiredEnv('GITHUB_SHA'));
   const accountId = TELEGRAM_UX_SANDBOX.accountId;
   process.env.CLOUDFLARE_API_TOKEN = requiredEnv('CF_API_TOKEN');
@@ -124,9 +124,11 @@ function validateInputs(preflight = false, freshSandbox3 = false, requiresVmOper
   const principalSecret = freshSandbox3 ? null : requiredEnv('CP_TELEGRAM_UX_PRINCIPAL_SECRET');
   if (!freshSandbox3 && new TextEncoder().encode(principalSecret).length < 32) fail('cp_principal_secret_invalid');
   const key = preflight || freshSandbox3 ? null : deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
+  const agentApiKey = freshSandbox3 && mode === '--sandbox3-public-preflight'
+    ? requiredEnv('RUNNER_API_KEY_AGENT_API') : null;
   const privateKey = requiresVmOperator ? requiredEnv('VM2_SSH_PRIVATE_KEY') : null;
   if (privateKey && !privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
-  return { sourceSha, accountId, principalSecret, key, privateKey };
+  return { sourceSha, accountId, principalSecret, key, agentApiKey, privateKey };
 }
 
 async function verifyConfigAndAccount(accountId, freshSandbox3 = false) {
@@ -678,13 +680,14 @@ async function main() {
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
     const requiresVmOperator = !freshSandbox3 && args[0] !== '--bootstrap';
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
-    const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3, requiresVmOperator);
+    const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3, requiresVmOperator, args[0]);
     evidence.sourceSha = input.sourceSha;
     const config = JSON.parse(await readFile(freshSandbox3 ? 'wrangler.sandbox3.jsonc' : 'wrangler.telegram-ux-v1.jsonc', 'utf8'));
     if (freshSandbox3) {
       validateSandbox3Config(config);
       evidence.cpWorker = 'trained-assist-cp-sandbox3';
-      evidence.runnerService = SANDBOX3.mockRunnerWorkerName;
+      evidence.runnerService = args[0] === '--sandbox3-public-preflight'
+        ? SANDBOX3.runnerWorkerName : SANDBOX3.mockRunnerWorkerName;
       evidence.runnerPrincipalId = 'sandbox3-agent-api-principal';
       evidence.runnerProfileId = 'integration-sandbox3-v1';
       evidence.cpMockKeySecretName = 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST';
@@ -717,7 +720,8 @@ async function main() {
       } else if (args[0] === '--sandbox3-public-preflight') {
         stage = 'sandbox3PublicRoute';
         evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
-        evidence.sandbox3PublicRoute.authenticatedContractVerified = false;
+        await verifySandbox3RunnerPrincipal(input.agentApiKey);
+        evidence.sandbox3PublicRoute.authenticatedContractVerified = true;
         evidence.boundaries[stage] = 'PASS';
         evidence.outcome = 'preflight_passed';
       }
@@ -757,7 +761,7 @@ async function main() {
     evidence.failure = {
       boundary: stage,
       reasonCode: error instanceof Error && (/^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
-        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
+        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|RUNNER_API_KEY_AGENT_API|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
         ? error.message : 'sandbox_bootstrap_failed',
     };
   } finally {
