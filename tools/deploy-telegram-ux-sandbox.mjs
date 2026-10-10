@@ -65,21 +65,27 @@ function putWorkerSecret(name, value) {
 }
 
 async function livenessProbe(expectedBuildSha = null) {
-  let response;
-  try {
-    response = await fetch('https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev/healthz', {
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw new Error('sandbox_worker_unreachable');
+  const attempts = expectedBuildSha ? 15 : 1;
+  let lastFailure = 'sandbox_worker_unreachable';
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch('https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev/healthz', {
+        signal: AbortSignal.timeout(15_000),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.service !== 'trained-assist-control-plane' || body.check !== 'liveness') {
+        lastFailure = 'sandbox_worker_liveness_failed';
+      } else {
+        const buildSha = typeof body.buildSha === 'string' ? body.buildSha : null;
+        if (!expectedBuildSha || buildSha === expectedBuildSha) return { status: 'PASS', buildSha };
+        lastFailure = 'sandbox_worker_build_sha_mismatch';
+      }
+    } catch {
+      lastFailure = 'sandbox_worker_unreachable';
+    }
+    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 2_000));
   }
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || body.service !== 'trained-assist-control-plane' || body.check !== 'liveness') {
-    throw new Error('sandbox_worker_liveness_failed');
-  }
-  const buildSha = typeof body.buildSha === 'string' ? body.buildSha : null;
-  if (expectedBuildSha && buildSha !== expectedBuildSha) throw new Error('sandbox_worker_build_sha_mismatch');
-  return { status: 'PASS', buildSha };
+  throw new Error(lastFailure);
 }
 
 async function readinessProbe(secret, { allowBlocked = false, allowMissing = false } = {}) {
