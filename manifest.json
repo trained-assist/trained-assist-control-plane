@@ -1,0 +1,1714 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": "1.0.0",
+  "repomixVersion": "1.18.1",
+  "repository": "trained-assist/trained-assist-control-plane",
+  "sourceSha": "d2f564fe7566d0e6fcbc45defa36f1ae25a39049",
+  "dirty": false,
+  "mapByteLimit": 8192,
+  "mapBytes": 8170,
+  "indexed": [
+    ".github/workflows/ci-fix-cleanup.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/communication-v1-quick-answer-smoke.yml",
+    ".github/workflows/deploy-sandbox3.yml",
+    ".github/workflows/deploy-telegram-ux-sandbox.yml",
+    ".github/workflows/integration-v1.yml",
+    ".github/workflows/pr-autofix.yml",
+    ".github/workflows/reconcile-telegram-ux-france-worker.yml",
+    ".github/workflows/repo-context.yml",
+    ".github/workflows/sandbox-status-probe.yml",
+    ".github/workflows/telegram-ux-sandbox-test-pass.yml",
+    ".gitignore",
+    ".repo-context/.gitignore",
+    ".repo-context/repomix.config.json",
+    "AGENTS.md",
+    "README.md",
+    "REQUIREMENTS_LOG.md",
+    "docs/AGENT-CSV-LIVE-VERIFY.md",
+    "docs/AGENT-GOOGLE-SHEET-LIVE-RUN.md",
+    "docs/COMMUNICATION-V1-LIVE-SMOKE.md",
+    "docs/COMMUNICATION-V1.md",
+    "docs/CP-STOP-RUN-PIN.md",
+    "docs/CREDENTIAL-BOUNDARY-OPERATOR.md",
+    "docs/CREDENTIAL-BOUNDARY-VERIFY.md",
+    "docs/CREDENTIAL-READY-V1.md",
+    "docs/HEALTH-DIAGNOSTICS.md",
+    "docs/HOST-MCP-ROUTING-COMPOSITION.md",
+    "docs/INGRESS-ARTIFACT-MANIFEST-V1.md",
+    "docs/INTEGRATION-V1-HANDOFF.md",
+    "docs/M1-PILOT-ROLLBACK-RUNBOOK.md",
+    "docs/M1-STEP7-WEB-SLICE.md",
+    "docs/MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md",
+    "docs/NATIVE-CANCEL-CONFIRMATION.md",
+    "docs/P22-SCHEDULE-VIRTUAL-CLOCK-TRANSCRIPT.md",
+    "docs/P23-GTD-OPTIN-BOUNDED-CONTROL-TRANSCRIPT.md",
+    "docs/PROFILE-RUNTIME-POLICY.md",
+    "docs/ROLLOUT-COHORT-FLAG-OWNER-ROLLBACK.md",
+    "docs/RUNNER-LATE-RESULT-RECONCILIATION.md",
+    "docs/SANDBOX-3-TARGET.md",
+    "docs/TEXT-ONLY-RUNNER-PERSISTENCE.md",
+    "docs/WATCHDOG-ACCEPTANCE-RUNBOOK.md",
+    "docs/e2e/m1-step7-live-report.json",
+    "docs/evidence/P16-SANDBOX-TRANSCRIPT.md",
+    "docs/evidence/P20-BRIEF-TRANSCRIPT.md",
+    "docs/evidence/p16-sandbox-events.jsonl",
+    "docs/evidence/p20-brief-events.jsonl",
+    "docs/evidence/snapshot-ref-sandbox/README.md",
+    "docs/evidence/snapshot-ref-sandbox/snap-e2e.mjs",
+    "docs/evidence/snapshot-ref-sandbox/transcript.sha256",
+    "docs/evidence/snapshot-ref-sandbox/transcript.txt",
+    "eval/fast-replies/corpus.snapshot.json",
+    "eval/fast-replies/decisions/p16-route-policy.v1.jsonl",
+    "eval/fast-replies/dialogs.v1.jsonl",
+    "migrations/0001_task_store_v1.sql",
+    "migrations/0002_task_admission.sql",
+    "migrations/0003_run_executions.sql",
+    "migrations/0004_delivery_and_artifacts.sql",
+    "migrations/0005_awaiting_purpose_and_engine_refs.sql",
+    "migrations/0006_schedule_v1.sql",
+    "migrations/0007_gtd_v1.sql",
+    "migrations/0008_start_deadline.sql",
+    "migrations/0009_pending_inputs.sql",
+    "migrations/0010_backfill_start_deadline.sql",
+    "migrations/0011_watchdog_health.sql",
+    "migrations/0012_stuck_input_alerts.sql",
+    "migrations/0013_credential_ready.sql",
+    "migrations/0014_stop_window_snapshots.sql",
+    "package.json",
+    "src/auth/principal-auth.ts",
+    "src/awaiting/credential-ready.ts",
+    "src/awaiting/index.ts",
+    "src/awaiting/purpose.ts",
+    "src/awaiting/wait-for-answer.ts",
+    "src/deployment/sandbox3.ts",
+    "src/deployment/telegram-ux-sandbox.ts",
+    "src/diagnostics/health-catalogue.ts",
+    "src/diagnostics/trace.ts",
+    "src/events/c02-event-envelope.ts",
+    "src/events/index.ts",
+    "src/gtd/errors.ts",
+    "src/gtd/gtd-service.ts",
+    "src/gtd/gtd-store.ts",
+    "src/gtd/index.ts",
+    "src/gtd/types.ts",
+    "src/index.ts",
+    "src/intake/authorization.ts",
+    "src/intake/envelope.ts",
+    "src/intake/errors.ts",
+    "src/intake/index.ts",
+    "src/intake/ingress-artifact-verifier.ts",
+    "src/intake/input-artifact-manifest.ts",
+    "src/intake/intake-service.ts",
+    "src/intake/stuck-input-scheduler.ts",
+    "src/intake/stuck-input-watchdog.ts",
+    "src/logging/error-publisher.ts",
+    "src/logging/index.ts",
+    "src/logging/structured-log.ts",
+    "src/pilot/index.ts",
+    "src/pilot/pilot-config.ts",
+    "src/pilot/pilot-router.ts",
+    "src/reporting/index.ts",
+    "src/router/authorization.ts",
+    "src/router/brief/brief-types.ts",
+    "src/router/brief/cache.ts",
+    "src/router/brief/compiler.ts",
+    "src/router/brief/execution-context.ts",
+    "src/router/brief/index.ts",
+    "src/router/brief/service.ts",
+    "src/router/brief/summary.ts",
+    "src/router/catalog.ts",
+    "src/router/communication-client.ts",
+    "src/router/communication-v1.ts",
+    "src/router/corpus-replay.ts",
+    "src/router/events.ts",
+    "src/router/handlers.ts",
+    "src/router/host-mcp-routing.ts",
+    "src/router/index.ts",
+    "src/router/mcp-catalogue-types.ts",
+    "src/router/mcp-catalogue.ts",
+    "src/router/policy.ts",
+    "src/router/recipe/decision-contract.ts",
+    "src/router/recipe/fixed-model.ts",
+    "src/router/recipe/host-data.ts"
+  ],
+  "omittedFromMap": [
+    "src/router/recipe/recipe.ts",
+    "src/router/registry-test-mcp.ts",
+    "src/router/router-types.ts",
+    "src/router/service.ts",
+    "src/router/text-features.ts",
+    "src/run-spec/profile-runtime.ts",
+    "src/run-spec/run-spec.ts",
+    "src/runner-adapter/await-runner-result.ts",
+    "src/runner-adapter/engine-default.ts",
+    "src/runner-adapter/engine-text.ts",
+    "src/runner-adapter/errors.ts",
+    "src/runner-adapter/index.ts",
+    "src/runner-adapter/run-id.ts",
+    "src/runner-adapter/runner-api-adapter.ts",
+    "src/schedule/cron.ts",
+    "src/schedule/index.ts",
+    "src/schedule/schedule-service.ts",
+    "src/schedule/schedule-store.ts",
+    "src/schedule/types.ts",
+    "src/schedule/virtual-clock.ts",
+    "src/taskstore/errors.ts",
+    "src/taskstore/index.ts",
+    "src/taskstore/task-store.ts",
+    "src/taskstore/types.ts",
+    "src/workflow-port/conversation-plan.ts",
+    "src/workflow-port/delivery-worker.ts",
+    "src/workflow-port/external-stop.ts",
+    "src/workflow-port/index.ts",
+    "src/workflow-port/step-ctx.ts",
+    "src/workflow-port/workflow-port.ts",
+    "tests/communication-v1.test.ts",
+    "tests/cp-stop-quick-answer.test.ts",
+    "tests/cp-stop-run-pin.test.ts",
+    "tests/cp-stop-targets.test.ts",
+    "tests/credential-ready.test.ts",
+    "tests/delivery-http-route.test.ts",
+    "tests/env.ts",
+    "tests/error-publisher.test.ts",
+    "tests/fast-replies-corpus.test.ts",
+    "tests/fixtures/registry-mcp-test-160-descriptor.ts",
+    "tests/gateway-seam.test.ts",
+    "tests/health-catalogue.test.ts",
+    "tests/host-mcp-composition.test.ts",
+    "tests/ingress-artifact-verifier.test.ts",
+    "tests/intake-pending-registration.test.ts",
+    "tests/intake-receipt.test.ts",
+    "tests/intake-stuck-input-scheduler.test.ts",
+    "tests/intake-stuck-input.test.ts",
+    "tests/m06-cancel-delivery.test.ts",
+    "tests/m1-step5-awaiting-input.test.ts",
+    "tests/m122-runner-adapter.test.ts",
+    "tests/mcp-catalogue-boundary.test.ts",
+    "tests/migrations.test.ts",
+    "tests/native-cancel-confirmation.test.ts",
+    "tests/native-sealing-bind.test.ts",
+    "tests/own-api-artifact-bytes.test.ts",
+    "tests/own-api-auth.test.ts",
+    "tests/own-api-one-shot.test.ts",
+    "tests/own-api-reporting.test.ts",
+    "tests/own-api-run-spec.test.ts",
+    "tests/p05-p06-status-recovery.test.ts",
+    "tests/p12-primitive-io.test.ts",
+    "tests/p16-probe-pr21-live-data.test.ts",
+    "tests/p16-probe-pr23-quoted-link.test.ts",
+    "tests/p16-route-policy.test.ts",
+    "tests/p17-reply-or-route.test.ts",
+    "tests/p20-catalog-brief.test.ts",
+    "tests/p20-evidence-sanitizer.test.ts",
+    "tests/p22-schedule.test.ts",
+    "tests/p23-gtd.test.ts",
+    "tests/pilot-rollback.test.ts",
+    "tests/profile-runtime.test.ts",
+    "tests/raw-modules.d.ts",
+    "tests/registry-test-mcp.test.ts",
+    "tests/runner-engine-default.test.ts",
+    "tests/runner-ingress-manifest.test.ts",
+    "tests/runner-input-artifact.test.ts",
+    "tests/runner-late-result.test.ts",
+    "tests/runner-mock-probe.test.ts",
+    "tests/runner-run-id.test.ts",
+    "tests/runner-text-persistence.test.ts",
+    "tests/scaffold.test.ts",
+    "tests/setup.ts",
+    "tests/task-store-consistency.test.ts",
+    "tests/taskstore-fencing.test.ts",
+    "tests/taskstore-signals.test.ts",
+    "tests/taskstore-start-run-race.test.ts",
+    "tests/taskstore-terminal-guard.test.ts",
+    "tests/taskstore-transitions.test.ts",
+    "tests/telegram-ux-sandbox-deploy.test.ts",
+    "tests/trace-endpoint.test.ts",
+    "tests/watchdog-scheduler.test.ts",
+    "tests/web-conversation.test.ts",
+    "tests/web-e2e-controlled-failure.test.ts",
+    "tests/workflow-port.test.ts",
+    "tools/agent-csv-file-live-run.mjs",
+    "tools/agent-csv-file-live-run.test.mjs",
+    "tools/agent-csv-live-verify.mjs",
+    "tools/agent-google-sheet-live-run.mjs",
+    "tools/agent-google-sheet-live-run.test.mjs",
+    "tools/bootstrap-telegram-ux-mock-runner.mjs",
+    "tools/bootstrap-telegram-ux-mock-runner.test.mjs",
+    "tools/command-failure.mjs",
+    "tools/command-failure.test.mjs",
+    "tools/communication-v1-live-smoke.mjs",
+    "tools/communication-v1-live-smoke.test.mjs",
+    "tools/credential-boundary-prepare.mjs",
+    "tools/credential-boundary-prepare.test.mjs",
+    "tools/credential-boundary-verify.mjs",
+    "tools/credential-boundary-verify.test.mjs",
+    "tools/credential-migration-selfcheck.mjs",
+    "tools/deploy-telegram-ux-sandbox.mjs",
+    "tools/deployment-config-verify.test.mjs",
+    "tools/deployment-smoke.mjs",
+    "tools/fast-replies-export-decisions.ts",
+    "tools/fetch-fast-replies-corpus.sh",
+    "tools/integration-v1-smoke.mjs",
+    "tools/local-smoke.sh",
+    "tools/own-api-dogfood-client.js",
+    "tools/own-api-sandbox-verify.sh",
+    "tools/p16-evidence-selfcheck.mjs",
+    "tools/p16-evidence.mjs",
+    "tools/p16-sandbox-probe.sh",
+    "tools/p16-sanitize-evidence.mjs",
+    "tools/p20-brief-probe.sh",
+    "tools/p20-evidence.mjs",
+    "tools/p20-sanitize-evidence.mjs",
+    "tools/principal-sig.sh",
+    "tools/reconcile-telegram-ux-france-worker.mjs",
+    "tools/reconcile-telegram-ux-france-worker.test.mjs",
+    "tools/repo-context/.gitignore",
+    "tools/repo-context/map.py",
+    "tools/repo-context/package.json",
+    "tools/runner-live-smoke.sh",
+    "tools/sandbox-status-probe.mjs",
+    "tools/sandbox3-cp-pairing.mjs",
+    "tools/sandbox3-cp-pairing.test.mjs",
+    "tools/sandbox3-cp-probe-request.mjs",
+    "tools/sandbox3-cp-probe-request.test.mjs",
+    "tools/sandbox3-lane-preflight.mjs",
+    "tools/sandbox3-lane-preflight.test.mjs",
+    "tools/sandbox3-public-route.mjs",
+    "tools/sandbox3-public-route.test.mjs",
+    "tools/sandbox3-test-cleanup.mjs",
+    "tools/sandbox3-test-cleanup.test.mjs",
+    "tools/ts-ext-hooks.mjs",
+    "tools/ts-ext-resolver.mjs",
+    "tools/verified-sandbox-script.mjs",
+    "tools/verified-sandbox-script.test.mjs",
+    "tsconfig.json",
+    "vitest.config.ts",
+    "web/app.ts",
+    "web/config.ts",
+    "web/contract.ts",
+    "web/control-plane-client.ts",
+    "web/conversation.ts",
+    "web/e2e/run-m1-web-slice-e2e.mjs",
+    "web/fake-control-plane.ts",
+    "web/index.ts",
+    "web/log.ts",
+    "web/page.ts",
+    "web/wrangler.web.jsonc",
+    "wrangler.integration-v1.jsonc",
+    "wrangler.jsonc",
+    "wrangler.production.jsonc",
+    "wrangler.sandbox3.jsonc",
+    "wrangler.staging.jsonc",
+    "wrangler.telegram-ux-v1.jsonc"
+  ],
+  "inventory": [
+    {
+      "path": ".github/workflows/ci-fix-cleanup.yml",
+      "bytes": 533
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "bytes": 4812
+    },
+    {
+      "path": ".github/workflows/communication-v1-quick-answer-smoke.yml",
+      "bytes": 1706
+    },
+    {
+      "path": ".github/workflows/deploy-sandbox3.yml",
+      "bytes": 1776
+    },
+    {
+      "path": ".github/workflows/deploy-telegram-ux-sandbox.yml",
+      "bytes": 1160
+    },
+    {
+      "path": ".github/workflows/integration-v1.yml",
+      "bytes": 693
+    },
+    {
+      "path": ".github/workflows/pr-autofix.yml",
+      "bytes": 1285
+    },
+    {
+      "path": ".github/workflows/reconcile-telegram-ux-france-worker.yml",
+      "bytes": 1150
+    },
+    {
+      "path": ".github/workflows/repo-context.yml",
+      "bytes": 2886
+    },
+    {
+      "path": ".github/workflows/sandbox-status-probe.yml",
+      "bytes": 854
+    },
+    {
+      "path": ".github/workflows/telegram-ux-sandbox-test-pass.yml",
+      "bytes": 3151
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 90
+    },
+    {
+      "path": ".repo-context/.gitignore",
+      "bytes": 8
+    },
+    {
+      "path": ".repo-context/repomix.config.json",
+      "bytes": 901
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 9709
+    },
+    {
+      "path": "README.md",
+      "bytes": 68187
+    },
+    {
+      "path": "REQUIREMENTS_LOG.md",
+      "bytes": 4201
+    },
+    {
+      "path": "docs/AGENT-CSV-LIVE-VERIFY.md",
+      "bytes": 4657
+    },
+    {
+      "path": "docs/AGENT-GOOGLE-SHEET-LIVE-RUN.md",
+      "bytes": 9523
+    },
+    {
+      "path": "docs/COMMUNICATION-V1-LIVE-SMOKE.md",
+      "bytes": 2953
+    },
+    {
+      "path": "docs/COMMUNICATION-V1.md",
+      "bytes": 5541
+    },
+    {
+      "path": "docs/CP-STOP-RUN-PIN.md",
+      "bytes": 6591
+    },
+    {
+      "path": "docs/CREDENTIAL-BOUNDARY-OPERATOR.md",
+      "bytes": 5404
+    },
+    {
+      "path": "docs/CREDENTIAL-BOUNDARY-VERIFY.md",
+      "bytes": 6899
+    },
+    {
+      "path": "docs/CREDENTIAL-READY-V1.md",
+      "bytes": 5957
+    },
+    {
+      "path": "docs/HEALTH-DIAGNOSTICS.md",
+      "bytes": 1881
+    },
+    {
+      "path": "docs/HOST-MCP-ROUTING-COMPOSITION.md",
+      "bytes": 5106
+    },
+    {
+      "path": "docs/INGRESS-ARTIFACT-MANIFEST-V1.md",
+      "bytes": 4280
+    },
+    {
+      "path": "docs/INTEGRATION-V1-HANDOFF.md",
+      "bytes": 19634
+    },
+    {
+      "path": "docs/M1-PILOT-ROLLBACK-RUNBOOK.md",
+      "bytes": 9025
+    },
+    {
+      "path": "docs/M1-STEP7-WEB-SLICE.md",
+      "bytes": 11175
+    },
+    {
+      "path": "docs/MCP-TEST-DISCOVERY-TELEGRAM-UX-V1.md",
+      "bytes": 13651
+    },
+    {
+      "path": "docs/NATIVE-CANCEL-CONFIRMATION.md",
+      "bytes": 3476
+    },
+    {
+      "path": "docs/P22-SCHEDULE-VIRTUAL-CLOCK-TRANSCRIPT.md",
+      "bytes": 16672
+    },
+    {
+      "path": "docs/P23-GTD-OPTIN-BOUNDED-CONTROL-TRANSCRIPT.md",
+      "bytes": 22145
+    },
+    {
+      "path": "docs/PROFILE-RUNTIME-POLICY.md",
+      "bytes": 25599
+    },
+    {
+      "path": "docs/ROLLOUT-COHORT-FLAG-OWNER-ROLLBACK.md",
+      "bytes": 6692
+    },
+    {
+      "path": "docs/RUNNER-LATE-RESULT-RECONCILIATION.md",
+      "bytes": 1365
+    },
+    {
+      "path": "docs/SANDBOX-3-TARGET.md",
+      "bytes": 4886
+    },
+    {
+      "path": "docs/TEXT-ONLY-RUNNER-PERSISTENCE.md",
+      "bytes": 1730
+    },
+    {
+      "path": "docs/WATCHDOG-ACCEPTANCE-RUNBOOK.md",
+      "bytes": 8574
+    },
+    {
+      "path": "docs/e2e/m1-step7-live-report.json",
+      "bytes": 2096
+    },
+    {
+      "path": "docs/evidence/P16-SANDBOX-TRANSCRIPT.md",
+      "bytes": 9763
+    },
+    {
+      "path": "docs/evidence/P20-BRIEF-TRANSCRIPT.md",
+      "bytes": 29714
+    },
+    {
+      "path": "docs/evidence/p16-sandbox-events.jsonl",
+      "bytes": 9620
+    },
+    {
+      "path": "docs/evidence/p20-brief-events.jsonl",
+      "bytes": 21614
+    },
+    {
+      "path": "docs/evidence/snapshot-ref-sandbox/README.md",
+      "bytes": 3930
+    },
+    {
+      "path": "docs/evidence/snapshot-ref-sandbox/snap-e2e.mjs",
+      "bytes": 8406
+    },
+    {
+      "path": "docs/evidence/snapshot-ref-sandbox/transcript.sha256",
+      "bytes": 116
+    },
+    {
+      "path": "docs/evidence/snapshot-ref-sandbox/transcript.txt",
+      "bytes": 1209
+    },
+    {
+      "path": "eval/fast-replies/corpus.snapshot.json",
+      "bytes": 1403
+    },
+    {
+      "path": "eval/fast-replies/decisions/p16-route-policy.v1.jsonl",
+      "bytes": 24500
+    },
+    {
+      "path": "eval/fast-replies/dialogs.v1.jsonl",
+      "bytes": 21666
+    },
+    {
+      "path": "migrations/0001_task_store_v1.sql",
+      "bytes": 6420
+    },
+    {
+      "path": "migrations/0002_task_admission.sql",
+      "bytes": 1613
+    },
+    {
+      "path": "migrations/0003_run_executions.sql",
+      "bytes": 1919
+    },
+    {
+      "path": "migrations/0004_delivery_and_artifacts.sql",
+      "bytes": 3393
+    },
+    {
+      "path": "migrations/0005_awaiting_purpose_and_engine_refs.sql",
+      "bytes": 1199
+    },
+    {
+      "path": "migrations/0006_schedule_v1.sql",
+      "bytes": 4686
+    },
+    {
+      "path": "migrations/0007_gtd_v1.sql",
+      "bytes": 8224
+    },
+    {
+      "path": "migrations/0008_start_deadline.sql",
+      "bytes": 1809
+    },
+    {
+      "path": "migrations/0009_pending_inputs.sql",
+      "bytes": 4974
+    },
+    {
+      "path": "migrations/0010_backfill_start_deadline.sql",
+      "bytes": 1979
+    },
+    {
+      "path": "migrations/0011_watchdog_health.sql",
+      "bytes": 1540
+    },
+    {
+      "path": "migrations/0012_stuck_input_alerts.sql",
+      "bytes": 1441
+    },
+    {
+      "path": "migrations/0013_credential_ready.sql",
+      "bytes": 4229
+    },
+    {
+      "path": "migrations/0014_stop_window_snapshots.sql",
+      "bytes": 595
+    },
+    {
+      "path": "package.json",
+      "bytes": 1712
+    },
+    {
+      "path": "src/auth/principal-auth.ts",
+      "bytes": 5453
+    },
+    {
+      "path": "src/awaiting/credential-ready.ts",
+      "bytes": 1666
+    },
+    {
+      "path": "src/awaiting/index.ts",
+      "bytes": 62
+    },
+    {
+      "path": "src/awaiting/purpose.ts",
+      "bytes": 2299
+    },
+    {
+      "path": "src/awaiting/wait-for-answer.ts",
+      "bytes": 6205
+    },
+    {
+      "path": "src/deployment/sandbox3.ts",
+      "bytes": 372
+    },
+    {
+      "path": "src/deployment/telegram-ux-sandbox.ts",
+      "bytes": 6581
+    },
+    {
+      "path": "src/diagnostics/health-catalogue.ts",
+      "bytes": 10110
+    },
+    {
+      "path": "src/diagnostics/trace.ts",
+      "bytes": 4710
+    },
+    {
+      "path": "src/events/c02-event-envelope.ts",
+      "bytes": 2714
+    },
+    {
+      "path": "src/events/index.ts",
+      "bytes": 38
+    },
+    {
+      "path": "src/gtd/errors.ts",
+      "bytes": 2454
+    },
+    {
+      "path": "src/gtd/gtd-service.ts",
+      "bytes": 44739
+    },
+    {
+      "path": "src/gtd/gtd-store.ts",
+      "bytes": 10468
+    },
+    {
+      "path": "src/gtd/index.ts",
+      "bytes": 111
+    },
+    {
+      "path": "src/gtd/types.ts",
+      "bytes": 8995
+    },
+    {
+      "path": "src/index.ts",
+      "bytes": 112664
+    },
+    {
+      "path": "src/intake/authorization.ts",
+      "bytes": 2197
+    },
+    {
+      "path": "src/intake/envelope.ts",
+      "bytes": 14854
+    },
+    {
+      "path": "src/intake/errors.ts",
+      "bytes": 1383
+    },
+    {
+      "path": "src/intake/index.ts",
+      "bytes": 290
+    },
+    {
+      "path": "src/intake/ingress-artifact-verifier.ts",
+      "bytes": 2462
+    },
+    {
+      "path": "src/intake/input-artifact-manifest.ts",
+      "bytes": 3485
+    },
+    {
+      "path": "src/intake/intake-service.ts",
+      "bytes": 9802
+    },
+    {
+      "path": "src/intake/stuck-input-scheduler.ts",
+      "bytes": 14634
+    },
+    {
+      "path": "src/intake/stuck-input-watchdog.ts",
+      "bytes": 16032
+    },
+    {
+      "path": "src/logging/error-publisher.ts",
+      "bytes": 5232
+    },
+    {
+      "path": "src/logging/index.ts",
+      "bytes": 865
+    },
+    {
+      "path": "src/logging/structured-log.ts",
+      "bytes": 3173
+    },
+    {
+      "path": "src/pilot/index.ts",
+      "bytes": 270
+    },
+    {
+      "path": "src/pilot/pilot-config.ts",
+      "bytes": 5234
+    },
+    {
+      "path": "src/pilot/pilot-router.ts",
+      "bytes": 3066
+    },
+    {
+      "path": "src/reporting/index.ts",
+      "bytes": 6074
+    },
+    {
+      "path": "src/router/authorization.ts",
+      "bytes": 3774
+    },
+    {
+      "path": "src/router/brief/brief-types.ts",
+      "bytes": 7791
+    },
+    {
+      "path": "src/router/brief/cache.ts",
+      "bytes": 5645
+    },
+    {
+      "path": "src/router/brief/compiler.ts",
+      "bytes": 20659
+    },
+    {
+      "path": "src/router/brief/execution-context.ts",
+      "bytes": 9418
+    },
+    {
+      "path": "src/router/brief/index.ts",
+      "bytes": 988
+    },
+    {
+      "path": "src/router/brief/service.ts",
+      "bytes": 6339
+    },
+    {
+      "path": "src/router/brief/summary.ts",
+      "bytes": 4896
+    },
+    {
+      "path": "src/router/catalog.ts",
+      "bytes": 16334
+    },
+    {
+      "path": "src/router/communication-client.ts",
+      "bytes": 3741
+    },
+    {
+      "path": "src/router/communication-v1.ts",
+      "bytes": 26299
+    },
+    {
+      "path": "src/router/corpus-replay.ts",
+      "bytes": 9685
+    },
+    {
+      "path": "src/router/events.ts",
+      "bytes": 5426
+    },
+    {
+      "path": "src/router/handlers.ts",
+      "bytes": 9035
+    },
+    {
+      "path": "src/router/host-mcp-routing.ts",
+      "bytes": 4019
+    },
+    {
+      "path": "src/router/index.ts",
+      "bytes": 408
+    },
+    {
+      "path": "src/router/mcp-catalogue-types.ts",
+      "bytes": 1797
+    },
+    {
+      "path": "src/router/mcp-catalogue.ts",
+      "bytes": 14678
+    },
+    {
+      "path": "src/router/policy.ts",
+      "bytes": 26718
+    },
+    {
+      "path": "src/router/recipe/decision-contract.ts",
+      "bytes": 22962
+    },
+    {
+      "path": "src/router/recipe/fixed-model.ts",
+      "bytes": 13262
+    },
+    {
+      "path": "src/router/recipe/host-data.ts",
+      "bytes": 9701
+    },
+    {
+      "path": "src/router/recipe/recipe.ts",
+      "bytes": 17535
+    },
+    {
+      "path": "src/router/registry-test-mcp.ts",
+      "bytes": 7199
+    },
+    {
+      "path": "src/router/router-types.ts",
+      "bytes": 20815
+    },
+    {
+      "path": "src/router/service.ts",
+      "bytes": 35758
+    },
+    {
+      "path": "src/router/text-features.ts",
+      "bytes": 12531
+    },
+    {
+      "path": "src/run-spec/profile-runtime.ts",
+      "bytes": 7675
+    },
+    {
+      "path": "src/run-spec/run-spec.ts",
+      "bytes": 40690
+    },
+    {
+      "path": "src/runner-adapter/await-runner-result.ts",
+      "bytes": 11934
+    },
+    {
+      "path": "src/runner-adapter/engine-default.ts",
+      "bytes": 335
+    },
+    {
+      "path": "src/runner-adapter/engine-text.ts",
+      "bytes": 2932
+    },
+    {
+      "path": "src/runner-adapter/errors.ts",
+      "bytes": 1653
+    },
+    {
+      "path": "src/runner-adapter/index.ts",
+      "bytes": 187
+    },
+    {
+      "path": "src/runner-adapter/run-id.ts",
+      "bytes": 336
+    },
+    {
+      "path": "src/runner-adapter/runner-api-adapter.ts",
+      "bytes": 15919
+    },
+    {
+      "path": "src/schedule/cron.ts",
+      "bytes": 10651
+    },
+    {
+      "path": "src/schedule/index.ts",
+      "bytes": 152
+    },
+    {
+      "path": "src/schedule/schedule-service.ts",
+      "bytes": 24085
+    },
+    {
+      "path": "src/schedule/schedule-store.ts",
+      "bytes": 9708
+    },
+    {
+      "path": "src/schedule/types.ts",
+      "bytes": 5340
+    },
+    {
+      "path": "src/schedule/virtual-clock.ts",
+      "bytes": 1381
+    },
+    {
+      "path": "src/taskstore/errors.ts",
+      "bytes": 2926
+    },
+    {
+      "path": "src/taskstore/index.ts",
+      "bytes": 362
+    },
+    {
+      "path": "src/taskstore/task-store.ts",
+      "bytes": 140762
+    },
+    {
+      "path": "src/taskstore/types.ts",
+      "bytes": 13605
+    },
+    {
+      "path": "src/workflow-port/conversation-plan.ts",
+      "bytes": 39061
+    },
+    {
+      "path": "src/workflow-port/delivery-worker.ts",
+      "bytes": 3756
+    },
+    {
+      "path": "src/workflow-port/external-stop.ts",
+      "bytes": 11468
+    },
+    {
+      "path": "src/workflow-port/index.ts",
+      "bytes": 171
+    },
+    {
+      "path": "src/workflow-port/step-ctx.ts",
+      "bytes": 2733
+    },
+    {
+      "path": "src/workflow-port/workflow-port.ts",
+      "bytes": 47831
+    },
+    {
+      "path": "tests/communication-v1.test.ts",
+      "bytes": 35955
+    },
+    {
+      "path": "tests/cp-stop-quick-answer.test.ts",
+      "bytes": 19456
+    },
+    {
+      "path": "tests/cp-stop-run-pin.test.ts",
+      "bytes": 34853
+    },
+    {
+      "path": "tests/cp-stop-targets.test.ts",
+      "bytes": 9565
+    },
+    {
+      "path": "tests/credential-ready.test.ts",
+      "bytes": 27714
+    },
+    {
+      "path": "tests/delivery-http-route.test.ts",
+      "bytes": 4398
+    },
+    {
+      "path": "tests/env.ts",
+      "bytes": 290
+    },
+    {
+      "path": "tests/error-publisher.test.ts",
+      "bytes": 9361
+    },
+    {
+      "path": "tests/fast-replies-corpus.test.ts",
+      "bytes": 7546
+    },
+    {
+      "path": "tests/fixtures/registry-mcp-test-160-descriptor.ts",
+      "bytes": 409
+    },
+    {
+      "path": "tests/gateway-seam.test.ts",
+      "bytes": 9389
+    },
+    {
+      "path": "tests/health-catalogue.test.ts",
+      "bytes": 14477
+    },
+    {
+      "path": "tests/host-mcp-composition.test.ts",
+      "bytes": 29771
+    },
+    {
+      "path": "tests/ingress-artifact-verifier.test.ts",
+      "bytes": 2548
+    },
+    {
+      "path": "tests/intake-pending-registration.test.ts",
+      "bytes": 6754
+    },
+    {
+      "path": "tests/intake-receipt.test.ts",
+      "bytes": 15398
+    },
+    {
+      "path": "tests/intake-stuck-input-scheduler.test.ts",
+      "bytes": 10280
+    },
+    {
+      "path": "tests/intake-stuck-input.test.ts",
+      "bytes": 17241
+    },
+    {
+      "path": "tests/m06-cancel-delivery.test.ts",
+      "bytes": 12293
+    },
+    {
+      "path": "tests/m1-step5-awaiting-input.test.ts",
+      "bytes": 14481
+    },
+    {
+      "path": "tests/m122-runner-adapter.test.ts",
+      "bytes": 34166
+    },
+    {
+      "path": "tests/mcp-catalogue-boundary.test.ts",
+      "bytes": 13555
+    },
+    {
+      "path": "tests/migrations.test.ts",
+      "bytes": 2983
+    },
+    {
+      "path": "tests/native-cancel-confirmation.test.ts",
+      "bytes": 18735
+    },
+    {
+      "path": "tests/native-sealing-bind.test.ts",
+      "bytes": 6097
+    },
+    {
+      "path": "tests/own-api-artifact-bytes.test.ts",
+      "bytes": 2512
+    },
+    {
+      "path": "tests/own-api-auth.test.ts",
+      "bytes": 11666
+    },
+    {
+      "path": "tests/own-api-one-shot.test.ts",
+      "bytes": 23690
+    },
+    {
+      "path": "tests/own-api-reporting.test.ts",
+      "bytes": 8753
+    },
+    {
+      "path": "tests/own-api-run-spec.test.ts",
+      "bytes": 28317
+    },
+    {
+      "path": "tests/p05-p06-status-recovery.test.ts",
+      "bytes": 18766
+    },
+    {
+      "path": "tests/p12-primitive-io.test.ts",
+      "bytes": 17340
+    },
+    {
+      "path": "tests/p16-probe-pr21-live-data.test.ts",
+      "bytes": 13196
+    },
+    {
+      "path": "tests/p16-probe-pr23-quoted-link.test.ts",
+      "bytes": 8133
+    },
+    {
+      "path": "tests/p16-route-policy.test.ts",
+      "bytes": 16193
+    },
+    {
+      "path": "tests/p17-reply-or-route.test.ts",
+      "bytes": 23988
+    },
+    {
+      "path": "tests/p20-catalog-brief.test.ts",
+      "bytes": 27826
+    },
+    {
+      "path": "tests/p20-evidence-sanitizer.test.ts",
+      "bytes": 3638
+    },
+    {
+      "path": "tests/p22-schedule.test.ts",
+      "bytes": 23556
+    },
+    {
+      "path": "tests/p23-gtd.test.ts",
+      "bytes": 34968
+    },
+    {
+      "path": "tests/pilot-rollback.test.ts",
+      "bytes": 14339
+    },
+    {
+      "path": "tests/profile-runtime.test.ts",
+      "bytes": 17065
+    },
+    {
+      "path": "tests/raw-modules.d.ts",
+      "bytes": 872
+    },
+    {
+      "path": "tests/registry-test-mcp.test.ts",
+      "bytes": 3099
+    },
+    {
+      "path": "tests/runner-engine-default.test.ts",
+      "bytes": 764
+    },
+    {
+      "path": "tests/runner-ingress-manifest.test.ts",
+      "bytes": 4065
+    },
+    {
+      "path": "tests/runner-input-artifact.test.ts",
+      "bytes": 7188
+    },
+    {
+      "path": "tests/runner-late-result.test.ts",
+      "bytes": 4918
+    },
+    {
+      "path": "tests/runner-mock-probe.test.ts",
+      "bytes": 19152
+    },
+    {
+      "path": "tests/runner-run-id.test.ts",
+      "bytes": 601
+    },
+    {
+      "path": "tests/runner-text-persistence.test.ts",
+      "bytes": 12528
+    },
+    {
+      "path": "tests/scaffold.test.ts",
+      "bytes": 527
+    },
+    {
+      "path": "tests/setup.ts",
+      "bytes": 274
+    },
+    {
+      "path": "tests/task-store-consistency.test.ts",
+      "bytes": 5067
+    },
+    {
+      "path": "tests/taskstore-fencing.test.ts",
+      "bytes": 4079
+    },
+    {
+      "path": "tests/taskstore-signals.test.ts",
+      "bytes": 4119
+    },
+    {
+      "path": "tests/taskstore-start-run-race.test.ts",
+      "bytes": 2980
+    },
+    {
+      "path": "tests/taskstore-terminal-guard.test.ts",
+      "bytes": 7532
+    },
+    {
+      "path": "tests/taskstore-transitions.test.ts",
+      "bytes": 9052
+    },
+    {
+      "path": "tests/telegram-ux-sandbox-deploy.test.ts",
+      "bytes": 8421
+    },
+    {
+      "path": "tests/trace-endpoint.test.ts",
+      "bytes": 2964
+    },
+    {
+      "path": "tests/watchdog-scheduler.test.ts",
+      "bytes": 7558
+    },
+    {
+      "path": "tests/web-conversation.test.ts",
+      "bytes": 20317
+    },
+    {
+      "path": "tests/web-e2e-controlled-failure.test.ts",
+      "bytes": 16924
+    },
+    {
+      "path": "tests/workflow-port.test.ts",
+      "bytes": 17393
+    },
+    {
+      "path": "tools/agent-csv-file-live-run.mjs",
+      "bytes": 9316
+    },
+    {
+      "path": "tools/agent-csv-file-live-run.test.mjs",
+      "bytes": 11110
+    },
+    {
+      "path": "tools/agent-csv-live-verify.mjs",
+      "bytes": 5672
+    },
+    {
+      "path": "tools/agent-google-sheet-live-run.mjs",
+      "bytes": 13765
+    },
+    {
+      "path": "tools/agent-google-sheet-live-run.test.mjs",
+      "bytes": 19107
+    },
+    {
+      "path": "tools/bootstrap-telegram-ux-mock-runner.mjs",
+      "bytes": 42023
+    },
+    {
+      "path": "tools/bootstrap-telegram-ux-mock-runner.test.mjs",
+      "bytes": 16243
+    },
+    {
+      "path": "tools/command-failure.mjs",
+      "bytes": 3271
+    },
+    {
+      "path": "tools/command-failure.test.mjs",
+      "bytes": 2361
+    },
+    {
+      "path": "tools/communication-v1-live-smoke.mjs",
+      "bytes": 8801
+    },
+    {
+      "path": "tools/communication-v1-live-smoke.test.mjs",
+      "bytes": 11449
+    },
+    {
+      "path": "tools/credential-boundary-prepare.mjs",
+      "bytes": 9199
+    },
+    {
+      "path": "tools/credential-boundary-prepare.test.mjs",
+      "bytes": 7258
+    },
+    {
+      "path": "tools/credential-boundary-verify.mjs",
+      "bytes": 12565
+    },
+    {
+      "path": "tools/credential-boundary-verify.test.mjs",
+      "bytes": 14223
+    },
+    {
+      "path": "tools/credential-migration-selfcheck.mjs",
+      "bytes": 1628
+    },
+    {
+      "path": "tools/deploy-telegram-ux-sandbox.mjs",
+      "bytes": 12856
+    },
+    {
+      "path": "tools/deployment-config-verify.test.mjs",
+      "bytes": 3763
+    },
+    {
+      "path": "tools/deployment-smoke.mjs",
+      "bytes": 1738
+    },
+    {
+      "path": "tools/fast-replies-export-decisions.ts",
+      "bytes": 2037
+    },
+    {
+      "path": "tools/fetch-fast-replies-corpus.sh",
+      "bytes": 2447
+    },
+    {
+      "path": "tools/integration-v1-smoke.mjs",
+      "bytes": 3537
+    },
+    {
+      "path": "tools/local-smoke.sh",
+      "bytes": 42815
+    },
+    {
+      "path": "tools/own-api-dogfood-client.js",
+      "bytes": 8223
+    },
+    {
+      "path": "tools/own-api-sandbox-verify.sh",
+      "bytes": 6648
+    },
+    {
+      "path": "tools/p16-evidence-selfcheck.mjs",
+      "bytes": 4258
+    },
+    {
+      "path": "tools/p16-evidence.mjs",
+      "bytes": 14387
+    },
+    {
+      "path": "tools/p16-sandbox-probe.sh",
+      "bytes": 14337
+    },
+    {
+      "path": "tools/p16-sanitize-evidence.mjs",
+      "bytes": 1217
+    },
+    {
+      "path": "tools/p20-brief-probe.sh",
+      "bytes": 18081
+    },
+    {
+      "path": "tools/p20-evidence.mjs",
+      "bytes": 10325
+    },
+    {
+      "path": "tools/p20-sanitize-evidence.mjs",
+      "bytes": 1938
+    },
+    {
+      "path": "tools/principal-sig.sh",
+      "bytes": 1026
+    },
+    {
+      "path": "tools/reconcile-telegram-ux-france-worker.mjs",
+      "bytes": 11720
+    },
+    {
+      "path": "tools/reconcile-telegram-ux-france-worker.test.mjs",
+      "bytes": 3670
+    },
+    {
+      "path": "tools/repo-context/.gitignore",
+      "bytes": 14
+    },
+    {
+      "path": "tools/repo-context/map.py",
+      "bytes": 4513
+    },
+    {
+      "path": "tools/repo-context/package.json",
+      "bytes": 198
+    },
+    {
+      "path": "tools/runner-live-smoke.sh",
+      "bytes": 15177
+    },
+    {
+      "path": "tools/sandbox-status-probe.mjs",
+      "bytes": 2324
+    },
+    {
+      "path": "tools/sandbox3-cp-pairing.mjs",
+      "bytes": 2488
+    },
+    {
+      "path": "tools/sandbox3-cp-pairing.test.mjs",
+      "bytes": 2833
+    },
+    {
+      "path": "tools/sandbox3-cp-probe-request.mjs",
+      "bytes": 962
+    },
+    {
+      "path": "tools/sandbox3-cp-probe-request.test.mjs",
+      "bytes": 2732
+    },
+    {
+      "path": "tools/sandbox3-lane-preflight.mjs",
+      "bytes": 9980
+    },
+    {
+      "path": "tools/sandbox3-lane-preflight.test.mjs",
+      "bytes": 6877
+    },
+    {
+      "path": "tools/sandbox3-public-route.mjs",
+      "bytes": 2759
+    },
+    {
+      "path": "tools/sandbox3-public-route.test.mjs",
+      "bytes": 3536
+    },
+    {
+      "path": "tools/sandbox3-test-cleanup.mjs",
+      "bytes": 6007
+    },
+    {
+      "path": "tools/sandbox3-test-cleanup.test.mjs",
+      "bytes": 3172
+    },
+    {
+      "path": "tools/ts-ext-hooks.mjs",
+      "bytes": 298
+    },
+    {
+      "path": "tools/ts-ext-resolver.mjs",
+      "bytes": 815
+    },
+    {
+      "path": "tools/verified-sandbox-script.mjs",
+      "bytes": 10029
+    },
+    {
+      "path": "tools/verified-sandbox-script.test.mjs",
+      "bytes": 9544
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 575
+    },
+    {
+      "path": "vitest.config.ts",
+      "bytes": 1074
+    },
+    {
+      "path": "web/app.ts",
+      "bytes": 10153
+    },
+    {
+      "path": "web/config.ts",
+      "bytes": 5185
+    },
+    {
+      "path": "web/contract.ts",
+      "bytes": 5593
+    },
+    {
+      "path": "web/control-plane-client.ts",
+      "bytes": 21384
+    },
+    {
+      "path": "web/conversation.ts",
+      "bytes": 24921
+    },
+    {
+      "path": "web/e2e/run-m1-web-slice-e2e.mjs",
+      "bytes": 21832
+    },
+    {
+      "path": "web/fake-control-plane.ts",
+      "bytes": 47534
+    },
+    {
+      "path": "web/index.ts",
+      "bytes": 1601
+    },
+    {
+      "path": "web/log.ts",
+      "bytes": 2152
+    },
+    {
+      "path": "web/page.ts",
+      "bytes": 7922
+    },
+    {
+      "path": "web/wrangler.web.jsonc",
+      "bytes": 346
+    },
+    {
+      "path": "wrangler.integration-v1.jsonc",
+      "bytes": 1570
+    },
+    {
+      "path": "wrangler.jsonc",
+      "bytes": 2993
+    },
+    {
+      "path": "wrangler.production.jsonc",
+      "bytes": 805
+    },
+    {
+      "path": "wrangler.sandbox3.jsonc",
+      "bytes": 1387
+    },
+    {
+      "path": "wrangler.staging.jsonc",
+      "bytes": 793
+    },
+    {
+      "path": "wrangler.telegram-ux-v1.jsonc",
+      "bytes": 2634
+    }
+  ],
+  "configSha256": "c8bb3adc42afdf7e2efbfbc7a65e07f11086e3e72204527a365b7f671c75db68",
+  "packedPaths": [
+    ".github/workflows/ci-fix-cleanup.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/communication-v1-quick-answer-smoke.yml",
+    ".github/workflows/deploy-sandbox3.yml",
+    ".github/workflows/deploy-telegram-ux-sandbox.yml",
+    ".github/workflows/integration-v1.yml",
+    ".github/workflows/pr-autofix.yml",
+    ".github/workflows/reconcile-telegram-ux-france-worker.yml",
+    ".github/workflows/repo-context.yml",
+    ".github/workflows/sandbox-status-probe.yml",
+    ".github/workflows/telegram-ux-sandbox-test-pass.yml",
+    ".repo-context/repomix.config.json",
+    "docs/evidence/snapshot-ref-sandbox/snap-e2e.mjs",
+    "src/auth/principal-auth.ts",
+    "src/awaiting/credential-ready.ts",
+    "src/awaiting/index.ts",
+    "src/awaiting/purpose.ts",
+    "src/awaiting/wait-for-answer.ts",
+    "src/deployment/sandbox3.ts",
+    "src/deployment/telegram-ux-sandbox.ts",
+    "src/diagnostics/health-catalogue.ts",
+    "src/diagnostics/trace.ts",
+    "src/events/c02-event-envelope.ts",
+    "src/events/index.ts",
+    "src/gtd/errors.ts",
+    "src/gtd/gtd-service.ts",
+    "src/gtd/gtd-store.ts",
+    "src/gtd/index.ts",
+    "src/gtd/types.ts",
+    "src/intake/authorization.ts",
+    "src/intake/envelope.ts",
+    "src/intake/errors.ts",
+    "src/intake/index.ts",
+    "src/intake/ingress-artifact-verifier.ts",
+    "src/intake/input-artifact-manifest.ts",
+    "src/intake/intake-service.ts",
+    "src/intake/stuck-input-scheduler.ts",
+    "src/intake/stuck-input-watchdog.ts",
+    "src/logging/error-publisher.ts",
+    "src/logging/index.ts",
+    "src/logging/structured-log.ts",
+    "src/output/communication-v1.ts",
+    "src/output/continuation.ts",
+    "src/output/index.ts",
+    "src/pilot/index.ts",
+    "src/pilot/pilot-config.ts",
+    "src/pilot/pilot-router.ts",
+    "src/reporting/index.ts",
+    "src/router/brief/brief-types.ts",
+    "src/router/brief/cache.ts",
+    "src/router/brief/compiler.ts",
+    "src/router/brief/execution-context.ts",
+    "src/router/brief/index.ts",
+    "src/router/brief/service.ts",
+    "src/router/brief/summary.ts",
+    "src/router/recipe/decision-contract.ts",
+    "src/router/recipe/fixed-model.ts",
+    "src/router/recipe/host-data.ts",
+    "src/router/recipe/recipe.ts",
+    "src/router/catalog.ts",
+    "src/router/communication-client.ts",
+    "src/router/communication-v1.ts",
+    "src/router/corpus-replay.ts",
+    "src/router/events.ts",
+    "src/router/handlers.ts",
+    "src/router/host-mcp-routing.ts",
+    "src/router/index.ts",
+    "src/router/mcp-catalogue-types.ts",
+    "src/router/mcp-catalogue.ts",
+    "src/router/policy.ts",
+    "src/router/registry-test-mcp.ts",
+    "src/router/router-types.ts",
+    "src/router/service.ts",
+    "src/router/text-features.ts",
+    "src/run-spec/profile-runtime.ts",
+    "src/run-spec/run-spec.ts",
+    "src/runner-adapter/await-runner-result.ts",
+    "src/runner-adapter/engine-default.ts",
+    "src/runner-adapter/engine-text.ts",
+    "src/runner-adapter/errors.ts",
+    "src/runner-adapter/index.ts",
+    "src/runner-adapter/run-id.ts",
+    "src/runner-adapter/runner-api-adapter.ts",
+    "src/schedule/cron.ts",
+    "src/schedule/index.ts",
+    "src/schedule/schedule-service.ts",
+    "src/schedule/schedule-store.ts",
+    "src/schedule/virtual-clock.ts",
+    "src/taskstore/errors.ts",
+    "src/taskstore/index.ts",
+    "src/taskstore/task-store.ts",
+    "src/taskstore/types.ts",
+    "src/workflow-port/conversation-plan.ts",
+    "src/workflow-port/delivery-worker.ts",
+    "src/workflow-port/external-stop.ts",
+    "src/workflow-port/index.ts",
+    "src/workflow-port/step-ctx.ts",
+    "src/workflow-port/workflow-port.ts",
+    "src/index.ts",
+    "tests/fixtures/registry-mcp-test-160-descriptor.ts",
+    "tests/communication-v1.test.ts",
+    "tests/cp-stop-quick-answer.test.ts",
+    "tests/cp-stop-run-pin.test.ts",
+    "tests/cp-stop-targets.test.ts",
+    "tests/credential-ready.test.ts",
+    "tests/delivery-http-route.test.ts",
+    "tests/env.ts",
+    "tests/error-publisher.test.ts",
+    "tests/fast-replies-corpus.test.ts",
+    "tests/gateway-seam.test.ts",
+    "tests/health-catalogue.test.ts",
+    "tests/host-mcp-composition.test.ts",
+    "tests/ingress-artifact-verifier.test.ts",
+    "tests/intake-pending-registration.test.ts",
+    "tests/intake-receipt.test.ts",
+    "tests/intake-stuck-input-scheduler.test.ts",
+    "tests/intake-stuck-input.test.ts",
+    "tests/m06-cancel-delivery.test.ts",
+    "tests/m1-step5-awaiting-input.test.ts",
+    "tests/m122-runner-adapter.test.ts",
+    "tests/mcp-catalogue-boundary.test.ts",
+    "tests/migrations.test.ts",
+    "tests/native-cancel-confirmation.test.ts",
+    "tests/native-sealing-bind.test.ts",
+    "tests/own-api-artifact-bytes.test.ts",
+    "tests/own-api-auth.test.ts",
+    "tests/own-api-one-shot.test.ts",
+    "tests/own-api-reporting.test.ts",
+    "tests/p05-p06-status-recovery.test.ts",
+    "tests/p12-primitive-io.test.ts",
+    "tests/p16-probe-pr21-live-data.test.ts",
+    "tests/p16-probe-pr23-quoted-link.test.ts",
+    "tests/p16-route-policy.test.ts",
+    "tests/p17-reply-or-route.test.ts",
+    "tests/p20-catalog-brief.test.ts",
+    "tests/p20-evidence-sanitizer.test.ts",
+    "tests/p22-schedule.test.ts",
+    "tests/p23-gtd.test.ts",
+    "tests/pilot-rollback.test.ts",
+    "tests/profile-runtime.test.ts",
+    "tests/raw-modules.d.ts",
+    "tests/registry-test-mcp.test.ts",
+    "tests/runner-engine-default.test.ts",
+    "tests/runner-ingress-manifest.test.ts",
+    "tests/runner-input-artifact.test.ts",
+    "tests/runner-late-result.test.ts",
+    "tests/runner-mock-probe.test.ts",
+    "tests/runner-run-id.test.ts",
+    "tests/runner-text-persistence.test.ts",
+    "tests/scaffold.test.ts",
+    "tests/setup.ts",
+    "tests/task-store-consistency.test.ts",
+    "tests/taskstore-fencing.test.ts",
+    "tests/taskstore-signals.test.ts",
+    "tests/taskstore-start-run-race.test.ts",
+    "tests/taskstore-terminal-guard.test.ts",
+    "tests/taskstore-transitions.test.ts",
+    "tests/telegram-ux-sandbox-deploy.test.ts",
+    "tests/trace-endpoint.test.ts",
+    "tests/watchdog-scheduler.test.ts",
+    "tests/web-conversation.test.ts",
+    "tests/web-e2e-controlled-failure.test.ts",
+    "tests/workflow-port.test.ts",
+    "tools/repo-context/map.py",
+    "tools/repo-context/package.json",
+    "tools/agent-csv-file-live-run.mjs",
+    "tools/agent-csv-file-live-run.test.mjs",
+    "tools/agent-csv-live-verify.mjs",
+    "tools/agent-google-sheet-live-run.mjs",
+    "tools/agent-google-sheet-live-run.test.mjs",
+    "tools/bootstrap-telegram-ux-mock-runner.mjs",
+    "tools/bootstrap-telegram-ux-mock-runner.test.mjs",
+    "tools/command-failure.mjs",
+    "tools/command-failure.test.mjs",
+    "tools/communication-v1-live-smoke.mjs",
+    "tools/communication-v1-live-smoke.test.mjs",
+    "tools/credential-boundary-prepare.mjs",
+    "tools/credential-boundary-prepare.test.mjs",
+    "tools/credential-boundary-verify.mjs",
+    "tools/credential-boundary-verify.test.mjs",
+    "tools/credential-migration-selfcheck.mjs",
+    "tools/deploy-telegram-ux-sandbox.mjs",
+    "tools/deployment-config-verify.test.mjs",
+    "tools/deployment-smoke.mjs",
+    "tools/fast-replies-export-decisions.ts",
+    "tools/fetch-fast-replies-corpus.sh",
+    "tools/integration-v1-smoke.mjs",
+    "tools/local-smoke.sh",
+    "tools/own-api-dogfood-client.js",
+    "tools/own-api-sandbox-verify.sh",
+    "tools/p16-evidence-selfcheck.mjs",
+    "tools/p16-evidence.mjs",
+    "tools/p16-sandbox-probe.sh",
+    "tools/p16-sanitize-evidence.mjs",
+    "tools/p20-brief-probe.sh",
+    "tools/p20-evidence.mjs",
+    "tools/p20-sanitize-evidence.mjs",
+    "tools/principal-sig.sh",
+    "tools/reconcile-telegram-ux-france-worker.mjs",
+    "tools/reconcile-telegram-ux-france-worker.test.mjs",
+    "tools/runner-live-smoke.sh",
+    "tools/sandbox-status-probe.mjs",
+    "tools/sandbox3-cp-pairing.mjs",
+    "tools/sandbox3-cp-pairing.test.mjs",
+    "tools/sandbox3-cp-probe-request.mjs",
+    "tools/sandbox3-cp-probe-request.test.mjs",
+    "tools/sandbox3-lane-preflight.mjs",
+    "tools/sandbox3-lane-preflight.test.mjs",
+    "tools/sandbox3-public-route.mjs",
+    "tools/sandbox3-public-route.test.mjs",
+    "tools/sandbox3-test-cleanup.mjs",
+    "tools/sandbox3-test-cleanup.test.mjs",
+    "tools/ts-ext-hooks.mjs",
+    "tools/ts-ext-resolver.mjs",
+    "tools/verified-sandbox-script.mjs",
+    "tools/verified-sandbox-script.test.mjs",
+    "web/e2e/run-m1-web-slice-e2e.mjs",
+    "web/app.ts",
+    "web/config.ts",
+    "web/contract.ts",
+    "web/control-plane-client.ts",
+    "web/conversation.ts",
+    "web/fake-control-plane.ts",
+    "web/index.ts",
+    "web/log.ts",
+    "web/page.ts",
+    "package.json",
+    "README.md",
+    "vitest.config.ts"
+  ],
+  "packScope": "repomix.config.json allowlist; Markdown is not AST-compressed",
+  "files": {
+    "REPO-MAP.md": {
+      "bytes": 8170,
+      "sha256": "48331b58d1e74493546a590670afeb5342fc9ea98e01511ea1672051445c7981"
+    },
+    "repo-compressed.xml": {
+      "bytes": 865261,
+      "sha256": "29bc2f69f544eb7d24ba7143856b354e56c4bb815736ae69c4efefddb78a7d66"
+    }
+  }
+}
