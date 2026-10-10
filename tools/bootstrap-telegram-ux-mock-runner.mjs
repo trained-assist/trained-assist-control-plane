@@ -3,7 +3,7 @@ import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3Op
 import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
 import { isRunnerRunId } from '../src/runner-adapter/run-id.ts';
-import { verifySandbox3PublicRoute, verifySandbox3MockPublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3MockPublicRoute, verifySandbox3RunnerPrincipal, verifySandbox3DelegatedProfile, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -126,9 +126,11 @@ function validateInputs(preflight = false, freshSandbox3 = false, requiresVmOper
   const key = preflight || freshSandbox3 ? null : deriveRunnerMockApiKey(requiredEnv('RUNNER_MOCK_KEY_SEED'));
   const agentApiKey = freshSandbox3 && mode === '--sandbox3-public-preflight'
     ? requiredEnv('RUNNER_API_KEY_AGENT_API') : null;
+  const profileDelegationSecret = freshSandbox3 && mode === '--sandbox3-public-preflight'
+    ? requiredEnv('RUNNER_PROFILE_DELEGATION_SECRET') : null;
   const privateKey = requiresVmOperator ? requiredEnv('VM2_SSH_PRIVATE_KEY') : null;
   if (privateKey && !privateKey.includes('PRIVATE KEY')) fail('vm2_ssh_private_key_invalid');
-  return { sourceSha, accountId, principalSecret, key, agentApiKey, privateKey };
+  return { sourceSha, accountId, principalSecret, key, agentApiKey, profileDelegationSecret, privateKey };
 }
 
 async function verifyConfigAndAccount(accountId, freshSandbox3 = false) {
@@ -721,7 +723,9 @@ async function main() {
         stage = 'sandbox3PublicRoute';
         evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
         await verifySandbox3RunnerPrincipal(input.agentApiKey);
+        await verifySandbox3DelegatedProfile(input.agentApiKey, input.profileDelegationSecret);
         evidence.sandbox3PublicRoute.authenticatedContractVerified = true;
+        evidence.sandbox3PublicRoute.delegatedProfileVerified = true;
         evidence.boundaries[stage] = 'PASS';
         evidence.outcome = 'preflight_passed';
       }
@@ -761,7 +765,7 @@ async function main() {
     evidence.failure = {
       boundary: stage,
       reasonCode: error instanceof Error && (/^[a-z][a-z0-9:_-]{1,100}$/.test(error.message)
-        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|RUNNER_API_KEY_AGENT_API|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
+        || /^required_environment_missing:(GITHUB_SHA|CF_API_TOKEN|CP_TELEGRAM_UX_PRINCIPAL_SECRET|RUNNER_MOCK_KEY_SEED|RUNNER_API_KEY_AGENT_API|RUNNER_PROFILE_DELEGATION_SECRET|VM2_SSH_PRIVATE_KEY|SANDBOX3_NATIVE_WORKER_SHA|SANDBOX3_NATIVE_WORKER_TOKEN|SANDBOX3_PROFILE_GITHUB_TOKEN|SANDBOX3_GCS_BUCKET|SANDBOX3_GCS_CREDENTIALS)$/.test(error.message))
         ? error.message : 'sandbox_bootstrap_failed',
     };
   } finally {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal, verifySandbox3DelegatedProfile, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 test('public probe proves TLS route and auth refusal without carrying credentials', async () => {
   const calls = [];
   const result = await verifySandbox3PublicRoute(async (url, options) => {
@@ -39,6 +39,27 @@ test('newly written Runner key may propagate before read-only authorization succ
   }, { attempts: 2, intervalMs: 1 });
   assert.equal(result, true);
   assert.equal(calls, 2);
+});
+test('sandbox3 delegated profile probe signs a read-only capabilities request for the configured tenant and profile', async () => {
+  let call;
+  const result = await verifySandbox3DelegatedProfile('test-api-key-that-is-long-enough-for-validation', 'test-delegation-secret-that-is-long-enough', async (url, options) => {
+    call = { url, options };
+    return Response.json({ contract: { name: 'ai-agent-runner/serverless-agent-api' }, placement: 'cloudflare-worker' });
+  });
+  assert.equal(result, true);
+  assert.equal(call.url, 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev/v1/capabilities');
+  assert.equal(call.options.headers.authorization, 'Bearer test-api-key-that-is-long-enough-for-validation');
+  assert.equal(call.options.headers['x-agent-profile-id'], 'integration-sandbox3-v1');
+  assert.equal(call.options.headers['x-agent-profile-tenant'], 'sandbox3-acceptance-a-20261008');
+  assert.match(call.options.headers['x-agent-profile-exp'], /^\d{13}$/);
+  assert.match(call.options.headers['x-agent-profile-sig'], /^[0-9a-f]{64}$/);
+  assert.equal(call.options.method, undefined);
+});
+test('sandbox3 delegated profile probe classifies disabled and refused profile delegation without leaking details', async () => {
+  await assert.rejects(() => verifySandbox3DelegatedProfile('test-api-key-that-is-long-enough-for-validation', 'test-delegation-secret-that-is-long-enough', async () =>
+    Response.json({ error: { code: 'SERVER_MISCONFIGURED', message: 'secret contents' } }, { status: 503 })), /^Error: sandbox3_profile_delegation_unconfigured$/);
+  await assert.rejects(() => verifySandbox3DelegatedProfile('test-api-key-that-is-long-enough-for-validation', 'test-delegation-secret-that-is-long-enough', async () =>
+    Response.json({ error: { code: 'FORBIDDEN', message: 'profile contents' } }, { status: 403 })), /^Error: sandbox3_profile_delegation_refused$/);
 });
 test('404, generic auth refusal, bad JSON and TLS failures never claim a public route', async () => {
   for (const mode of ['404', 'foreign', 'bad-json', 'tls']) {
