@@ -12,7 +12,8 @@
     { "binding": "COMMUNICATION_SERVICE", "service": "trained-assist-communication-v1-sandbox" },
     { "binding": "REGISTRY_MCP_HOST_SERVICE", "service": "trained-assist-mcp-host-test-160" },
     { "binding": "INGRESS_BUFFER", "service": "trained-assist-ingress-buffer-sandbox" },
-    { "binding": "RUNNER_API_SERVICE", "service": "trained-assist-runner-api-telegram-ux-v1-sandbox" }
+    { "binding": "RUNNER_API_SERVICE", "service": "trained-assist-runner-api-telegram-ux-v1-sandbox" },
+    { "binding": "RUNNER_API_MOCK_TEST_SERVICE", "service": "trained-assist-runner-api-cp-sandbox3" }
   ],
   "d1_databases": [{ "binding": "DB", "database_name": "ta-integration-telegram-ux-v1-taskstore", "database_id": "01d17f46-63e2-46bc-947d-9eda3e0bb697", "migrations_dir": "migrations" }],
   "workflows": [{ "name": "ta-integration-telegram-ux-v1-task-workflow", "binding": "TASK_WORKFLOW", "class_name": "TaskWorkflow" }],
