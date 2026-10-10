@@ -24,7 +24,7 @@ const CP_URL = 'https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.
 const RUNNER_PRINCIPAL_ID = 'integration-telegram-ux-v1-mock-test';
 const RUNNER_PROFILE_ID = 'integration-telegram-ux-v1-mock-test';
 const RUNNER_TENANT_ID = 'integration-telegram-ux-v1-mock-test';
-const RUNNER_KEY_CONTEXT = 'trained-assist/agent-runner-api-mcp-test/integration-telegram-ux-v1-mock-test/v1';
+const RUNNER_KEY_CONTEXT = 'trained-assist/runner-api-cp-sandbox3/integration-telegram-ux-v1-mock-test/v1';
 const EVIDENCE_PATH = process.env.GITHUB_WORKSPACE
   ? join(process.env.GITHUB_WORKSPACE, 'sandbox-bootstrap-evidence.json')
   : join(process.cwd(), 'sandbox-bootstrap-evidence.json');
@@ -38,7 +38,7 @@ const evidence = {
   cpWorker: TELEGRAM_UX_SANDBOX.workerName,
   cpMockKeySecretName: TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerMockKeyBinding,
   cpPrincipalSecretName: 'PRINCIPAL_SECRET_TELEGRAM_UX',
-  runnerService: 'agent-runner-api-mcp-test.service',
+  runnerService: TELEGRAM_UX_SANDBOX.runnerMockTestWorker,
   runnerPrincipalId: RUNNER_PRINCIPAL_ID,
   runnerProfileId: RUNNER_PROFILE_ID,
   runnerMockEngine: 'mock-test',
@@ -164,20 +164,17 @@ function deploySandbox(sourceSha) {
 }
 
 async function provisionRunnerPrincipal(input) {
-  return withRunnerSsh(input, (args) => {
-    const request = JSON.stringify({ schemaVersion: 1, target: 'agent-runner-api-mcp-test',
-      keyHash: createHash('sha256').update(input.key).digest('hex') });
-    const stdout = capture('ssh', [...args,
-      `sudo -n ${TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerMockProvisioner}`], { input: request });
-    let result;
-    try { result = JSON.parse(stdout); } catch { fail('runner_provisioner_response_invalid'); }
-    if (!['registered', 'already_registered'].includes(result.status)
-      || result.principalId !== RUNNER_PRINCIPAL_ID
-      || result.profileId !== RUNNER_PROFILE_ID
-      || result.tenantId !== RUNNER_TENANT_ID) {
-      fail('runner_provisioner_target_or_response_mismatch');
-    }
-  });
+  const registry = JSON.stringify([{
+    keyHash: createHash('sha256').update(input.key).digest('hex'),
+    principalId: RUNNER_PRINCIPAL_ID,
+    tenantId: RUNNER_TENANT_ID,
+    profileId: RUNNER_PROFILE_ID,
+    scopes: ['runs:read', 'runs:write'],
+    engines: ['mock-test'],
+  }]);
+  capture('npx', ['wrangler', 'secret', 'put', TELEGRAM_UX_SANDBOX_CREDENTIALS.runnerMockRegistryBinding,
+    '--name', TELEGRAM_UX_SANDBOX.runnerMockTestWorker], { input: registry });
+  await waitForSandbox3RunnerPrincipal(input.key);
 }
 
 async function withRunnerSsh(input, operation) {
@@ -663,7 +660,7 @@ async function main() {
     }
     const freshSandbox3 = ['--sandbox3-public-preflight', '--pair-sandbox3-cp', '--sandbox3-cp-mock-probe'].includes(args[0]);
     const diagnosticMode = ['--preflight', '--inventory', '--repair-permissions', '--candidate-preflight'].includes(args[0]);
-    const requiresVmOperator = !freshSandbox3;
+    const requiresVmOperator = !freshSandbox3 && args[0] !== '--bootstrap';
     evidence.mode = diagnosticMode || freshSandbox3 ? args[0].slice(2) : 'bootstrap';
     const input = validateInputs(diagnosticMode || freshSandbox3, freshSandbox3, requiresVmOperator);
     evidence.sourceSha = input.sourceSha;

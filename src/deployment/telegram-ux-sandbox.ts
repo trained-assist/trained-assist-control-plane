@@ -7,7 +7,8 @@ export const TELEGRAM_UX_SANDBOX = {
   accountEmail: 'typeformowner@gmail.com',
   principalId: 'integration-telegram-ux-v1',
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
-  runnerMockTestUrl: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev',
+  runnerMockTestUrl: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
+  runnerMockTestWorker: 'trained-assist-runner-api-cp-sandbox3',
   runnerApiWorker: 'trained-assist-runner-api-telegram-ux-v1-sandbox',
 } as const;
 
@@ -22,7 +23,7 @@ export const TELEGRAM_UX_SANDBOX_CREDENTIALS = {
   vm2SshUser: 'root',
   vm2SshKnownHostEntry: '169.58.15.230 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK77e5U6jwbq0mY1ZuJcTR3gzdFBm+5EsTcZLmYVqhah',
   runnerMockKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST',
-  runnerMockProvisioner: '/usr/local/sbin/runner-api-mcp-test-provision-principal',
+  runnerMockRegistryBinding: 'RUNNER_API_KEYS_ADDITIONAL',
   sandbox3OperatorSourceSha: '88d3ed0132c705eb6dd84e47bebb52b755543efe',
   sandbox3BootstrapDigest: '5e71d8cc2802864d9f47938b64b9e3aa274922c7b301ad02f2849b7c773de0b9',
   sandbox3PreparerDigest: 'aea1214b42e63fb799a151bf3cccf3d04bca1b5de557f5088b16b59c3945e86b',
