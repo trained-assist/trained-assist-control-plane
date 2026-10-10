@@ -24,6 +24,8 @@ Because classification can fall back to an agent, a failed route can have an
 in-flight execution: the tool stops without retrying or starting the next scenario.
 Reconcile the stored task/request manually; this tool has no automatic resume.
 Report success still requires both persisted quick answers and zero engine runs.
+Writer failures in the report retain only fixed selector/writer codes or numeric
+HTTP status codes; unknown failure text is reduced to `writer_failed`.
 
 Offline transport/checkpoint tests:
 `node --test tools/communication-v1-live-smoke.test.mjs`.
