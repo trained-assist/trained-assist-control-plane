@@ -59,6 +59,8 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
     tgPrincipalSignature: binding(tgBindings, 'CONTROL_PLANE_PRINCIPAL_SIGNATURE')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     agentApiBindings: value(cpBindings, 'RUNNER_API_URL') === SANDBOX3_RUNNER_URL
       && runnerService?.type === 'service' && runnerService.service === 'trained-assist-runner-api-sandbox3'
+      && value(cpBindings, 'RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID') === 'sandbox3-agent-api-principal'
+      && value(cpBindings, 'RUNNER_PROFILE_DELEGATION_TENANT_ID') === 'sandbox3-acceptance-a-20261008'
       && binding(cpBindings, 'RUNNER_API_KEY_AGENT_API')?.type === 'secret_text'
       && binding(cpBindings, 'RUNNER_PROFILE_DELEGATION_SECRET')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     mockProbeBindings: value(cpBindings, 'SANDBOX_RUNNER_MOCK_TEST_URL') === 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'

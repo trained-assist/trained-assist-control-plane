@@ -1,0 +1,70 @@
+name: Pair sandbox3 CP with its live Runner profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      pair_sandbox3_cp:
+        description: Bind the dedicated sandbox3 Runner key and delegation secret to CP, keeping execution disabled
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-sandbox3-live-runner-auth
+  cancel-in-progress: false
+
+jobs:
+  pair:
+    if: github.ref == 'refs/heads/main' && inputs.pair_sandbox3_cp == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: sandbox
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      SANDBOX3_RUNNER_API_KEY: ${{ secrets.SANDBOX3_RUNNER_API_KEY }}
+      SANDBOX3_PROFILE_DELEGATION_SECRET: ${{ secrets.SANDBOX3_PROFILE_DELEGATION_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Run repository checks before sandbox credential write
+        run: npm run check
+      - name: Verify the expected Cloudflare account
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          identity="$(npx wrangler whoami 2>&1)"
+          printf '%s\n' "$identity" | grep -F 'd740a05e9442c1d0feacae2dfc673e93' >/dev/null
+          printf '%s\n' "$identity" | grep -F "Typeformowner@gmail.com's Account" >/dev/null
+      - name: Write only the sandbox3 CP Runner key and delegation secret
+        run: node tools/provision-sandbox3-cp-agent-api.mjs
+      - name: Verify CP state and the live Runner bindings while execution remains disabled
+        run: |
+          set +e
+          node tools/sandbox3-lane-preflight.mjs > sandbox3-lane-preflight.json
+          status=$?
+          set -e
+          test "$status" -eq 2
+          node tools/assert-sandbox3-live-auth-ready.mjs sandbox3-lane-preflight.json > sandbox3-live-auth-ready.json
+      - name: Upload sanitized sandbox3 credential and state evidence
+        if: always() && hashFiles('sandbox3-cp-agent-api-evidence.json', 'sandbox3-lane-preflight.json', 'sandbox3-live-auth-ready.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox3-cp-live-runner-auth-${{ github.run_id }}
+          path: |
+            sandbox3-cp-agent-api-evidence.json
+            sandbox3-lane-preflight.json
+            sandbox3-live-auth-ready.json
+          if-no-files-found: error
+          retention-days: 30

@@ -32,6 +32,19 @@ The CP target remains fail-closed:
 `PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, and `ROUTER_AGENT_ALLOWED=false`.
 Do not bind the shared Telegram UX D1 or staging/production D1 databases here.
 
+The live Agent API identity is separate from the mock-only CP probe identity. The
+Cloudflare Runner API Worker `trained-assist-runner-api-sandbox3` has a dedicated
+hash-only `sandbox3-agent-api-principal` record for tenant
+`sandbox3-acceptance-a-20261008`, profile `integration-sandbox3-v1`, repository
+`trained-assist/ai-agent-runner`, and engine `eu-vm-agent-run`. Its paired API key
+and HMAC delegation secret are stored as `SANDBOX3_RUNNER_API_KEY` and
+`SANDBOX3_PROFILE_DELEGATION_SECRET` in the protected `sandbox` environments of
+the Runner and CP repositories. The Runner-side workflow pairs and verifies the
+serverless API identity with read-only capabilities only. The CP-side pairing
+workflow copies those two secrets only into this CP Worker, verifies its pinned
+Runner URL/service/principal/tenant, and confirms all three execution flags stay
+disabled. Neither pairing step starts a task or calls the France worker/model.
+
 ## Deployment and preflight
 
 Use **Deploy isolated CP sandbox-3** from protected `main` with its confirmation
