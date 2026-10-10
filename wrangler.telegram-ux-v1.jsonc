@@ -42,6 +42,6 @@
     "DELIVERY_ADAPTER": "local",
     "SANDBOX_READINESS_ENABLED": "true",
     "SANDBOX_RUNNER_MOCK_PROBE_ENABLED": "true",
-    "SANDBOX_RUNNER_MOCK_TEST_URL": "https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev"
+    "SANDBOX_RUNNER_MOCK_TEST_URL": "https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev"
   }
 }

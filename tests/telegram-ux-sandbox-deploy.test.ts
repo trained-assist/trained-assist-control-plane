@@ -23,6 +23,11 @@ const config = {
 };
 
 describe('Telegram UX sandbox deploy guard', () => {
+  it('pins mock probes to the existing paired mock-only Runner API Worker', () => {
+    expect(TELEGRAM_UX_SANDBOX.runnerMockTestUrl).toBe('https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev');
+    expect(TELEGRAM_UX_SANDBOX.runnerMockTestWorker).toBe('trained-assist-runner-api-cp-sandbox3');
+  });
+
   it('matches the configured Cloudflare account despite display-name email casing', () => {
     expect(isExpectedTelegramUxCloudflareAccount("Account ID: d740a05e9442c1d0feacae2dfc673e93\nTypeformowner@gmail.com's Account")).toBe(true);
     expect(isExpectedTelegramUxCloudflareAccount('wrong-account typeformowner@gmail.com')).toBe(false);

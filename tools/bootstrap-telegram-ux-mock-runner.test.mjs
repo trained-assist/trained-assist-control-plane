@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash, createHmac } from 'node:crypto';
 
 const secret = 'synthetic-bootstrap-secret-for-tests-0123456789';
 async function exercise(mode, overrides = {}) {
@@ -15,7 +16,8 @@ async function exercise(mode, overrides = {}) {
       const stub = join(bin, `${tool}.mjs`);
       await writeFile(stub, `import fs from 'node:fs';
 const args=process.argv.slice(2);
-fs.appendFileSync(process.env.TEST_LOG,JSON.stringify({tool:'${tool}',args})+'\\n');
+const input='${tool}'==='npx'&&args.includes('secret')?fs.readFileSync(0,'utf8'):undefined;
+fs.appendFileSync(process.env.TEST_LOG,JSON.stringify({tool:'${tool}',args,input})+'\\n');
 if('${tool}'==='gh') { console.error('Resource not accessible by integration '+process.env.CF_API_TOKEN);process.exit(1); }
 if('${tool}'==='ssh') {
  if(args.at(-1)==='hostname -s') console.log(process.env.TEST_HOST ?? 'vmi3617957');
@@ -113,13 +115,25 @@ test('authenticated readiness for a different durable profile fails closed', asy
   assert.equal(evidence.failure.reasonCode, 'sandbox_lane_identity_mismatch');
   assertReadOnly(commands);
 });
-test('explicit bootstrap retains paired-key provisioning and the mock probe', async () => {
-  const { result, evidence, commands } = await exercise('--bootstrap', { RUNNER_MOCK_KEY_SEED: secret });
+test('canonical bootstrap registers a hash-only mock principal on the paired Runner Worker without VM SSH', async () => {
+  const { result, evidence, commands } = await exercise('--bootstrap', { RUNNER_MOCK_KEY_SEED: secret, VM2_SSH_PRIVATE_KEY: '' });
   assert.equal(result.status, 0);
   assert.equal(evidence.outcome, 'passed');
   assert.equal(evidence.boundaries.authenticatedCpToRunnerProbe, 'PASS');
   assert.equal(commands.some(x => x.args.includes('deploy')), true);
-  assert.equal(commands.some(x => x.args.includes('secret')), true);
+  const runnerRegistry = commands.find(x => x.tool === 'npx' && x.args.includes('RUNNER_API_KEYS_ADDITIONAL'));
+  assert.deepEqual(runnerRegistry.args, ['wrangler', 'secret', 'put', 'RUNNER_API_KEYS_ADDITIONAL', '--name', 'trained-assist-runner-api-cp-sandbox3']);
+  const [principal] = JSON.parse(runnerRegistry.input);
+  assert.match(principal.keyHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(principal, {
+    keyHash: createHash('sha256').update(`ta_mock_${createHmac('sha256', secret)
+      .update('trained-assist/runner-api-cp-sandbox3/integration-telegram-ux-v1-mock-test/v1').digest('base64url')}`).digest('hex'),
+    principalId: 'integration-telegram-ux-v1-mock-test', tenantId: 'integration-telegram-ux-v1-mock-test',
+    profileId: 'integration-telegram-ux-v1-mock-test', scopes: ['runs:read', 'runs:write'], engines: ['mock-test'],
+  });
+  assert.equal(JSON.stringify(principal).includes(secret), false);
+  assert.equal(commands.some(x => x.tool === 'ssh'), false);
+  assert.equal(commands.some(x => x.tool === 'npx' && x.args.includes('RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST')), true);
 });
 test('inventory refuses a substituted operator helper before sending any script over SSH', async () => {
   const { evidence, commands } = await exercise('--inventory');
