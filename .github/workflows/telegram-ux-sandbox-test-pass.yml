@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Inspect state, verify sandbox3 Runner credentials, run one bounded free France-worker smoke, or bootstrap mock pair
+        description: Inspect sandbox state, run one bounded Telegram UX profile free France-worker smoke, or bootstrap mock pair
         type: choice
-        options: [inventory, preflight, candidate-preflight, sandbox3-public-preflight, sandbox3-live-free-run, pair-sandbox3-cp, sandbox3-cp-mock-probe, repair-permissions, bootstrap]
+        options: [inventory, preflight, candidate-preflight, sandbox3-public-preflight, telegram-ux-runner-live-free, pair-sandbox3-cp, sandbox3-cp-mock-probe, repair-permissions, bootstrap]
         default: inventory
         required: true
 
@@ -36,17 +36,19 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Run one bounded sandbox3 free-rung France-worker smoke
-        if: inputs.mode == 'sandbox3-live-free-run'
+      - name: Run one bounded Telegram UX profile free-rung France-worker smoke
+        if: inputs.mode == 'telegram-ux-runner-live-free'
         env:
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_WORKSPACE: ${{ github.workspace }}
         run: |
           echo "::add-mask::$RUNNER_API_KEY_AGENT_API"
-          node tools/sandbox3-live-free-run-smoke.mjs
+          echo "::add-mask::$RUNNER_PROFILE_DELEGATION_SECRET"
+          node tools/telegram-ux-runner-live-free-smoke.mjs
       - name: Inspect sandbox or explicitly bootstrap the mock-test pair
-        if: inputs.mode != 'sandbox3-live-free-run'
+        if: inputs.mode != 'telegram-ux-runner-live-free'
         env:
           GH_TOKEN: ${{ github.token }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -77,12 +79,12 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
         run: node tools/sandbox3-test-cleanup.mjs --apply
-      - name: Upload sanitized sandbox3 live-run evidence
-        if: always() && hashFiles('sandbox3-live-free-run-evidence.json') != ''
+      - name: Upload sanitized Telegram UX Runner live-run evidence
+        if: always() && hashFiles('telegram-ux-runner-live-free-evidence.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: sandbox3-live-free-run-${{ github.run_id }}
-          path: sandbox3-live-free-run-evidence.json
+          name: telegram-ux-runner-live-free-${{ github.run_id }}
+          path: telegram-ux-runner-live-free-evidence.json
           if-no-files-found: error
           retention-days: 30
       - name: Upload sanitized bootstrap evidence

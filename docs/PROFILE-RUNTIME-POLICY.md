@@ -267,9 +267,31 @@ The artifact records only fixed component statuses and the reviewed operator
 revision. A file owner or target mismatch fails closed and needs investigation.
 This operation does not prove a fresh Runner lane or full Telegram readiness.
 
-### Run and inspect the CP → Runner sandbox E2E
+### Run one bounded Telegram UX profile Runner → France check
 
-This workflow is the quickest end-to-end check of CP-to-Runner API auth and the
+After the dedicated Telegram UX Cloudflare Runner API deployment has passed,
+dispatch `telegram-ux-runner-live-free` from protected `main` in
+`telegram-ux-sandbox-test-pass.yml`. It targets only
+`trained-assist-runner-api-telegram-ux-v1-sandbox`, authenticates with the
+profile-bound sandbox API key plus the signed tenant/profile capability, and
+submits one idempotent prompt with `model: "free"`, a 180-second timeout and
+64 KiB output/log caps. The France worker's deployed OpenCode config pins
+`ladder/free` and has no paid fallback.
+
+The sanitized artifact must show `state: "succeeded"`,
+`answerMatches: true`, `cleanup: "completed"`, the expected profile and a
+valid Runner run ID. `usageStatus: "unknown"` means provider billing was not
+reported; this check does not claim metered zero cost. It verifies the dedicated
+Runner API and France execution worker only: it creates no CP task, does not
+exercise the Telegram gateway, and does not prove user-visible delivery.
+
+Do not use `trained-assist-runner-api-sandbox3` for this profile check. Its
+registry can bind the same API key to a separate `sandbox3-vm2-live-canary`
+principal; a successful canary Run is not evidence for the Telegram UX profile.
+
+### Run and inspect the CP → mock Runner sandbox check
+
+This workflow checks CP-to-Runner API auth and the
 Runner `mock-test` contract. It is separate from the Telegram webhook E2E below.
 Dispatch it from protected `main`:
 
