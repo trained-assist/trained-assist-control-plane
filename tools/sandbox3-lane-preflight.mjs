@@ -6,7 +6,7 @@ const TG_WORKER = 'trained-assist-tg-sandbox3';
 const CP_URL = `https://${CP_WORKER}.skillset-apply.workers.dev`;
 const D1_ID = '1e1b8108-9186-43e2-8e50-436598233165';
 const WORKFLOW = 'ta-cp-sandbox3-task-workflow';
-export const SANDBOX3_RUNNER_URL = 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev';
+export const SANDBOX3_RUNNER_URL = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
 const OTHER_GATEWAYS = ['trained-assist-tg-ux-sandbox', 'trained-assist-tg-shturman-sandbox'];
 
 const binding = (bindings, name) => bindings.find(item => item.name === name);
@@ -28,8 +28,9 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
   const selectedServiceMatches = !serviceRoute || (serviceRoute.type === 'service'
     && serviceRoute.service === CP_WORKER && (!serviceRoute.environment || serviceRoute.environment === 'production'));
   const physicalDispatchBindings = cpBindings.filter(item => /(?:^|_)(?:VM_WORKER|EXECUTION_WORKER|GHA_RUNNER|GITHUB_ACTIONS_RUNNER)_(?:URL|TOKEN)$/i.test(item.name));
+  const runnerService = binding(cpBindings, 'RUNNER_API_SERVICE');
   const directServiceBindings = cpBindings.filter(item => item.type === 'service'
-    && item.service !== 'trained-assist-runner-api-cp-sandbox3');
+    && !(item.name === 'RUNNER_API_SERVICE' && item.service === 'trained-assist-runner-api-sandbox3'));
   const reusable = ['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
     .every(name => Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000)
     && counts.nonterminalTasks <= counts.tasks && counts.foreignProfileTasks <= counts.tasks
@@ -57,6 +58,7 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
     cpPrincipalSecret: binding(cpBindings, 'PRINCIPAL_SECRET_SANDBOX3')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     tgPrincipalSignature: binding(tgBindings, 'CONTROL_PLANE_PRINCIPAL_SIGNATURE')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     agentApiBindings: value(cpBindings, 'RUNNER_API_URL') === SANDBOX3_RUNNER_URL
+      && runnerService?.type === 'service' && runnerService.service === 'trained-assist-runner-api-sandbox3'
       && binding(cpBindings, 'RUNNER_API_KEY_AGENT_API')?.type === 'secret_text'
       && binding(cpBindings, 'RUNNER_PROFILE_DELEGATION_SECRET')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     executionEnabled: value(cpBindings, 'PREVIEW_ONLY') === 'false'
@@ -72,6 +74,7 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
     stateCounts: Object.fromEntries(['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
       .map(name => [name, Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000 ? counts[name] : null])),
     runnerAdmissionJournal: 'NOT_VERIFIED',
+    runnerWorkerPlacement: 'NOT_VERIFIED',
     realTelegramE2E: 'NOT_RUN',
   };
 }
@@ -151,6 +154,7 @@ async function verifyRunnerApiBoundary() {
     return healthResponse.status === 200 && health?.service === 'ai-agent-runner-api'
       && health?.placement === 'cloudflare-worker'
       && versionResponse.status === 200 && version?.runtime === 'cloudflare-worker'
+      && health?.executionWorker === 'eu-vm-agent-run'
       && authResponse.status === 401 && auth?.error?.code === 'UNAUTHENTICATED';
   } catch { return false; }
 }

@@ -1,4 +1,4 @@
-const BASE = 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev';
+const BASE = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
 export async function verifySandbox3PublicRoute(fetchImpl = fetch) {
   try {
     const results = await Promise.allSettled(['/healthz', '/version', '/v1/capabilities'].map(path => fetchImpl(`${BASE}${path}`, {
@@ -8,7 +8,7 @@ export async function verifySandbox3PublicRoute(fetchImpl = fetch) {
     const [health, version, auth] = results.map(result => result.value);
     const [healthBody, versionBody, authBody] = await Promise.all([health.json(), version.json(), auth.json()]);
     if (health.status !== 200 || healthBody?.status !== 'ok' || healthBody?.service !== 'ai-agent-runner-api'
-      || healthBody?.placement !== 'cloudflare-worker' || version.status !== 200
+      || healthBody?.placement !== 'cloudflare-worker' || healthBody?.executionWorker !== 'eu-vm-agent-run' || version.status !== 200
       || versionBody?.runtime !== 'cloudflare-worker' || auth.status !== 401 || authBody?.error?.code !== 'UNAUTHENTICATED') {
       throw new Error('contract');
     }

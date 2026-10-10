@@ -32,8 +32,8 @@ else if(args.includes('execute')) {
     }
     const preload = join(root, 'fetch.mjs');
     await writeFile(preload, `globalThis.fetch=async (url,options={})=>{
- if(String(url).startsWith('https://trained-assist-runner-api-cp-sandbox3.')) {
-  if(String(url).endsWith('/healthz')) return Response.json({status:'ok',service:'ai-agent-runner-api',placement:'cloudflare-worker'});
+ if(String(url).startsWith('https://trained-assist-runner-api-sandbox3.')) {
+  if(String(url).endsWith('/healthz')) return Response.json({status:'ok',service:'ai-agent-runner-api',placement:'cloudflare-worker',executionWorker:'eu-vm-agent-run'});
   if(String(url).endsWith('/version')) return Response.json({runtime:'cloudflare-worker'});
   if(options.headers?.authorization==='Bearer ta_sb3_'+Buffer.from('fake').toString('base64url')) return Response.json({});
   if(options.headers?.authorization) return Response.json({contract:{name:'ai-agent-runner/serverless-agent-api'},placement:'cloudflare-worker'});
@@ -41,7 +41,7 @@ else if(args.includes('execute')) {
  }
  if(url.endsWith('/settings')) return Response.json({success:true,result:{bindings:[
   {name:'DEPLOYMENT_ENV',type:'plain_text',text:'sandbox3'},{name:'PREVIEW_ONLY',type:'plain_text',text:'true'},{name:'PILOT_ENABLED',type:'plain_text',text:'false'},
-  {name:'RUNNER_API_URL',type:'plain_text',text:'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'},
+  {name:'RUNNER_API_URL',type:'plain_text',text:'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev'},
   {name:'SANDBOX_RUNNER_MOCK_PROBE_ENABLED',type:'plain_text',text:'true'},
   {name:'SANDBOX_RUNNER_MOCK_PROBE_PROFILE',type:'plain_text',text:'integration-sandbox3-v1'},
   {name:'PRINCIPAL_SECRET_SANDBOX3',type:'secret_text'},

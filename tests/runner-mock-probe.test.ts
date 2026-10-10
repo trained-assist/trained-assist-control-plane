@@ -281,7 +281,7 @@ describe('sandbox3 CP mock check with execution disabled', () => {
   });
   it('refuses a key sent to the production Runner route instead of the paired mock-only Worker', async () => {
     await register(); const fake = runnerFetch();
-    const response = await worker.fetch(await request(), { ...baseEnv(), RUNNER_API_URL: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev' });
+    const response = await worker.fetch(await request(), { ...baseEnv(), RUNNER_API_URL: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev' });
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ bindingIssue: 'runner_url_target_mismatch' });
     expect(fake.fetchMock).not.toHaveBeenCalled();
