@@ -286,6 +286,13 @@ const diagnosticsJson = (value: unknown, status = 200): Response => new Response
 
 const SANDBOX_MOCK_PROBE_TASK_ID = 'sandbox-bootstrap-runner-mock-probe-v1';
 
+class SandboxRunnerMockProbeError extends Error {
+  constructor(readonly stage: 'submit' | 'status' | 'result', readonly runId: string | null, cause: unknown) {
+    super('sandbox_runner_mock_probe_step_failed', { cause });
+    this.name = 'SandboxRunnerMockProbeError';
+  }
+}
+
 function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
   if (env.DEPLOYMENT_ENV === 'sandbox3' && env.SANDBOX_RUNNER_MOCK_PROBE_PROFILE === SANDBOX3.profileId) {
     if (env.RUNNER_API_URL !== SANDBOX3.runnerUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
@@ -315,6 +322,7 @@ async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outco
 }
 
 function sandboxRunnerProbeErrorCode(error: unknown): string {
+  if (error instanceof SandboxRunnerMockProbeError) return sandboxRunnerProbeErrorCode(error.cause);
   if (error instanceof RunnerConflictError) {
     return error.apiCode ?? /^([A-Z][A-Z0-9_]{1,63}):/.exec(error.message)?.[1] ?? 'runner_request_rejected';
   }
@@ -329,24 +337,43 @@ async function sandboxRunnerMockProbe(adapter: RunnerApiAdapter, taskId: string 
   answer: string | null;
   outcome: string;
 }> {
-  const receipt = await adapter.submit({
-    userTaskId: taskId,
-    conversationId: taskId,
-    engineName: 'mock-test',
-    inputText: 'Return exactly pong.',
-    idempotencyKey: taskId,
-    timeoutMs: 5000,
-  });
-  let status = await adapter.status(receipt.runId);
+  let receipt;
+  try {
+    receipt = await adapter.submit({
+      userTaskId: taskId,
+      conversationId: taskId,
+      engineName: 'mock-test',
+      inputText: 'Return exactly pong.',
+      idempotencyKey: taskId,
+      timeoutMs: 5000,
+    });
+  } catch (error) {
+    throw new SandboxRunnerMockProbeError('submit', null, error);
+  }
+  let status;
+  try {
+    status = await adapter.status(receipt.runId);
+  } catch (error) {
+    throw new SandboxRunnerMockProbeError('status', receipt.runId, error);
+  }
   for (let attempt = 0; attempt < 4 && !['succeeded', 'failed', 'cancelled'].includes(status.state); attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 200));
-    status = await adapter.status(receipt.runId);
+    try {
+      status = await adapter.status(receipt.runId);
+    } catch (error) {
+      throw new SandboxRunnerMockProbeError('status', receipt.runId, error);
+    }
   }
   if (status.runId !== receipt.runId || status.userTaskId !== taskId || status.state !== 'succeeded'
     || status.answer !== 'pong') {
     return { runId: receipt.runId, state: status.state, answer: status.answer ?? null, outcome: 'not_accepted' };
   }
-  const result = await adapter.result(receipt.runId);
+  let result;
+  try {
+    result = await adapter.result(receipt.runId);
+  } catch (error) {
+    throw new SandboxRunnerMockProbeError('result', receipt.runId, error);
+  }
   if (result.runId !== receipt.runId || result.userTaskId !== taskId
     || result.outcome !== 'succeeded' || result.text !== 'pong' || result.persistence !== 'not_required'
     || result.cleanup !== 'completed') {
@@ -1420,12 +1447,16 @@ const store = new TaskStore(env.DB);
             buildSha: env.BUILD_SHA ?? null,
           }, ok ? 200 : 502);
         } catch (error) {
+          const runnerError = error instanceof SandboxRunnerMockProbeError ? error.cause : error;
           const runnerReachability = binding.runnerBaseUrl
             ? await sandboxRunnerReachability(binding.runnerBaseUrl)
             : { outcome: 'not_checked', httpStatus: null };
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
             runnerErrorCode: sandboxRunnerProbeErrorCode(error),
-            runnerErrorFields: error instanceof RunnerConflictError ? error.fieldPaths : [], runnerReachability,
+            runnerErrorFields: runnerError instanceof RunnerConflictError ? runnerError.fieldPaths : [], runnerReachability,
+            runnerProbeStage: error instanceof SandboxRunnerMockProbeError ? error.stage : null,
+            runnerRunId: error instanceof SandboxRunnerMockProbeError
+              && error.runId && /^run_[a-f0-9]{64}_[a-f0-9]{24}$/.test(error.runId) ? error.runId : null,
             sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true },
             buildSha: env.BUILD_SHA ?? null,
           }, 503);
