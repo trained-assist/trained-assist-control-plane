@@ -108,12 +108,19 @@ only the named sandbox D1 migrations, deploys the current `main` revision to
 the exact CP sandbox Worker, then bootstraps the isolated `mock-test` identity
 and requires the authenticated CP probe to return `succeeded / pong`. It
 derives a stable Runner API key from the protected `RUNNER_MOCK_KEY_SEED`, sends
-only its SHA-256 hash over SSH to the root-owned Runner provisioner, and writes
-the key directly to `RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST`. The normal Telegram
-UX key, URL, and collector are not changed. The fixed mock probe is idempotent
-and creates one Runner admission record, but no CP task or Workflow. A shared
-Telegram lane readiness check is intentionally not a gate for this isolated
-principal; it does not participate in this test pass.
+only its SHA-256 hash to the additive `RUNNER_API_KEYS_ADDITIONAL` registry on
+`trained-assist-runner-api-cp-sandbox3` through the Cloudflare API, and writes
+the key directly to `RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST`. The CP sandbox calls
+that existing Worker through the `RUNNER_API_MOCK_TEST_SERVICE` Cloudflare
+service binding while keeping the standard Runner API URL and `/v1/*` contract.
+Do not use global Worker `fetch()` for this cross-Worker call: external requests
+to the same `workers.dev` URL work, but Worker-to-Worker `fetch()` without an
+explicit service binding returned 404 in the deployed sandbox. The normal
+Telegram UX key, URL, and collector are not changed. Bootstrap does not SSH to
+or provision a VM. The fixed mock probe is idempotent and creates one Runner
+admission record, but no CP task or Workflow. A shared Telegram lane readiness
+check is intentionally not a gate for this isolated principal; it does not
+participate in this test pass.
 
 Before the first run, create a GitHub Actions environment named `sandbox` and
 restrict deployments to protected `main`.
@@ -127,7 +134,7 @@ secret store with
 | `CF_API_TOKEN` | Cloudflare token for the trained-assist test account with Workers Scripts and D1 permissions needed by the pinned sandbox config |
 | `CP_TELEGRAM_UX_PRINCIPAL_SECRET` | Existing test principal credential used only to authenticate the CP probe; must already match `PRINCIPAL_SECRET_TELEGRAM_UX` on the sandbox Worker |
 | `RUNNER_MOCK_KEY_SEED` | At least 32 bytes; derives the stable dedicated mock API key |
-| `VM2_SSH_PRIVATE_KEY` | SSH identity allowed to run only the installed root provisioner via `sudo -n` |
+| `VM2_SSH_PRIVATE_KEY` | Needed only for explicit VM inventory/diagnostic modes; not used by mock bootstrap or API principal provisioning |
 
 Cloudflare account ID, VM2 SSH host/user, and the verified VM2 SSH host key are
 pinned in the deployment module. Host key checking is strict; there are no

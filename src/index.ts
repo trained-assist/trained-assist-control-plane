@@ -132,6 +132,7 @@ export interface Env {
   /** Serverless Agent API (ai-agent-runner). Только из env, в репозитории нет. */
   RUNNER_API_URL?: string;
   SANDBOX_RUNNER_MOCK_TEST_URL?: string;
+  RUNNER_API_MOCK_TEST_SERVICE?: { fetch(request: Request): Promise<Response> };
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
   RUNNER_API_KEY_AGENT_API?: string;
@@ -306,15 +307,22 @@ function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; 
   if (baseUrl !== TELEGRAM_UX_SANDBOX.runnerMockTestUrl) {
     return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
   }
-  return { adapter: new RunnerApiAdapter(TELEGRAM_UX_SANDBOX.runnerMockTestUrl, apiKey),
+  const service = env[TELEGRAM_UX_SANDBOX.runnerMockServiceBinding];
+  if (!service || typeof service.fetch !== 'function') {
+    return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_service_binding_missing' };
+  }
+  const fetchThroughService: typeof fetch = (input, init) => service.fetch(new Request(input, init));
+  return { adapter: new RunnerApiAdapter(TELEGRAM_UX_SANDBOX.runnerMockTestUrl, apiKey, fetchThroughService),
     runnerBaseUrl: TELEGRAM_UX_SANDBOX.runnerMockTestUrl, bindingIssue: null };
 }
 
-async function sandboxRunnerReachability(runnerBaseUrl: string): Promise<{ outcome: string; httpStatus: number | null }> {
+async function sandboxRunnerReachability(runnerBaseUrl: string,
+  service?: { fetch(request: Request): Promise<Response> }): Promise<{ outcome: string; httpStatus: number | null }> {
   try {
-    const response = await fetch(`${runnerBaseUrl}/v1/capabilities`, {
+    const request = new Request(`${runnerBaseUrl}/v1/capabilities`, {
       method: 'GET', headers: { 'cache-control': 'no-store' }, signal: AbortSignal.timeout(5000),
     });
+    const response = service ? await service.fetch(request) : await fetch(request);
     return { outcome: response.status === 401 ? 'reachable_auth_required' : 'http_response', httpStatus: response.status };
   } catch {
     return { outcome: 'fetch_failed', httpStatus: null };
@@ -1452,7 +1460,7 @@ const store = new TaskStore(env.DB);
         } catch (error) {
           const runnerError = error instanceof SandboxRunnerMockProbeError ? error.cause : error;
           const runnerReachability = binding.runnerBaseUrl
-            ? await sandboxRunnerReachability(binding.runnerBaseUrl)
+            ? await sandboxRunnerReachability(binding.runnerBaseUrl, sandbox3Probe ? undefined : env[TELEGRAM_UX_SANDBOX.runnerMockServiceBinding])
             : { outcome: 'not_checked', httpStatus: null };
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
             runnerErrorCode: sandboxRunnerProbeErrorCode(error),

@@ -18,6 +18,7 @@ const config = {
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },
     { binding: 'INGRESS_BUFFER', service: 'trained-assist-ingress-buffer-sandbox' },
+    { binding: TELEGRAM_UX_SANDBOX.runnerMockServiceBinding, service: TELEGRAM_UX_SANDBOX.runnerMockTestWorker },
     { binding: 'RUNNER_API_SERVICE', service: TELEGRAM_UX_SANDBOX.runnerApiWorker },
   ],
 };
@@ -65,6 +66,11 @@ describe('Telegram UX sandbox deploy guard', () => {
   it('refuses service bindings outside the reviewed sandbox', () => {
     const wrongService = { ...config, services: [{ binding: 'COMMUNICATION_SERVICE', service: 'production' }] };
     expect(() => validateTelegramUxSandboxConfig(wrongService)).toThrow('sandbox_service_binding_mismatch');
+  });
+
+  it('requires the pinned mock-only Runner service binding for Worker-to-Worker API calls', () => {
+    const missingMockRunner = { ...config, services: config.services.filter(service => service.binding !== TELEGRAM_UX_SANDBOX.runnerMockServiceBinding) };
+    expect(() => validateTelegramUxSandboxConfig(missingMockRunner)).toThrow('sandbox_service_binding_mismatch');
   });
 
   it('refuses a deployment config without the explicit sandbox mock-probe gate', () => {

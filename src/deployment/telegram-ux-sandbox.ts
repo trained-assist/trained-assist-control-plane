@@ -9,6 +9,7 @@ export const TELEGRAM_UX_SANDBOX = {
   keychainService: 'trained-assist-cp-test-principal-hmac-v1',
   runnerMockTestUrl: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
   runnerMockTestWorker: 'trained-assist-runner-api-cp-sandbox3',
+  runnerMockServiceBinding: 'RUNNER_API_MOCK_TEST_SERVICE',
   runnerApiWorker: 'trained-assist-runner-api-telegram-ux-v1-sandbox',
 } as const;
 
@@ -90,6 +91,7 @@ export function validateTelegramUxSandboxConfig(config: Record<string, any>): tr
     'COMMUNICATION_SERVICE:trained-assist-communication-v1-sandbox',
     'INGRESS_BUFFER:trained-assist-ingress-buffer-sandbox',
     'REGISTRY_MCP_HOST_SERVICE:trained-assist-mcp-host-test-160',
+    `${TELEGRAM_UX_SANDBOX.runnerMockServiceBinding}:${TELEGRAM_UX_SANDBOX.runnerMockTestWorker}`,
     `RUNNER_API_SERVICE:${TELEGRAM_UX_SANDBOX.runnerApiWorker}`,
   ].sort();
   if (JSON.stringify(services) !== JSON.stringify(expectedServices)) throw new Error('sandbox_service_binding_mismatch');
