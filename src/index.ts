@@ -44,6 +44,9 @@ import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/exte
 import { SANDBOX3 } from './deployment/sandbox3';
 import { TELEGRAM_UX_SANDBOX } from './deployment/telegram-ux-sandbox';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
+import { connectedAppRequest } from './connected-app/session-service';
+import { telegramBootstrapRequest } from './connected-app/telegram-bootstrap';
+import { createAgentProfileAuthorityV1 } from './agent-profile-authority/v1';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -163,6 +166,15 @@ export interface Env {
    * (GCP SM / GitHub Secrets). Без него доступ к API закрыт полностью.
    */
   PRINCIPAL_SECRET?: string;
+  /** Opt-in host/service identity boundary. Bindings only; never browser credentials. */
+  CONNECTED_APP_IDENTITY_ENABLED?: string;
+  CONNECTED_APP_HOST_KEY?: string;
+  CONNECTED_APP_SERVICE_KEYS?: string;
+  CONNECTED_APP_ISSUER?: string;
+  CONNECTED_APP_REDIRECT_URIS?: string;
+  CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED?: string;
+  CONNECTED_APP_TELEGRAM_GATEWAY_KEY?: string;
+  CONNECTED_APP_START_URLS?: string;
   /** Dedicated HMAC credential for the isolated Telegram UX test principal. */
   PRINCIPAL_SECRET_TELEGRAM_UX?: string;
   /** Dedicated HMAC credential for the sandbox-3 Telegram principal. */
@@ -1326,10 +1338,33 @@ const store = new TaskStore(env.DB);
        ingressArtifactVerifierOf(env.INGRESS_BUFFER, env.INGRESS_BUFFER_TOKEN),
      );
     const body: Record<string, unknown> =
-      req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
+      req.method === 'POST' && url.pathname === '/v1/connected-app-sessions/exchange'
+        ? Object.fromEntries((await req.formData().catch(() => new FormData())).entries())
+        : url.pathname.startsWith('/v1/connected-app-bootstrap/') ? {}
+        : req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const taskId = (body.taskId as string | undefined) ?? url.searchParams.get('taskId');
 
     try {
+      if (url.pathname.startsWith('/v1/connected-app-bootstrap/')) {
+        return telegramBootstrapRequest(req, env.DB, {
+          enabled: env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED,
+          gatewayKey: env.CONNECTED_APP_TELEGRAM_GATEWAY_KEY,
+          issuer: env.CONNECTED_APP_ISSUER,
+          gatewayUrl: env.GATEWAY_DELIVERY_URL,
+          gatewaySecret: env.GATEWAY_DELIVERY_SECRET,
+          startUrls: env.CONNECTED_APP_START_URLS,
+        });
+      }
+      if (url.pathname.startsWith('/v1/connected-app-sessions/')) {
+        return connectedAppRequest(req, env.DB, {
+          enabled: env.CONNECTED_APP_IDENTITY_ENABLED,
+          hostKey: env.CONNECTED_APP_HOST_KEY,
+          serviceKeys: env.CONNECTED_APP_SERVICE_KEYS,
+          issuer: env.CONNECTED_APP_ISSUER,
+          redirectUris: env.CONNECTED_APP_REDIRECT_URIS,
+        }, body, env.CONNECTED_APP_TELEGRAM_BOOTSTRAP_ENABLED === 'true'
+          ? createAgentProfileAuthorityV1(env.DB) : null);
+      }
       if (url.pathname === '/healthz' || url.pathname === '/health') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),

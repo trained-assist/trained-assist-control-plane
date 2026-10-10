@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:trained-assist:connected-app-identity:v1:response",
+  "oneOf": [
+    { "type": "object", "required": ["active"], "properties": { "active": { "const": false } }, "additionalProperties": false },
+    {
+      "type": "object",
+      "required": ["active", "iss", "aud", "sub", "profileId", "sessionId", "nbf", "exp", "scopes"],
+      "properties": {
+        "active": { "const": true },
+        "iss": { "type": "string", "format": "uri", "minLength": 1 },
+        "aud": { "enum": ["recruiting-web", "crm-web"] },
+        "sub": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "profileId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "sessionId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "nbf": { "type": "integer", "minimum": 0 },
+        "exp": { "type": "integer", "minimum": 1 },
+        "scopes": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9.]{1,99}$" } }
+      },
+      "additionalProperties": false
+    }
+  ]
+}
