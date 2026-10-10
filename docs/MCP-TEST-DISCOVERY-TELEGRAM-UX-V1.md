@@ -164,6 +164,27 @@ run with recorded Host acceptance. A preceding attempt failed closed with
 `MCP_ENDPOINT_NOT_ALLOWED` before worker launch when the Runner endpoint had not
 yet been aligned to the pinned custom Host domain.
 
+### Canonical Cloudflare Runner API → France VM2 (2026-10-10)
+
+The canonical CP sandbox task `ut-062b55a7eca0b5f6e5c8` completed through the
+Cloudflare Runner API and the France OpenCode VM worker. CP build was
+`62e517c0a09d3cd7a7a050aecf5974f1c3c4b014`; the deployed Runner API build was
+`00df4a6301a42ccaec6686486678921e275de2f1`; France ran signed release
+`vm-worker-v0.3.6` from `0f4284f73c69610b15076972280c8a6a3d73e142`. Runner run
+`run_9c5b0757e542980296c9a96356ca03980e155c3f750036797d71f15f815f331e_bdfbcecdd6954266959ccf4d`
+reached `run_succeeded`, and CP `/trace` reported task `done` and run `success`.
+The answer was the exact marker `registry-fixture-marker-160-v1`, which was not
+included in the request. France `/readyz` afterward reported zero active runs and
+reservations.
+
+Two contract defects were fixed before this pass: the VM worker had dropped MCP
+attachments before starting OpenCode (Runner PR #271), and the Cloudflare Runner
+API had nested `mcpSecrets` inside `mcp` instead of sending it as a sibling field
+(Runner PR #272). Both fixes were deployed only to sandbox resources. This test
+used CP's authenticated Worker API and did not send a Telegram message; it
+proves fixture invocation and persisted task result, not Telegram delivery or
+production readiness.
+
 France's local OpenCode CLI has separately passed bounded `ladder/free` stream
 smokes with `step_start`, `text`, and `step_finish` events. That is direct CLI
 evidence only: [Runner #136](https://github.com/trained-assist/ai-agent-runner/issues/136)
