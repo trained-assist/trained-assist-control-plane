@@ -56,6 +56,18 @@ export function planAllowlistReconciliation(envText, { additions = FRANCE_WORKER
   }), counts };
 }
 
+export function safeSshFailure(stderr, exitCode) {
+  const lines = String(stderr ?? '').split(/\r?\n/).map((line) => line.trim());
+  const remoteCode = lines.find((line) => /^worker_[a-z0-9_:-]{1,100}$/.test(line));
+  if (remoteCode) return `remote_reconcile_failed:${remoteCode}`;
+  if (/host key verification failed|remote host identification has changed/i.test(stderr ?? '')) return 'ssh_host_key_rejected';
+  if (/permission denied \(publickey|permission denied, please try again/i.test(stderr ?? '')) return 'ssh_authentication_rejected';
+  if (/a password is required|not allowed to execute|sudo:.*sorry/i.test(stderr ?? '')) return 'ssh_privilege_rejected';
+  if (/connection timed out|no route to host|could not resolve hostname|connection refused/i.test(stderr ?? '')) return 'ssh_host_unreachable';
+  if (/node: command not found|node: not found/i.test(stderr ?? '')) return 'vm_node_runtime_missing';
+  return `ssh_or_remote_failed_exit_${Number.isInteger(exitCode) ? exitCode : 'unknown'}`;
+}
+
 // Sent to the VM over SSH stdin. The host only emits sanitized status metadata.
 export const remoteProgram = String.raw`
 const fs = require('node:fs/promises');
@@ -155,7 +167,10 @@ if (process.env.WORKER_RECONCILE_EXECUTE === '1') main().catch((error) => {
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 90_000, ...options });
-  if (result.error || result.status !== 0) throw new Error(`sandbox_reconcile_command_failed:${command}`);
+  if (result.error || result.status !== 0) {
+    if (command === 'ssh') throw new Error(safeSshFailure(result.stderr, result.status));
+    throw new Error(`sandbox_reconcile_command_failed:${command}`);
+  }
   return result.stdout ?? '';
 }
 
@@ -186,7 +201,8 @@ async function main() {
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   main().catch((error) => {
-    const code = /^sandbox_reconcile_command_failed:/.test(error.message) ? error.message : 'france_worker_allowlist_reconcile_failed';
+    const code = /^(?:sandbox_reconcile_command_failed:|remote_reconcile_failed:|ssh_(?:host_key_rejected|authentication_rejected|privilege_rejected|host_unreachable|or_remote_failed_exit_))|^vm_node_runtime_missing$/.test(error.message)
+      ? error.message : 'france_worker_allowlist_reconcile_failed';
     process.stderr.write(`${code}\n`);
     process.exitCode = 1;
   });
