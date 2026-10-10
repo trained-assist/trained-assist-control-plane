@@ -1,22 +1,27 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const BASE = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
-const OUTPUT = join(process.env.GITHUB_WORKSPACE ?? process.cwd(), 'sandbox3-live-free-run-evidence.json');
+const BASE = 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev';
+const PRINCIPAL = 'integration-telegram-ux-v1';
+const TENANT = 'telegram-ux-sandbox-20261009';
+const PROFILE = 'integration-telegram-ux-v1';
+const OUTPUT = join(process.env.GITHUB_WORKSPACE ?? process.cwd(), 'telegram-ux-runner-live-free-evidence.json');
 const TIMEOUT_MS = 180_000;
 const MAX_WAIT_MS = TIMEOUT_MS + 20_000;
 const MAX_BYTES = 64 * 1024;
 
 const evidence = {
   schemaVersion: 1,
-  mode: 'sandbox3-live-free-run-smoke',
+  mode: 'telegram-ux-runner-live-free-smoke',
   outcome: 'failed',
-  runnerApi: 'trained-assist-runner-api-sandbox3',
+  runnerApi: 'trained-assist-runner-api-telegram-ux-v1-sandbox',
   runnerApiBuildSha: null,
   executionWorker: null,
-  profileBinding: 'integration-sandbox3-v1',
+  principalId: PRINCIPAL,
+  tenantId: TENANT,
+  profileId: PROFILE,
   modelRungRequested: 'free',
   timeoutMs: TIMEOUT_MS,
   maxOutputBytes: MAX_BYTES,
@@ -49,8 +54,16 @@ async function request(path, { method = 'GET', body, idempotencyKey, signal } = 
   const headers = { 'cache-control': 'no-store' };
   if (method !== 'GET') headers['content-type'] = 'application/json';
   if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
+  const expiresAt = String(Date.now() + 60_000);
+  const message = `${PRINCIPAL}\0${TENANT}\0${PROFILE}\0${expiresAt}`;
+  const signature = createHmac('sha256', requiredEnv('RUNNER_PROFILE_DELEGATION_SECRET'))
+    .update(message).digest('hex');
   Object.assign(headers, {
     authorization: `Bearer ${requiredEnv('RUNNER_API_KEY_AGENT_API')}`,
+    'x-agent-profile-id': PROFILE,
+    'x-agent-profile-tenant': TENANT,
+    'x-agent-profile-exp': expiresAt,
+    'x-agent-profile-sig': signature,
   });
   let response;
   try {
