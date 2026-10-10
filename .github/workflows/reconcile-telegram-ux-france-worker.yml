@@ -1,0 +1,38 @@
+name: Reconcile Telegram UX sandbox France worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-ux-france-vm-worker-allowlists
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Reconcile the pinned France VM worker allowlists
+        env:
+          VM2_SSH_PRIVATE_KEY: ${{ secrets.VM2_SSH_PRIVATE_KEY }}
+        run: node tools/reconcile-telegram-ux-france-worker.mjs
+      - name: Upload sanitized VM reconciliation evidence
+        if: always() && hashFiles('france-worker-allowlist-reconcile-evidence.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: france-worker-allowlist-reconcile-${{ github.run_id }}
+          path: france-worker-allowlist-reconcile-evidence.json
+          if-no-files-found: error
+          retention-days: 30
