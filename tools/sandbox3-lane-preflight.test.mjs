@@ -9,10 +9,13 @@ const ready = () => ({
   cpBindings: [
     { name: 'DB', type: 'd1', id: '1e1b8108-9186-43e2-8e50-436598233165' },
     { name: 'TASK_WORKFLOW', type: 'workflow', workflow_name: 'ta-cp-sandbox3-task-workflow' },
+    { name: 'RUNNER_API_SERVICE', type: 'service', service: 'trained-assist-runner-api-sandbox3' },
     { name: 'PRINCIPAL_SECRET_SANDBOX3', type: 'secret_text' },
     plain('RUNNER_API_URL', SANDBOX3_RUNNER_URL),
     { name: 'RUNNER_API_KEY_AGENT_API', type: 'secret_text' },
     { name: 'RUNNER_PROFILE_DELEGATION_SECRET', type: 'secret_text' },
+    plain('SANDBOX_RUNNER_MOCK_TEST_URL', 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'),
+    { name: 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST', type: 'secret_text' },
     plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'), plain('ROUTER_AGENT_ALLOWED', 'true'),
   ],
   tgBindings: [
@@ -95,12 +98,18 @@ test('service binding override cannot redirect a passing URL route to shared CP'
   assert.equal(evaluateSandbox3Lane(input).checks.tgRoute, 'BLOCKED');
 });
 
-test('Agent API binding must name the Cloudflare Worker route and rejects a direct VM endpoint', () => {
+test('Runner API binding names the France-dispatch Cloudflare Worker and rejects mock/VM endpoints', () => {
   const input = ready();
-  for (const url of ['https://169-58-15-230.sslip.io/runner-sandbox3', 'https://production.example.test', '']) {
+  for (const url of [
+    'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
+    'https://169-58-15-230.sslip.io/runner-sandbox3', 'https://production.example.test', '',
+  ]) {
     input.cpBindings.find(item => item.name === 'RUNNER_API_URL').text = url;
     assert.equal(evaluateSandbox3Lane(input).checks.agentApiBindings, 'BLOCKED');
   }
+  input.cpBindings.find(item => item.name === 'RUNNER_API_URL').text = SANDBOX3_RUNNER_URL;
+  input.cpBindings.find(item => item.name === 'RUNNER_API_SERVICE').service = 'trained-assist-runner-api-cp-sandbox3';
+  assert.equal(evaluateSandbox3Lane(input).checks.agentApiBindings, 'BLOCKED');
 });
 
 test('CP has no VM/GHA execution endpoint or service binding', () => {
