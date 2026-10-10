@@ -4,6 +4,7 @@ import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3Op
 const bindings = () => [
   ...Object.entries({ DEPLOYMENT_ENV: 'sandbox3', PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false', ROUTER_AGENT_ALLOWED: 'false',
     RUNNER_API_URL: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev', SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true',
+    SANDBOX_RUNNER_MOCK_TEST_URL: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
     SANDBOX_RUNNER_MOCK_PROBE_PROFILE: 'integration-sandbox3-v1' }).map(([name, text]) => ({ name, text, type: 'plain_text' })),
   { name: 'PRINCIPAL_SECRET_SANDBOX3', type: 'secret_text' },
   { name: 'RUNNER_API_SERVICE', type: 'service', service: 'trained-assist-runner-api-sandbox3' },

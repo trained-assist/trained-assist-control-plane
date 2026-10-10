@@ -14,6 +14,8 @@ const ready = () => ({
     plain('RUNNER_API_URL', SANDBOX3_RUNNER_URL),
     { name: 'RUNNER_API_KEY_AGENT_API', type: 'secret_text' },
     { name: 'RUNNER_PROFILE_DELEGATION_SECRET', type: 'secret_text' },
+    plain('SANDBOX_RUNNER_MOCK_TEST_URL', 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'),
+    { name: 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST', type: 'secret_text' },
     plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'), plain('ROUTER_AGENT_ALLOWED', 'true'),
   ],
   tgBindings: [

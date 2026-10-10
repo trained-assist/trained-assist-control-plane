@@ -3,7 +3,7 @@ import { sandbox3OperatorSecret, verifySandbox3PairingBindings, verifySandbox3Op
 import { sandbox3CpProbeRequest } from './sandbox3-cp-probe-request.mjs';
 import { SANDBOX3 } from '../src/deployment/sandbox3.ts';
 import { isRunnerRunId } from '../src/runner-adapter/run-id.ts';
-import { verifySandbox3PublicRoute, verifySandbox3RunnerPrincipal, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
+import { verifySandbox3PublicRoute, verifySandbox3MockPublicRoute, waitForSandbox3RunnerPrincipal } from './sandbox3-public-route.mjs';
 import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -399,18 +399,18 @@ async function pairSandbox3Cp(input) {
   if (evidence.cpDeployedSha !== input.sourceSha) fail('sandbox3_cp_deployed_source_mismatch');
   const seed = requiredEnv('RUNNER_MOCK_KEY_SEED');
   const keys = sandbox3Credentials(seed);
-  const secrets = { RUNNER_API_KEY_AGENT_API: keys.apiKey, RUNNER_PROFILE_DELEGATION_SECRET: keys.delegationSecret,
+  const secrets = { RUNNER_API_KEY_SANDBOX3_MOCK_TEST: keys.apiKey,
     PRINCIPAL_SECRET_SANDBOX3_OPS: sandbox3OperatorSecret(seed) };
   verifySandbox3PairingBindings(await sandbox3CpSettings(input));
-  evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
+  evidence.sandbox3PublicRoute = await verifySandbox3MockPublicRoute();
   const runnerKeyRegistry = JSON.stringify([{ keyHash: createHash('sha256').update(keys.apiKey).digest('hex'),
     principalId: SANDBOX3.diagnosticPrincipalId, profileId: SANDBOX3.profileId,
     scopes: ['runs:read', 'runs:write'], engines: ['mock-test'] }]);
-  capture('npx', ['wrangler', 'secret', 'put', 'RUNNER_API_KEYS', '--name', SANDBOX3.runnerWorkerName], { input: runnerKeyRegistry });
-  evidence.sandbox3RunnerCredentialSync = { credentialsSynced: true, workerName: SANDBOX3.runnerWorkerName,
+  capture('npx', ['wrangler', 'secret', 'put', 'RUNNER_API_KEYS', '--name', SANDBOX3.mockRunnerWorkerName], { input: runnerKeyRegistry });
+  evidence.sandbox3RunnerCredentialSync = { credentialsSynced: true, workerName: SANDBOX3.mockRunnerWorkerName,
     principalId: SANDBOX3.diagnosticPrincipalId, profileId: SANDBOX3.profileId, scopes: ['runs:read', 'runs:write'], engines: ['mock-test'] };
   evidence.boundaries.sandbox3RunnerCredentialSync = 'PASS';
-  await waitForSandbox3RunnerPrincipal(keys.apiKey);
+  await waitForSandbox3RunnerPrincipal(keys.apiKey, fetch, { base: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev' });
   const principalSql = `SELECT profile_id, scopes, enabled FROM admission_principals WHERE principal_id = '${SANDBOX3.diagnosticPrincipalId}'`;
   let rows = sandbox3PrincipalQuery(principalSql);
   if (rows.length > 1) fail('sandbox3_cp_operator_principal_invalid');
@@ -684,10 +684,10 @@ async function main() {
     if (freshSandbox3) {
       validateSandbox3Config(config);
       evidence.cpWorker = 'trained-assist-cp-sandbox3';
-      evidence.runnerService = SANDBOX3.runnerWorkerName;
+      evidence.runnerService = SANDBOX3.mockRunnerWorkerName;
       evidence.runnerPrincipalId = 'sandbox3-agent-api-principal';
       evidence.runnerProfileId = 'integration-sandbox3-v1';
-      evidence.cpMockKeySecretName = 'RUNNER_API_KEY_AGENT_API';
+      evidence.cpMockKeySecretName = 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST';
       evidence.cpPrincipalSecretName = 'PRINCIPAL_SECRET_SANDBOX3';
     } else validateTelegramUxSandboxConfig(config);
     if (!freshSandbox3 && (config.name !== TELEGRAM_UX_SANDBOX.workerName || config.workers_dev !== true)) {
@@ -717,8 +717,7 @@ async function main() {
       } else if (args[0] === '--sandbox3-public-preflight') {
         stage = 'sandbox3PublicRoute';
         evidence.sandbox3PublicRoute = await verifySandbox3PublicRoute();
-        await verifySandbox3RunnerPrincipal(sandbox3Credentials(requiredEnv('RUNNER_MOCK_KEY_SEED')).apiKey);
-        evidence.sandbox3PublicRoute.authenticatedContractVerified = true;
+        evidence.sandbox3PublicRoute.authenticatedContractVerified = false;
         evidence.boundaries[stage] = 'PASS';
         evidence.outcome = 'preflight_passed';
       }

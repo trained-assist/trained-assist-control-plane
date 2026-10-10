@@ -1,14 +1,16 @@
-const BASE = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
-export async function verifySandbox3PublicRoute(fetchImpl = fetch) {
+const LIVE_BASE = 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev';
+const MOCK_BASE = 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev';
+export async function verifySandbox3PublicRoute(fetchImpl = fetch, base = LIVE_BASE) {
   try {
-    const results = await Promise.allSettled(['/healthz', '/version', '/v1/capabilities'].map(path => fetchImpl(`${BASE}${path}`, {
+    const liveRunner = base === LIVE_BASE;
+    const results = await Promise.allSettled(['/healthz', '/version', '/v1/capabilities'].map(path => fetchImpl(`${base}${path}`, {
       redirect: 'error', signal: AbortSignal.timeout(10_000), headers: { 'cache-control': 'no-store' },
     })));
     if (results.some(result => result.status !== 'fulfilled')) throw new Error('unreachable');
     const [health, version, auth] = results.map(result => result.value);
     const [healthBody, versionBody, authBody] = await Promise.all([health.json(), version.json(), auth.json()]);
     if (health.status !== 200 || healthBody?.status !== 'ok' || healthBody?.service !== 'ai-agent-runner-api'
-      || healthBody?.placement !== 'cloudflare-worker' || healthBody?.executionWorker !== 'eu-vm-agent-run' || version.status !== 200
+      || healthBody?.placement !== 'cloudflare-worker' || (liveRunner && healthBody?.executionWorker !== 'eu-vm-agent-run') || version.status !== 200
       || versionBody?.runtime !== 'cloudflare-worker' || auth.status !== 401 || authBody?.error?.code !== 'UNAUTHENTICATED') {
       throw new Error('contract');
     }
@@ -16,12 +18,13 @@ export async function verifySandbox3PublicRoute(fetchImpl = fetch) {
       authenticatedContractVerified: false, realTelegramE2E: false };
   } catch { throw new Error('sandbox3_public_route_not_verified'); }
 }
+export const verifySandbox3MockPublicRoute = fetchImpl => verifySandbox3PublicRoute(fetchImpl, MOCK_BASE);
 
-export async function verifySandbox3RunnerPrincipal(apiKey, fetchImpl = fetch) {
+export async function verifySandbox3RunnerPrincipal(apiKey, fetchImpl = fetch, base = LIVE_BASE) {
   if (typeof apiKey !== 'string' || apiKey.length < 32) throw new Error('sandbox3_runner_principal_not_authorized');
   let response;
   try {
-    response = await fetchImpl(`${BASE}/v1/capabilities`, {
+    response = await fetchImpl(`${base}/v1/capabilities`, {
       redirect: 'error', signal: AbortSignal.timeout(10_000),
       headers: { authorization: `Bearer ${apiKey}`, 'cache-control': 'no-store' },
     });
@@ -34,9 +37,9 @@ export async function verifySandbox3RunnerPrincipal(apiKey, fetchImpl = fetch) {
   return true;
 }
 
-export async function waitForSandbox3RunnerPrincipal(apiKey, fetchImpl = fetch, { attempts = 15, intervalMs = 2_000 } = {}) {
+export async function waitForSandbox3RunnerPrincipal(apiKey, fetchImpl = fetch, { attempts = 15, intervalMs = 2_000, base = LIVE_BASE } = {}) {
   for (let attempt = 1; ; attempt++) {
-    try { return await verifySandbox3RunnerPrincipal(apiKey, fetchImpl); }
+    try { return await verifySandbox3RunnerPrincipal(apiKey, fetchImpl, base); }
     catch (error) {
       if (!(error instanceof Error) || error.message !== 'sandbox3_runner_principal_not_authorized' || attempt >= attempts) throw error;
       await new Promise(resolve => setTimeout(resolve, intervalMs));

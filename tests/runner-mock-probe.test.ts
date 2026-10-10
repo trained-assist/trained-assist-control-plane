@@ -252,7 +252,7 @@ describe('sandbox3 CP mock check with execution disabled', () => {
     DEPLOYMENT_ENV: 'sandbox3', PRINCIPAL_SECRET_SANDBOX3_OPS: secret,
     SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_PROBE_PROFILE: SANDBOX3.profileId,
     PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false', ROUTER_AGENT_ALLOWED: 'false',
-    RUNNER_API_URL: SANDBOX3.runnerUrl, RUNNER_API_KEY_AGENT_API: 'synthetic-sandbox3-api-key',
+    SANDBOX_RUNNER_MOCK_TEST_URL: SANDBOX3.mockRunnerUrl, RUNNER_API_KEY_SANDBOX3_MOCK_TEST: 'synthetic-sandbox3-api-key',
   } as unknown as Env);
   const request = async () => new Request('https://cp.test/internal/sandbox/runner-mock-probe', {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-principal': SANDBOX3.diagnosticPrincipalId,
@@ -274,14 +274,14 @@ describe('sandbox3 CP mock check with execution disabled', () => {
     expect(await response.json()).toMatchObject({ ok: true, answer: 'pong', sideEffects: { cpTaskCreated: false, workerOrModelCalled: false } });
     expect(fake.calls).toHaveLength(3);
     const submit = fake.calls[0]!;
-    expect(submit.url).toBe(`${SANDBOX3.runnerUrl}/v1/runs`);
+    expect(submit.url).toBe(`${SANDBOX3.mockRunnerUrl}/v1/runs`);
     expect(new Headers(submit.init?.headers).get('authorization')).toBe('Bearer synthetic-sandbox3-api-key');
     expect(JSON.parse(String(submit.init?.body))).toMatchObject({ userTaskId: SANDBOX3.mockTaskId, engine: { name: 'mock-test' } });
     expect(await env.DB.prepare('SELECT count(*) AS total FROM durable_tasks').first()).toEqual(before);
   });
   it('refuses a key sent to the production Runner route instead of the paired mock-only Worker', async () => {
     await register(); const fake = runnerFetch();
-    const response = await worker.fetch(await request(), { ...baseEnv(), RUNNER_API_URL: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev' });
+    const response = await worker.fetch(await request(), { ...baseEnv(), SANDBOX_RUNNER_MOCK_TEST_URL: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev' });
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ bindingIssue: 'runner_url_target_mismatch' });
     expect(fake.fetchMock).not.toHaveBeenCalled();

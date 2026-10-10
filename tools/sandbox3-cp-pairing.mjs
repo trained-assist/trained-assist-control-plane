@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-export const SANDBOX3_PAIRING_SECRETS = ['RUNNER_API_KEY_AGENT_API', 'RUNNER_PROFILE_DELEGATION_SECRET', 'PRINCIPAL_SECRET_SANDBOX3_OPS'];
+export const SANDBOX3_PAIRING_SECRETS = ['RUNNER_API_KEY_SANDBOX3_MOCK_TEST', 'PRINCIPAL_SECRET_SANDBOX3_OPS'];
 export function sandbox3OperatorSecret(seed) {
   if (typeof seed !== 'string' || Buffer.byteLength(seed) < 32) throw new Error('sandbox3_operator_seed_invalid');
   return createHmac('sha256', seed).update('trained-assist/agent-runner-api-sandbox3/bootstrap/v1/cp-read-operator').digest('base64url');
@@ -11,6 +11,7 @@ export function verifySandbox3PairingBindings(bindings) {
   const values = new Map(bindings.map(binding => [binding.name, binding]));
   for (const [name, text] of Object.entries({ DEPLOYMENT_ENV: 'sandbox3', PREVIEW_ONLY: 'true', PILOT_ENABLED: 'false',
     ROUTER_AGENT_ALLOWED: 'false', RUNNER_API_URL: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev',
+    SANDBOX_RUNNER_MOCK_TEST_URL: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
     SANDBOX_RUNNER_MOCK_PROBE_ENABLED: 'true', SANDBOX_RUNNER_MOCK_PROBE_PROFILE: 'integration-sandbox3-v1' })) {
     if (values.get(name)?.type !== 'plain_text' || values.get(name)?.text !== text) throw new Error('sandbox3_cp_pairing_flags_invalid');
   }

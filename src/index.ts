@@ -142,6 +142,7 @@ export interface Env {
   RUNNER_PROFILE_DELEGATION_TENANT_ID?: string;
   /** Separate disposable credential for the sandbox-only mock-test probe. */
   RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?: string;
+  RUNNER_API_KEY_SANDBOX3_MOCK_TEST?: string;
   SANDBOX_RUNNER_MOCK_PROBE_ENABLED?: string;
   RUN_SPEC_PROFILE_OVERRIDES?: string;
   /** Test-only Bearer used only by the pinned tools/list discovery binding. */
@@ -296,9 +297,9 @@ class SandboxRunnerMockProbeError extends Error {
 
 function sandboxMockProbeAdapter(env: Env): { adapter: RunnerApiAdapter | null; runnerBaseUrl: string | null; bindingIssue: string | null } {
   if (env.DEPLOYMENT_ENV === 'sandbox3' && env.SANDBOX_RUNNER_MOCK_PROBE_PROFILE === SANDBOX3.profileId) {
-    if (env.RUNNER_API_URL !== SANDBOX3.runnerUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
-    if (!env.RUNNER_API_KEY_AGENT_API?.trim()) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
-    return { adapter: new RunnerApiAdapter(SANDBOX3.runnerUrl, env.RUNNER_API_KEY_AGENT_API), runnerBaseUrl: SANDBOX3.runnerUrl, bindingIssue: null };
+    if (env.SANDBOX_RUNNER_MOCK_TEST_URL !== SANDBOX3.mockRunnerUrl) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'runner_url_target_mismatch' };
+    if (!env.RUNNER_API_KEY_SANDBOX3_MOCK_TEST?.trim()) return { adapter: null, runnerBaseUrl: null, bindingIssue: 'mock_key_missing' };
+    return { adapter: new RunnerApiAdapter(SANDBOX3.mockRunnerUrl, env.RUNNER_API_KEY_SANDBOX3_MOCK_TEST), runnerBaseUrl: SANDBOX3.mockRunnerUrl, bindingIssue: null };
   }
   const baseUrl = env.SANDBOX_RUNNER_MOCK_TEST_URL?.trim();
   const apiKey = env.RUNNER_API_KEY_TELEGRAM_UX_MOCK_TEST?.trim();
