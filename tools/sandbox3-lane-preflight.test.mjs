@@ -14,6 +14,8 @@ const ready = () => ({
     plain('RUNNER_API_URL', SANDBOX3_RUNNER_URL),
     { name: 'RUNNER_API_KEY_AGENT_API', type: 'secret_text' },
     { name: 'RUNNER_PROFILE_DELEGATION_SECRET', type: 'secret_text' },
+    plain('RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID', 'sandbox3-agent-api-principal'),
+    plain('RUNNER_PROFILE_DELEGATION_TENANT_ID', 'sandbox3-acceptance-a-20261008'),
     plain('SANDBOX_RUNNER_MOCK_TEST_URL', 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'),
     { name: 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST', type: 'secret_text' },
     plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'), plain('ROUTER_AGENT_ALLOWED', 'true'),
@@ -50,6 +52,18 @@ test('shared Telegram route, reused state and disabled execution block the lane'
   assert.equal(report.checks.tgRoute, 'BLOCKED');
   assert.equal(report.checks.tgStateIsolated, 'BLOCKED');
   assert.equal(report.checks.executionEnabled, 'BLOCKED');
+});
+
+test('live Runner bindings reject a mismatched delegated principal or tenant', () => {
+  for (const [name, value] of [
+    ['RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID', 'canonical-telegram-ux'],
+    ['RUNNER_PROFILE_DELEGATION_TENANT_ID', 'canonical-telegram-tenant'],
+  ]) {
+    const input = ready();
+    input.cpBindings.find(item => item.name === name).text = value;
+    const report = evaluateSandbox3Lane(input);
+    assert.equal(report.checks.agentApiBindings, 'BLOCKED');
+  }
 });
 
 test('expected deployment SHA mismatch blocks readiness even when health is live', () => {
