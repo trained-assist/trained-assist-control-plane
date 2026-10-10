@@ -14,6 +14,11 @@ function run(command, args, options = {}) {
 }
 
 async function keychainSecret() {
+  const supplied = process.env.CP_TELEGRAM_UX_PRINCIPAL_SECRET?.trim();
+  if (supplied) {
+    if (supplied.length < 32) throw new Error('sandbox_keychain_secret_invalid');
+    return supplied;
+  }
   if (process.platform !== 'darwin') throw new Error('macos_keychain_required');
   const service = JSON.stringify(TELEGRAM_UX_SANDBOX.keychainService);
   const account = JSON.stringify(TELEGRAM_UX_SANDBOX.principalId);

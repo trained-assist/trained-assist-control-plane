@@ -1,0 +1,37 @@
+name: Deploy canonical Telegram UX sandbox
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-telegram-ux-sandbox-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx vitest run tests/telegram-ux-sandbox-deploy.test.ts tests/health-catalogue.test.ts
+      - name: Deploy reviewed canonical sandbox and run scoped acceptance smoke
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CP_TELEGRAM_UX_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: npm run sandbox:deploy:telegram-ux
