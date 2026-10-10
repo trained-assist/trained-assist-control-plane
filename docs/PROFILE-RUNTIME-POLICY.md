@@ -66,14 +66,15 @@ disabling an explicitly configured profile API route.
 
 The isolated CP sandbox-3 config declares tenant
 `sandbox3-acceptance-a-20261008` and API principal
-`sandbox3-agent-api-principal`. Its Runner URL is pinned to the dedicated
-serverless Cloudflare Worker `trained-assist-runner-api-cp-sandbox3`. That
-Worker has a separate key registry and Durable Object namespace, permits only
-`mock-test`, and has no France worker credentials. Keep the existing
-`trained-assist-runner-api-sandbox3` Worker and its Telegram MCP test principal
-separate. CP must never point to a VM, GHA gateway/workflow, or execution-worker
-endpoint. The deployed CP keeps intake/execution disabled. API and delegation
-credentials are sandbox-only and must not be reused for production tenants.
+`sandbox3-agent-api-principal`. Its real Runner URL is pinned to the dedicated
+serverless Cloudflare Worker `trained-assist-runner-api-sandbox3`, which
+delegates this profile to the France execution worker. The separate
+`trained-assist-runner-api-cp-sandbox3` Worker has its own key registry and
+Durable Object namespace, permits only `mock-test`, and has no France worker
+credentials; CP uses it only for the mock probe. CP must never point to a VM,
+GHA gateway/workflow, or execution-worker endpoint. Sandbox3 enables only the
+`integration-sandbox3-v1` pilot cohort; API and delegation credentials are
+sandbox-only and must not be reused for production tenants.
 
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for
@@ -412,9 +413,9 @@ delivery.
 
 ### Sandbox3 CP credential pairing and component mock acceptance
 
-After public routing is verified, deploy the checked protected-main revision
-to CP sandbox3 with all execution flags disabled. The explicitly enabled mock
-diagnostic applies only to `DEPLOYMENT_ENV=sandbox3`, fixed profile
+After public routing is verified, pair CP sandbox3 credentials while execution
+is disabled. The explicitly enabled mock diagnostic applies only to
+`DEPLOYMENT_ENV=sandbox3`, fixed profile
 `integration-sandbox3-v1`, fixed Runner TLS URL and a separate read-only
 `sandbox3-ops-read-v1` principal. Its dedicated `PRINCIPAL_SECRET_SANDBOX3_OPS`
 never falls back to a shared secret and is inert outside sandbox3.
@@ -435,6 +436,9 @@ makes no model/France-worker call. `sandbox3-cp-mock-probe` repeats this
 deterministic authenticated check without writing credentials or retrying a
 different run key. VM-hosted Runner API setup and proxy modes are retired. A
 successful check does not prove real worker/profile storage, cost bounds or
-Telegram delivery. Existing credential bindings refuse the initial pairing
-mode, so partial provisioning must be reconciled using its sanitized operation
-evidence before repeating writes.
+Telegram delivery. Only after this read-only pairing gate succeeds, the
+protected sandbox3 config enables `integration-sandbox3-v1` as its sole pilot
+cohort for real Telegram E2E. Other profiles remain on the legacy route and
+production bindings are independent. Existing credential bindings refuse the
+initial pairing mode, so partial provisioning must be reconciled using its
+sanitized operation evidence before repeating writes.
