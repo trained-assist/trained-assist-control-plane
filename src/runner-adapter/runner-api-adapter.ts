@@ -186,7 +186,7 @@ export class RunnerApiAdapter {
       const err = (json as { error?: { code?: string; message?: string; details?: { errors?: unknown } } } | null)?.error;
       const code = err?.code ?? `HTTP_${res.status}`;
       const message = err?.message ?? text;
-      if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message, res.status);
+      if (res.status === 404 || code === 'NOT_FOUND') throw new RunnerNotFoundError(message, res.status, code);
       // The test Runner returns this profile-configuration refusal before it
       // creates an admission record. Treating it as an ambiguous 503 leaves a
       // phantom active CP attempt that can never be reconciled or stopped.
