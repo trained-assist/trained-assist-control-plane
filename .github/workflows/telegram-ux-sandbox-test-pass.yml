@@ -40,8 +40,6 @@ jobs:
         if: inputs.mode == 'sandbox3-live-free-run'
         env:
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
-          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
-          GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_WORKSPACE: ${{ github.workspace }}
         run: |
