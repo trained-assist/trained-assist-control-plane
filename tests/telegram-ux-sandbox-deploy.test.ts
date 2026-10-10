@@ -53,6 +53,12 @@ describe('Telegram UX sandbox deploy guard', () => {
     expect(validateTelegramUxSandboxConfig(config)).toBe(true);
   });
 
+  it('refuses a direct repository pin owned by the Agent API profile', () => {
+    expect(() => validateTelegramUxSandboxConfig({ ...config, vars: {
+      ...config.vars, RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'owner/repo' }),
+    } })).toThrow('sandbox_repository_must_be_agent_api_owned');
+  });
+
   it('refuses a non-sandbox Worker target', () => {
     expect(() => validateTelegramUxSandboxConfig({ ...config, name: 'trained-assist-control-plane' }))
       .toThrow('sandbox_worker_mismatch');
