@@ -67,6 +67,8 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
       && binding(cpBindings, 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     executionEnabled: value(cpBindings, 'PREVIEW_ONLY') === 'false'
       && value(cpBindings, 'PILOT_ENABLED') === 'true'
+      && Number.isFinite(Date.parse(value(cpBindings, 'PILOT_ACTIVATED_AT') ?? ''))
+      && value(cpBindings, 'PILOT_COHORT_PROFILE_IDS')?.split(',').map(item => item.trim()).filter(Boolean).join(',') === 'integration-sandbox3-v1'
       && value(cpBindings, 'ROUTER_AGENT_ALLOWED') === 'true' ? 'PASS' : 'BLOCKED',
   };
   return {

@@ -27,7 +27,7 @@ test('isolated staging and production targets stay distinct and execution-disabl
     }
 });
 
-test('sandbox-3 target uses only its existing isolated D1 and remains execution-disabled', () => {
+test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {
     const sandbox3 = config('wrangler.sandbox3.jsonc');
     const sharedTelegram = config('wrangler.telegram-ux-v1.jsonc');
 
@@ -52,9 +52,11 @@ test('sandbox-3 target uses only its existing isolated D1 and remains execution-
     assert.equal(sandbox3.vars.RUNNER_API_KEY_AGENT_API, undefined);
     assert.equal(sandbox3.vars.RUNNER_API_KEY_SANDBOX3_MOCK_TEST, undefined);
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_SECRET, undefined);
-    assert.equal(sandbox3.vars.PREVIEW_ONLY, 'true');
-    assert.equal(sandbox3.vars.PILOT_ENABLED, 'false');
-    assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'false');
+    assert.equal(sandbox3.vars.PREVIEW_ONLY, 'false');
+    assert.equal(sandbox3.vars.PILOT_ENABLED, 'true');
+    assert.equal(sandbox3.vars.PILOT_ACTIVATED_AT, '2026-10-11T00:00:00Z');
+    assert.equal(sandbox3.vars.PILOT_COHORT_PROFILE_IDS, 'integration-sandbox3-v1');
+    assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'true');
     assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sharedTelegram.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev');
     assert.equal(sharedTelegram.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'integration-telegram-ux-v1');

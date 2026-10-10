@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       deploy_sandbox3:
-        description: Deploy the disabled sandbox-3 Worker from protected main
+        description: Deploy the cohort-scoped sandbox-3 E2E Worker from protected main
         required: true
         type: boolean
         default: false

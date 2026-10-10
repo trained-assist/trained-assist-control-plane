@@ -8,12 +8,13 @@ VM-hosted API.
 
 - CP Worker: `trained-assist-cp-sandbox3`
 - CP mock Runner API Worker: `trained-assist-runner-api-cp-sandbox3`
-- Existing sandbox3 Runner API Worker: `trained-assist-runner-api-sandbox3` (separate registry)
+- Agent API Worker: `trained-assist-runner-api-sandbox3` (separate registry)
 - Telegram gateway: `trained-assist-tg-sandbox3`
 - Workflow: `ta-cp-sandbox3-task-workflow`
 - D1: `ta-sandbox3-taskstore` (`1e1b8108-9186-43e2-8e50-436598233165`)
 - CP URL: `https://trained-assist-cp-sandbox3.skillset-apply.workers.dev`
-- Runner API URL: `https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev`
+- Agent Runner API URL: `https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev`
+- Mock-only probe URL: `https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev`
 
 ## Runtime boundary
 
@@ -24,13 +25,18 @@ Runs its default execution worker is the existing worker in France. The worker
 executes the process; it does not host the Runner API.
 
 The CP test Runner Worker has a separate key registry and Durable Object namespace,
-is pinned to `mock-test`, and has no France worker credentials. The existing
-`trained-assist-runner-api-sandbox3` Worker remains untouched because it has a
-separate Telegram MCP test principal.
+is pinned to `mock-test`, and has no France worker credentials. It is used only by
+the mock probe. Real sandbox3 Agent API requests use
+`trained-assist-runner-api-sandbox3`, whose profile registry delegates the fixed
+sandbox3 principal to the France execution worker. The public Worker is
+serverless; the France VM runs jobs and does not host the API.
 
-The CP target remains fail-closed:
-`PREVIEW_ONLY=true`, `PILOT_ENABLED=false`, and `ROUTER_AGENT_ALLOWED=false`.
-Do not bind the shared Telegram UX D1 or staging/production D1 databases here.
+The CP target enables real task execution only for the exact
+`integration-sandbox3-v1` pilot cohort. `PILOT_ACTIVATED_AT` is explicit,
+`PREVIEW_ONLY=false`, and `ROUTER_AGENT_ALLOWED=true`; every other profile stays
+on the legacy route. The Telegram sandbox gateway is bound to this same profile
+and to independent DO/KV namespaces. Do not bind the shared Telegram UX D1 or
+staging/production D1 databases here.
 
 The live Agent API identity is separate from the mock-only CP probe identity. The
 Cloudflare Runner API Worker `trained-assist-runner-api-sandbox3` has a dedicated
@@ -50,16 +56,17 @@ disabled. Neither pairing step starts a task or calls the France worker/model.
 Use **Deploy isolated CP sandbox-3** from protected `main` with its confirmation
 input enabled. The workflow uses the protected `staging` GitHub environment,
 checks the expected Cloudflare account, pins `BUILD_SHA`, and performs read-only
-health and diagnostics checks. It does not apply migrations or enable execution.
+health checks. The deployed config enables only the sandbox3 pilot cohort; the
+workflow does not apply migrations or mutate D1/Workflow state.
 
 `npm run sandbox:preflight:sandbox3` checks the deployed CP and Telegram
 bindings, CP liveness/D1/Workflow, nonterminal and foreign-profile state, the
-scoped `integration-sandbox3-v1` principal, Telegram state isolation, and the
-public Runner endpoint's Cloudflare Worker identity, version and anonymous-auth
-refusal. It performs only read-only Cloudflare and D1 queries. `CONFIGURED`
-means bindings are present and the lane state is reusable; the report always
-leaves Runner admission journal and real Telegram E2E unverified until they are
-tested separately.
+scoped `integration-sandbox3-v1` principal and pilot cohort, Telegram state
+isolation, and the public Runner endpoint's Cloudflare Worker identity, version
+and anonymous-auth refusal. It performs only read-only Cloudflare and D1
+queries. `CONFIGURED` means the lane is safe to exercise; the report still
+leaves Runner admission journal and real Telegram E2E unverified until those
+are tested separately.
 
 The `telegram-ux-sandbox-test-pass.yml` workflow exposes these sandbox3 modes:
 
@@ -96,5 +103,6 @@ Public health/version plus anonymous-auth refusal proves only the serverless API
 boundary. An authenticated `mock-test` proves the CP adapter and durable Runner
 admission path without model or France-worker execution. Real Agent Run
 acceptance still requires Runner's France worker readiness, a disposable
-sandbox profile with bounded free execution, verified result persistence, and
-Telegram delivery. CP execution flags stay disabled until those gates pass.
+sandbox profile with free execution, verified result persistence, and Telegram
+delivery. Only the sandbox3 profile is enabled for this acceptance run;
+production flags and bindings remain independent.

@@ -18,7 +18,9 @@ const ready = () => ({
     plain('RUNNER_PROFILE_DELEGATION_TENANT_ID', 'sandbox3-acceptance-a-20261008'),
     plain('SANDBOX_RUNNER_MOCK_TEST_URL', 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev'),
     { name: 'RUNNER_API_KEY_SANDBOX3_MOCK_TEST', type: 'secret_text' },
-    plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'), plain('ROUTER_AGENT_ALLOWED', 'true'),
+    plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'),
+    plain('PILOT_ACTIVATED_AT', '2026-10-11T00:00:00Z'), plain('PILOT_COHORT_PROFILE_IDS', 'integration-sandbox3-v1'),
+    plain('ROUTER_AGENT_ALLOWED', 'true'),
   ],
   tgBindings: [
     state('INTAKE', 'sandbox3-do', 'durable_object_namespace'), state('SESSIONS', 'sandbox3-kv'),
@@ -52,6 +54,20 @@ test('shared Telegram route, reused state and disabled execution block the lane'
   assert.equal(report.checks.tgRoute, 'BLOCKED');
   assert.equal(report.checks.tgStateIsolated, 'BLOCKED');
   assert.equal(report.checks.executionEnabled, 'BLOCKED');
+});
+
+test('execution readiness is restricted to one sandbox3 profile and requires activation time', () => {
+  for (const [name, value] of [
+    ['PILOT_COHORT_PROFILE_IDS', 'integration-sandbox3-v1,production-profile'],
+    ['PILOT_COHORT_PROFILE_IDS', 'other-profile'],
+    ['PILOT_ACTIVATED_AT', 'not-a-timestamp'],
+  ]) {
+    const input = ready();
+    input.cpBindings.find(item => item.name === name).text = value;
+    const report = evaluateSandbox3Lane(input);
+    assert.equal(report.checks.executionEnabled, 'BLOCKED');
+    assert.equal(report.outcome, 'BLOCKED');
+  }
 });
 
 test('live Runner bindings reject a mismatched delegated principal or tenant', () => {
