@@ -89,6 +89,7 @@ export interface Env {
   HEALTH_CACHE_TTL_MS?: string;
   SANDBOX_READINESS_ENABLED?: string;
   PILOT_ENABLED?: string;
+  PILOT_ACTIVATED_AT?: string;
   PILOT_COHORT_PROFILE_IDS?: string;
   NATIVE_CANCEL_CONFIRMATION?: string;
   ROUTER_SELECTOR_NAMES_ONLY?: string;
@@ -1431,8 +1432,13 @@ const store = new TaskStore(env.DB);
         const sandbox3Probe = env.DEPLOYMENT_ENV === 'sandbox3' && env.SANDBOX_RUNNER_MOCK_PROBE_PROFILE === SANDBOX3.profileId;
         const profileId = sandbox3Probe ? SANDBOX3.profileId : 'integration-telegram-ux-v1';
         const allowedPrincipal = sandbox3Probe ? SANDBOX3.diagnosticPrincipalId : 'integration-telegram-ux-v1';
+        const sandbox3BootstrapOnly = env.PREVIEW_ONLY === 'true' && env.PILOT_ENABLED === 'false' && env.ROUTER_AGENT_ALLOWED === 'false';
+        const sandbox3IsolatedCohort = env.PREVIEW_ONLY === 'false' && env.PILOT_ENABLED === 'true'
+          && Number.isFinite(Date.parse(env.PILOT_ACTIVATED_AT ?? ''))
+          && String(env.PILOT_COHORT_PROFILE_IDS ?? '').split(',').map(value => value.trim()).filter(Boolean).join(',') === SANDBOX3.profileId
+          && env.ROUTER_AGENT_ALLOWED === 'true';
         const flagsAllowed = sandbox3Probe
-          ? env.PREVIEW_ONLY === 'true' && env.PILOT_ENABLED === 'false' && env.ROUTER_AGENT_ALLOWED === 'false'
+          ? sandbox3BootstrapOnly || sandbox3IsolatedCohort
           : env.PREVIEW_ONLY !== 'true' && env.PILOT_ENABLED === 'true'
             && String(env.PILOT_COHORT_PROFILE_IDS ?? '').split(',').map(value => value.trim()).includes('integration-telegram-ux-v1');
         if (req.method !== 'POST' || env.SANDBOX_RUNNER_MOCK_PROBE_ENABLED !== 'true' || !flagsAllowed) {

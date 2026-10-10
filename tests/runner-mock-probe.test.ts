@@ -279,6 +279,24 @@ describe('sandbox3 CP mock check with execution disabled', () => {
     expect(JSON.parse(String(submit.init?.body))).toMatchObject({ userTaskId: SANDBOX3.mockTaskId, engine: { name: 'mock-test' } });
     expect(await env.DB.prepare('SELECT count(*) AS total FROM durable_tasks').first()).toEqual(before);
   });
+  it('keeps the mock diagnostic available for the exact active sandbox3 cohort', async () => {
+    await register(); const fake = runnerFetch(SANDBOX3.mockTaskId);
+    const response = await worker.fetch(await request(), { ...baseEnv(), PREVIEW_ONLY: 'false', PILOT_ENABLED: 'true',
+      PILOT_ACTIVATED_AT: '2026-10-11T00:00:00Z', PILOT_COHORT_PROFILE_IDS: SANDBOX3.profileId,
+      ROUTER_AGENT_ALLOWED: 'true' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, answer: 'pong',
+      sideEffects: { cpTaskCreated: false, workerOrModelCalled: false } });
+    expect(fake.calls).toHaveLength(3);
+  });
+  it('blocks mock probes when an extra profile is added to the active cohort', async () => {
+    await register(); const fake = runnerFetch(SANDBOX3.mockTaskId);
+    const response = await worker.fetch(await request(), { ...baseEnv(), PREVIEW_ONLY: 'false', PILOT_ENABLED: 'true',
+      PILOT_ACTIVATED_AT: '2026-10-11T00:00:00Z', PILOT_COHORT_PROFILE_IDS: `${SANDBOX3.profileId},foreign-profile`,
+      ROUTER_AGENT_ALLOWED: 'true' });
+    expect(response.status).toBe(404);
+    expect(fake.calls).toHaveLength(0);
+  });
   it('refuses a key sent to the production Runner route instead of the paired mock-only Worker', async () => {
     await register(); const fake = runnerFetch();
     const response = await worker.fetch(await request(), { ...baseEnv(), SANDBOX_RUNNER_MOCK_TEST_URL: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev' });
