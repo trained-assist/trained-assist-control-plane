@@ -20,7 +20,7 @@ function fixture(context) {
   const environment = { INTEGRATION_BINDINGS_FILE: bindingsPath, INTEGRATION_REPORT_FILE: reportPath };
   const state = { calls: [], tasks: new Map(), routeCalls: new Map(), failurePath: undefined,
     oversized: false, malformed: false, fallback: false, answerMismatch: false, engineRuns: 0, missingDecisionId: false,
-    buildSha: 'b'.repeat(40), lastHeaders: [] };
+    buildSha: 'b'.repeat(40), lastHeaders: [], renderingFailure: null };
   const fetchImpl = async (url, options) => {
     assert.equal(options.redirect, 'error');
     assert.equal(url.origin, 'https://cp.fixture');
@@ -53,7 +53,8 @@ function fixture(context) {
     }
     assert.equal(url.pathname, '/status');
     return Response.json({ taskStore: { id: body.taskId, status: 'done', generation: 1,
-      result: { answer: 'Fixture answer', quickAnswer: { id: capabilityId }, rendering: { source: 'communication_writer', failure: null } } },
+      result: { answer: 'Fixture answer', quickAnswer: { id: capabilityId },
+        rendering: { source: 'communication_writer', failure: state.renderingFailure } } },
       runs: Array.from({ length: state.engineRuns }, () => ({ status: 'running' })) });
   };
   return { environment, bindings, bindingsPath, reportPath, state, fetchImpl };
@@ -101,6 +102,22 @@ test('stops before intake when the deployed sandbox SHA does not match the reque
   assert.equal(result.report.reason, 'sandbox_health_probe');
   assert.equal(result.report.scenarios.length, 0);
   assert.deepEqual(fixtureData.state.calls, []);
+});
+
+test('keeps allowlisted writer failure codes and redacts arbitrary failure text', async context => {
+  const fixtureData = fixture(context);
+  fixtureData.state.renderingFailure = 'writer_changed_verified_facts';
+  const known = await runSmoke(fixtureData.environment, fixtureData.fetchImpl);
+  assert.equal(known.ok, true);
+  assert.equal(known.report.scenarios[0].rendering.failure, 'writer_changed_verified_facts');
+
+  const redactedFixture = fixture(context);
+  redactedFixture.state.renderingFailure = sentinel;
+  const redacted = await runSmoke(redactedFixture.environment, redactedFixture.fetchImpl);
+  assert.equal(redacted.ok, true);
+  assert.equal(redacted.report.scenarios[0].rendering.failure, 'writer_failed');
+  assert.ok(!JSON.stringify(redacted.report).includes(sentinel));
+  assert.ok(!readFileSync(redactedFixture.reportPath, 'utf8').includes(sentinel));
 });
 
 test('fallback agent failure retains accepted task before route and stops without another scenario/retry', async context => {

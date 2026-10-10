@@ -5,6 +5,10 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const identity = value => typeof value === 'string' && /^[A-Za-z0-9._:-]{1,199}$/.test(value);
+const safeWriterFailure = value => typeof value === 'string'
+  && (/^(?:not_configured|invalid_timeout|input_too_large|timeout|unavailable|malformed|tool_error|writer_rejected|writer_changed_verified_facts)$/.test(value)
+    || /^http_[1-5][0-9]{2}$/.test(value))
+  ? value : 'writer_failed';
 class CheckpointError extends Error {}
 
 export async function runSmoke(environment = process.env, fetchImpl = fetch) {
@@ -145,7 +149,8 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
         assert.equal(state.runs.length, 0);
         const rendering = state.taskStore.result.rendering;
         if (['communication_writer', 'deterministic'].includes(rendering?.source)) {
-          evidence.rendering = { source: rendering.source, failure: rendering.failure === null ? null : 'writer_failed' };
+          evidence.rendering = { source: rendering.source,
+            failure: rendering.failure === null ? null : safeWriterFailure(rendering.failure) };
         }
         Object.assign(evidence, { outcome: 'pass', phase: 'verified_quick_answer', capabilityId, generation: state.taskStore.generation,
           persistedAnswer: true, engineRuns: 0, intakeReplaySameTask: true, routeReplaySameDecision: true });
