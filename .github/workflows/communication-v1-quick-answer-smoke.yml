@@ -1,0 +1,48 @@
+name: Verify Telegram UX quick answers in sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_build_sha:
+        description: Exact build SHA currently deployed to the canonical Telegram UX sandbox Worker
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-quick-answer-sandbox-smoke
+  cancel-in-progress: false
+
+jobs:
+  quick-answer-smoke:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify exact deployed sandbox revision and quick-answer scenarios
+        env:
+          CONTROL_PLANE_URL: https://trained-assist-cp-telegram-ux-v1-sandbox.skillset-apply.workers.dev
+          CONTROL_PLANE_PRINCIPAL: integration-telegram-ux-v1
+          CONTROL_PLANE_PROFILE: integration-telegram-ux-v1
+          CONTROL_PLANE_EXPECTED_BUILD_SHA: ${{ inputs.expected_build_sha }}
+          CP_INTEGRATION_V1_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
+          INTEGRATION_REPORT_FILE: quick-answer-smoke-report.json
+        run: node tools/communication-v1-live-smoke.mjs
+      - name: Upload sanitized quick-answer evidence
+        if: always() && hashFiles('quick-answer-smoke-report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: communication-v1-quick-answer-${{ github.run_id }}
+          path: quick-answer-smoke-report.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -32,7 +32,14 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
     const base = new URL(bindings.CONTROL_PLANE_URL);
     assert.ok(base.protocol === 'https:' && !base.username && !base.password && !base.search && !base.hash);
     assert.ok(identity(bindings.CONTROL_PLANE_PRINCIPAL) && identity(bindings.CONTROL_PLANE_PROFILE));
-    assert.match(bindings.CONTROL_PLANE_PRINCIPAL_SIGNATURE ?? '', /^[a-f0-9]{64}$/);
+    const principalSignature = bindings.CONTROL_PLANE_PRINCIPAL_SIGNATURE
+      ?? (environment.CP_INTEGRATION_V1_PRINCIPAL_SECRET
+        ? createHmac('sha256', environment.CP_INTEGRATION_V1_PRINCIPAL_SECRET)
+          .update(bindings.CONTROL_PLANE_PRINCIPAL).digest('hex')
+        : '');
+    assert.match(principalSignature, /^[a-f0-9]{64}$/);
+    const expectedBuildSha = environment.CONTROL_PLANE_EXPECTED_BUILD_SHA;
+    if (expectedBuildSha !== undefined) assert.match(expectedBuildSha, /^[a-f0-9]{40}$/);
     assert.ok(environment.INTEGRATION_REPORT_FILE);
     reportPath = resolve(environment.INTEGRATION_REPORT_FILE);
     phase = 'report_checkpoint';
@@ -40,13 +47,29 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
     closeSync(descriptor);
     ownsReport = true;
     const runId = `live-v1-${randomUUID()}`;
-    report = { runId, startedAt: new Date().toISOString(), outcome: 'fail', telegramDelivered: false, scenarios: [] };
+    report = { runId, startedAt: new Date().toISOString(), outcome: 'fail', telegramDelivered: false, scenarios: [],
+      ...(expectedBuildSha ? { expectedBuildSha } : {}) };
     checkpoint();
+    if (expectedBuildSha) {
+      phase = 'sandbox_health_probe';
+      const response = await fetchImpl(new URL('/healthz', base), {
+        method: 'GET', redirect: 'error', signal: AbortSignal.timeout(15_000),
+      });
+      assert.ok(response.ok);
+      const health = await response.json();
+      assert.equal(health?.service, 'trained-assist-control-plane');
+      assert.equal(health?.status, 'healthy');
+      assert.equal(health?.check, 'liveness');
+      assert.match(health?.buildSha ?? '', /^[a-f0-9]{40}$/);
+      assert.equal(health.buildSha, expectedBuildSha);
+      report.deployedBuildSha = health.buildSha;
+      checkpoint();
+    }
     const request = async (path, body) => {
       const response = await fetchImpl(new URL(path, base), {
         method: 'POST', redirect: 'error', headers: {
           'content-type': 'application/json', 'x-principal': bindings.CONTROL_PLANE_PRINCIPAL,
-          'x-principal-sig': bindings.CONTROL_PLANE_PRINCIPAL_SIGNATURE,
+          'x-principal-sig': principalSignature,
         }, body: JSON.stringify(body), signal: AbortSignal.timeout(60000),
       });
       assert.ok(response.ok);
