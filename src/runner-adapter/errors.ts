@@ -34,7 +34,7 @@ export class RunnerArtifactManifestError extends Error {
 
 /** Попытка неизвестна Runner'у. */
 export class RunnerNotFoundError extends Error {
-  constructor(message: string, readonly statusCode?: number) {
+  constructor(message: string, readonly statusCode?: number, readonly apiCode?: string) {
     super(message);
     this.name = 'RunnerNotFoundError';
   }

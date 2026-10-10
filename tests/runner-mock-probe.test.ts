@@ -90,7 +90,7 @@ describe('sandbox CP to Runner mock-test probe', () => {
     }), baseEnv);
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ ok: false, runnerErrorCode: 'runner_resource_not_found',
+    expect(await response.json()).toMatchObject({ ok: false, runnerErrorCode: 'NOT_FOUND', runnerHttpStatus: 404,
       runnerProbeStage: 'status', runnerRunId: runId,
       sideEffects: { cpTaskCreated: false, workerOrModelCalled: false, runnerAdmissionMayBePersisted: true } });
     expect(fake.calls.map(call => new URL(call.url).pathname)).toEqual([
@@ -217,7 +217,8 @@ describe('sandbox CP to Runner mock-test probe', () => {
 
     const body = await response.text();
     expect(response.status).toBe(503);
-    expect(JSON.parse(body)).toMatchObject({ runnerErrorCode: 'INVALID_REQUEST', runnerErrorFields: ['request.limits.timeoutMs'],
+    expect(JSON.parse(body)).toMatchObject({ runnerErrorCode: 'INVALID_REQUEST', runnerHttpStatus: 400,
+      runnerErrorFields: ['request.limits.timeoutMs'],
       runnerReachability: { outcome: 'reachable_auth_required', httpStatus: 401 } });
     expect(body).not.toContain('secret-shaped private detail');
     expect(body).not.toContain('private value');

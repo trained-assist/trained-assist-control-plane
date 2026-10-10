@@ -326,7 +326,10 @@ function sandboxRunnerProbeErrorCode(error: unknown): string {
   if (error instanceof RunnerConflictError) {
     return error.apiCode ?? /^([A-Z][A-Z0-9_]{1,63}):/.exec(error.message)?.[1] ?? 'runner_request_rejected';
   }
-  if (error instanceof RunnerNotFoundError) return 'runner_resource_not_found';
+  if (error instanceof RunnerNotFoundError) {
+    return error.apiCode && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.apiCode)
+      ? error.apiCode : 'runner_resource_not_found';
+  }
   if (error instanceof RunnerUnavailableError) return 'runner_unavailable';
   return 'probe_internal_error';
 }
@@ -1454,6 +1457,8 @@ const store = new TaskStore(env.DB);
           return diagnosticsJson({ ok: false, reasonCode: 'sandbox_runner_mock_probe_failed',
             runnerErrorCode: sandboxRunnerProbeErrorCode(error),
             runnerErrorFields: runnerError instanceof RunnerConflictError ? runnerError.fieldPaths : [], runnerReachability,
+            runnerHttpStatus: runnerError instanceof RunnerConflictError || runnerError instanceof RunnerNotFoundError
+              || runnerError instanceof RunnerUnavailableError ? runnerError.statusCode ?? null : null,
             runnerProbeStage: error instanceof SandboxRunnerMockProbeError ? error.stage : null,
             runnerRunId: error instanceof SandboxRunnerMockProbeError
               && error.runId && /^run_[a-f0-9]{64}_[a-f0-9]{24}$/.test(error.runId) ? error.runId : null,
