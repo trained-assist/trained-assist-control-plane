@@ -31,10 +31,14 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
     cpWorkflow: binding(cpBindings, 'TASK_WORKFLOW')?.type === 'workflow'
       && binding(cpBindings, 'TASK_WORKFLOW')?.workflow_name === WORKFLOW ? 'PASS' : 'BLOCKED',
     cpStateEmpty: counts.tasks === 0 && counts.executions === 0 ? 'PASS' : 'BLOCKED',
-    cpPrincipal: principalRows.length === 1 && principalRows[0].principal_id === 'integration-sandbox3-v1'
-      && principalRows[0].profile_id === 'integration-sandbox3-v1' && principalRows[0].enabled === 1
+    cpPrincipal: principalRows.some(row => row.principal_id === 'integration-sandbox3-v1'
+      && row.profile_id === 'integration-sandbox3-v1' && row.enabled === 1
       && ['tasks:intake', 'tasks:read', 'tasks:control', 'tasks:signal']
-        .every(scope => principalRows[0].scopes.includes(scope)) ? 'PASS' : 'BLOCKED',
+        .every(scope => row.scopes.includes(scope)))
+      && principalRows.every(row => row.principal_id === 'integration-sandbox3-v1'
+        || (row.principal_id === 'sandbox3-ops-read-v1' && row.profile_id === 'integration-sandbox3-v1'
+          && row.enabled === 1 && row.scopes.length === 1 && row.scopes[0] === 'tasks:read'))
+      ? 'PASS' : 'BLOCKED',
     tgStateIsolated: tgState.length >= 3 && new Set(tgState).size === tgState.length
       && tgState.every(id => !otherState.has(id)) ? 'PASS' : 'BLOCKED',
     tgRoute: value(tgBindings, 'CONTROL_PLANE_URL') === CP_URL

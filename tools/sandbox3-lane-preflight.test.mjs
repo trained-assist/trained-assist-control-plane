@@ -36,6 +36,16 @@ test('configured resources still report that Runner journal and real E2E are unv
   assert.equal(report.realTelegramE2E, 'NOT_RUN');
 });
 
+test('allows the dedicated read-only operator principal without accepting broader extras', () => {
+  const input = ready();
+  input.principalRows.push({ principal_id: 'sandbox3-ops-read-v1', profile_id: 'integration-sandbox3-v1',
+    scopes: ['tasks:read'], enabled: 1 });
+  assert.equal(evaluateSandbox3Lane(input).checks.cpPrincipal, 'PASS');
+  input.principalRows.push({ principal_id: 'foreign-admin', profile_id: 'integration-sandbox3-v1',
+    scopes: ['tasks:control'], enabled: 1 });
+  assert.equal(evaluateSandbox3Lane(input).checks.cpPrincipal, 'BLOCKED');
+});
+
 test('shared Telegram route, reused state and disabled execution block the lane', () => {
   const input = ready();
   input.tgBindings.find(item => item.name === 'CONTROL_PLANE_URL').text =
