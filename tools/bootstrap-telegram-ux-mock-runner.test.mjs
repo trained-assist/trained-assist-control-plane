@@ -179,14 +179,21 @@ test('candidate preflight identifies cross-repository artifact access without se
 });
 
 test('sandbox3 public preflight proves serverless API boundary without VM SSH credentials', async () => {
-  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret });
-  assert.equal(result.status, 0);
+  const { result, evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_MOCK_KEY_SEED: secret, RUNNER_API_KEY_AGENT_API: 'synthetic-live-runner-api-key-long-enough' });
+  assert.equal(result.status, 0, JSON.stringify(evidence));
   assert.equal(evidence.outcome, 'preflight_passed');
-  assert.equal(evidence.runnerService, 'trained-assist-runner-api-cp-sandbox3');
+  assert.equal(evidence.runnerService, 'trained-assist-runner-api-sandbox3');
   assert.equal(evidence.sandbox3PublicRoute.runnerApiPlacement, 'cloudflare-worker');
-  assert.equal(evidence.sandbox3PublicRoute.authenticatedContractVerified, false);
+  assert.equal(evidence.sandbox3PublicRoute.authenticatedContractVerified, true);
   assert.equal(commands.some(command => command.tool === 'ssh'), false);
   assert.equal(commands.some(command => command.args.includes('secret')), false);
+});
+
+test('sandbox3 live Runner auth preflight fails closed when its scoped key is missing', async () => {
+  const { evidence, commands } = await exercise('--sandbox3-public-preflight', { VM2_SSH_PRIVATE_KEY: '', RUNNER_API_KEY_AGENT_API: '' });
+  assert.equal(evidence.failure.boundary, 'sourceAndConfig', JSON.stringify(evidence));
+  assert.equal(evidence.failure.reasonCode, 'required_environment_missing:RUNNER_API_KEY_AGENT_API', JSON.stringify(evidence));
+  assert.deepEqual(commands, []);
 });
 
 test('sandbox3 CP mock probe does not require SSH or write credentials', async () => {

@@ -53,13 +53,16 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           BOOTSTRAP_MODE: ${{ inputs.mode }}
         run: |
+          if [ "$BOOTSTRAP_MODE" = "sandbox3-public-preflight" ]; then
+            echo "::add-mask::$RUNNER_API_KEY_AGENT_API"
+          fi
           case "$BOOTSTRAP_MODE" in
             inventory|preflight|candidate-preflight|sandbox3-public-preflight|pair-sandbox3-cp|sandbox3-cp-mock-probe|repair-permissions|bootstrap) ;;
             *) exit 1 ;;
           esac
           node --experimental-strip-types tools/bootstrap-telegram-ux-mock-runner.mjs "--$BOOTSTRAP_MODE"
       - name: Remove completed tagged sandbox3 test tasks
-        if: always() && steps.checkout.outcome == 'success'
+        if: always() && steps.checkout.outcome == 'success' && inputs.mode == 'bootstrap'
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
