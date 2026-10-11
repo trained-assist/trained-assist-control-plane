@@ -46,13 +46,14 @@ describe('native cancellation requires actual terminal evidence', () => {
     fixture.result.outcome = 'failed';
     fixture.result.exitReason = 'preflight_refused';
     fixture.result.exitObserved = false;
+    fixture.status.state = 'failed';
     fixture.result.failure = { code: 'WORKER_INVALID_REQUEST', failureClass: 'preflight',
       safeSummary: 'The France execution worker refused the run before accepting it.', retryable: false };
     fixture.status.state = 'failed';
     const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
     const cancelled = await port.cancel(fixture.taskId);
     expect(cancelled).toMatchObject({ cancelled: true, stopConfirmed: true });
-    expect(cancelled.nativeStops).toMatchObject([{ state: 'failed', exitObserved: false, preAdmissionRefusal: true }]);
+    expect(cancelled.nativeStops).toMatchObject([{ state: 'failed', exitObserved: false, runnerTerminalStatusObserved: true }]);
   });
 
   it('signed HTTP status and cancellation retry expose durable proof only to the owning profile', async () => {
@@ -86,7 +87,8 @@ describe('native cancellation requires actual terminal evidence', () => {
     const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
     const cancelled = await port.cancel(fixture.taskId);
     const proof = { taskId: fixture.taskId, profileId: fixture.context.profileId, attemptId: fixture.attempt.id,
-      runId: fixture.context.runId, ownerGeneration: fixture.attempt.generation, state: 'cancelled', exitObserved: true };
+      runId: fixture.context.runId, ownerGeneration: fixture.attempt.generation, state: 'cancelled', exitObserved: false,
+      runnerTerminalStatusObserved: true as const };
     expect(cancelled.nativeStops).toEqual([proof]);
     const freshStore = new TaskStore(env.DB);
     const freshPort = new CfWorkflowPort(fixture.workflow, freshStore);
@@ -112,7 +114,8 @@ describe('native cancellation requires actual terminal evidence', () => {
       if (mismatch === 'attempt') proof.attemptId = 'foreign-attempt';
       if (mismatch === 'run') proof.runId = nativeRunId === proof.runId ? 'run_00000000-0000-0000-0000-000000000002' : nativeRunId;
       if (mismatch === 'generation') proof.ownerGeneration += 1;
-      const payload = { nativeStops: [{ ...proof, ...(mismatch === 'unobserved' ? { exitObserved: false } : {}) }] };
+      const payload = { nativeStops: [{ ...proof,
+        ...(mismatch === 'unobserved' ? { runnerTerminalStatusObserved: undefined } : {}) }] };
       await env.DB.prepare(`UPDATE task_events SET payload_json = ?, generation = ?, source = ?
         WHERE user_task_id = ? AND kind = 'task_cancelled'`)
         .bind(JSON.stringify(payload), outcome.generation! + (mismatch === 'event_generation' ? 1 : 0),
@@ -148,7 +151,7 @@ describe('native cancellation requires actual terminal evidence', () => {
     expect(fixture.adapter.cancel).not.toHaveBeenCalled();
   });
 
-  it('real Runner HTTP adapter sends exact original-generation cancel before status/result readback', async () => {
+  it('real Runner HTTP adapter sends exact original-generation cancel then reads terminal status only', async () => {
     const fixture = await setup();
     const requests: Array<{ path: string; method: string; body: unknown }> = [];
     const transport = (async (url: string, init: RequestInit) => {
@@ -164,7 +167,6 @@ describe('native cancellation requires actual terminal evidence', () => {
     expect(requests).toEqual([
       { path: `/v1/runs/${fixture.context.runId}/cancel`, method: 'POST', body: { ownerGeneration: fixture.attempt.generation, reason: 'fixture user stop' } },
       { path: `/v1/runs/${fixture.context.runId}/status`, method: 'GET', body: null },
-      { path: `/v1/runs/${fixture.context.runId}/result`, method: 'GET', body: null },
     ]);
   });
 
@@ -187,7 +189,7 @@ describe('native cancellation requires actual terminal evidence', () => {
     expect(fixture.adapter.cancel).toHaveBeenCalledWith(fixture.context.runId, { ownerGeneration: fixture.attempt.generation, reason: undefined });
   });
 
-  for (const kind of ['pending', 'rejected', 'failed_cancel', 'unknown_ack', 'unknown', 'exit_unobserved', 'wrong_task', 'wrong_profile', 'wrong_run', 'wrong_generation', 'lost_connection', 'status_mismatch']) {
+  for (const kind of ['pending', 'rejected', 'failed_cancel', 'unknown_ack', 'unknown', 'wrong_task', 'wrong_run', 'wrong_generation', 'lost_connection', 'status_mismatch']) {
     it(`${kind} never confirms task or finishes attempt despite Workflow termination`, async () => {
       const fixture = await setup();
       if (kind === 'pending') fixture.status.state = 'running';
@@ -195,11 +197,9 @@ describe('native cancellation requires actual terminal evidence', () => {
       if (kind === 'failed_cancel') fixture.adapter.cancel = vi.fn(async () => ({ status: 'failed' }));
       if (kind === 'unknown_ack') fixture.adapter.cancel = vi.fn(async () => ({ status: 'unknown' }));
       if (kind === 'unknown') fixture.adapter.status = vi.fn(async () => { throw new Error('offline'); });
-      if (kind === 'exit_unobserved') fixture.result.exitObserved = false;
-      if (kind === 'wrong_task') fixture.result.userTaskId = 'other-task';
-      if (kind === 'wrong_profile') fixture.result.profileId = 'other-profile';
-      if (kind === 'wrong_run') fixture.result.runId = 'other-run';
-      if (kind === 'wrong_generation') fixture.result.ownerGeneration += 1;
+      if (kind === 'wrong_task') fixture.status.userTaskId = 'other-task';
+      if (kind === 'wrong_run') fixture.status.runId = 'other-run';
+      if (kind === 'wrong_generation') fixture.status.ownerGeneration += 1;
       if (kind === 'lost_connection') fixture.status.connectionLost = true;
       if (kind === 'status_mismatch') fixture.status.ownerGeneration += 1;
       const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
@@ -210,6 +210,17 @@ describe('native cancellation requires actual terminal evidence', () => {
       expect((await fixture.store.history(fixture.taskId)).some(event => event.kind === 'task_cancelled' || event.kind === 'run_finished')).toBe(false);
     });
   }
+
+  it('terminal Runner status confirms the process stopped even when result exit-code evidence is unavailable', async () => {
+    const fixture = await setup();
+    fixture.result.exitObserved = false;
+    const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, runnerExternalStopPort(fixture.adapter));
+    const stopped = await port.cancel(fixture.taskId);
+    expect(stopped).toMatchObject({ stopConfirmed: true, nativeStops: [{ state: 'cancelled', exitObserved: false,
+      runnerTerminalStatusObserved: true }] });
+    expect(fixture.adapter.result).not.toHaveBeenCalled();
+    expect((await fixture.store.requireTask(fixture.taskId)).status).toBe('cancelled');
+  });
 
   it('missing external hook cannot falsely confirm an attached Runner', async () => {
     const fixture = await setup();
@@ -244,7 +255,7 @@ describe('native cancellation requires actual terminal evidence', () => {
     const fixture = await setup();
     const hook: ExternalStopPort = { stop: async () => {
       await fixture.store.bumpGeneration(fixture.taskId, { reason: 'offline concurrent recovery' });
-      return { state: 'stopped', result: fixture.result };
+      return { state: 'stopped', runnerStatus: fixture.status };
     } };
     const port = new CfWorkflowPort(fixture.workflow, fixture.store, undefined, hook);
     expect((await port.cancel(fixture.taskId)).stopConfirmed).toBe(false);

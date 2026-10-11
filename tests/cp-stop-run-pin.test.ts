@@ -4,7 +4,7 @@ import { TaskStore } from '../src/taskstore';
 import { CfWorkflowPort, workflowInstanceIdForGeneration } from '../src/workflow-port/workflow-port';
 import { CpStopTargetsService, runnerExternalStopPort } from '../src/workflow-port/external-stop';
 import type { ExternalStopContext, ExternalStopOutcome } from '../src/workflow-port/external-stop';
-import type { RunnerApiAdapter, RunnerResult } from '../src/runner-adapter/runner-api-adapter';
+import type { RunnerApiAdapter, RunnerResult, RunnerStatusView } from '../src/runner-adapter/runner-api-adapter';
 
 let sequence = 0;
 
@@ -45,6 +45,15 @@ function result(context: ExternalStopContext): RunnerResult {
     usage: { status: 'unknown' }, outputRefs: [], persistence: 'not_required', cleanup: 'completed', logPath: '' };
 }
 
+function terminalStop(context: ExternalStopContext, state: RunnerStatusView['state'] = 'cancelled') {
+  const runnerStatus: RunnerStatusView = { requestId: 'fixture', userTaskId: context.taskId,
+    conversationId: 'fixture', runId: context.runId ?? 'run_00000000-0000-0000-0000-000000000099',
+    ownerGeneration: context.ownerGeneration, state, cancelRequested: true,
+    connectionLost: false, observedAt: new Date().toISOString(), sequence: 1, fencing: { rejected: 0 } };
+  return { state: 'stopped' as const, runnerStatus,
+    ...(context.runId === null && context.idempotencyKey ? { idempotencyKey: context.idempotencyKey } : {}) };
+}
+
 describe('serverless Runner run ids', () => {
   it('confirms a Runner cancellation fence against the exact task, attempt key, and generation', async () => {
     const context: ExternalStopContext = { taskId: 'task-before-admission', profileId: 'profile-before-admission',
@@ -62,13 +71,32 @@ describe('serverless Runner run ids', () => {
     expect(adapter.status).not.toHaveBeenCalled();
   });
 
+  it('accepts matching terminal Runner status without waiting for result publication or exit-code capture', async () => {
+    const current = await fixture();
+    current.stop.mockResolvedValue({ state: 'stopped', runnerStatus: {
+      requestId: current.requestId, userTaskId: current.taskId, conversationId: current.conversationId,
+      runId: current.runId, ownerGeneration: 1, state: 'cancelled', cancelRequested: true,
+      connectionLost: false, observedAt: new Date().toISOString(), sequence: 4, fencing: { rejected: 0 },
+    } });
+
+    const stopped = await current.port.cancel(current.taskId, { stopPin: current.pin });
+    expect(stopped).toMatchObject({ stopConfirmed: true, status: 'cancelled' });
+    const attempt = await current.store.requireRun(current.attempt.id);
+    expect(attempt).toMatchObject({ status: 'cancelled', finished_at: expect.any(Number) });
+    const event = (await current.store.history(current.taskId)).find(value => value.event_id
+      === `cp-stop-proof:${current.snapshotId}:${current.attempt.id}`);
+    expect(JSON.parse(event!.payload_json).nativeStops).toEqual([expect.objectContaining({
+      runId: current.runId, state: 'cancelled', exitObserved: false, runnerTerminalStatusObserved: true,
+    })]);
+  });
+
   it('resolves an unreceipted submit to its exact Runner run before terminal reconciliation', async () => {
     const runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
     const context: ExternalStopContext = { taskId: 'task-late-receipt', profileId: 'profile-late-receipt',
       attemptId: 'attempt-late-receipt', runId: null, ownerGeneration: 2, idempotencyKey: 'stable-attempt-2' };
     const resultValue: RunnerResult = { runId, userTaskId: context.taskId, profileId: context.profileId,
-      ownerGeneration: 2, outcome: 'cancelled', exitReason: 'cancelled', exitCode: null, exitSignal: 'SIGTERM',
-      exitObserved: true, startedAt: '', finishedAt: '', usage: { status: 'unknown' }, outputRefs: [],
+      ownerGeneration: 2, outcome: 'failed', exitReason: 'worker_crash', exitCode: null, exitSignal: null,
+      exitObserved: false, startedAt: '', finishedAt: '', usage: { status: 'unknown' }, outputRefs: [],
       persistence: 'not_required', cleanup: 'completed', logPath: '' };
     const adapter = {
       cancel: vi.fn(),
@@ -79,9 +107,11 @@ describe('serverless Runner run ids', () => {
       result: vi.fn(async () => resultValue),
     };
     const port = runnerExternalStopPort(adapter as unknown as Pick<RunnerApiAdapter, 'cancel' | 'status' | 'result' | 'cancelByIdempotencyKey'>);
-    expect(await port.stop(context)).toMatchObject({ state: 'stopped', result: resultValue, idempotencyKey: context.idempotencyKey });
+    expect(await port.stop(context)).toMatchObject({ state: 'stopped', runnerStatus: {
+      runId, userTaskId: context.taskId, ownerGeneration: 2, state: 'cancelled', connectionLost: false,
+    }, idempotencyKey: context.idempotencyKey });
     expect(adapter.status).toHaveBeenCalledWith(runId);
-    expect(adapter.result).toHaveBeenCalledWith(runId);
+    expect(adapter.result).not.toHaveBeenCalled();
   });
 
   it('allows cancellation and confirmation for Durable Object sharded run ids', async () => {
@@ -199,7 +229,7 @@ describe('immutable stop execution pins', () => {
     expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
       .toMatchObject({ stopConfirmed: false, nativeStopState: 'unknown' });
     expect(current.stop).toHaveBeenCalledWith(expect.objectContaining({ attemptId: current.attempt.id, runId: current.runId }));
-    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    current.stop.mockImplementation(async context => terminalStop(context));
     current.status.mockResolvedValue({ status: 'complete' });
     expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
       .toMatchObject({ stopConfirmed: true, status: 'cancelled' });
@@ -249,7 +279,7 @@ describe('immutable stop execution pins', () => {
       payload: { runId: current.runId, idempotencyKey, attempt: 1 } });
 
     expect(await current.store.pinnedRunnerRunId(pinned, pinned.attempts[0]!)).toBe(current.runId);
-    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    current.stop.mockImplementation(async context => terminalStop(context));
     current.status.mockResolvedValue({ status: 'complete' });
     expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
       .toMatchObject({ stopConfirmed: true, status: 'cancelled' });
@@ -259,7 +289,7 @@ describe('immutable stop execution pins', () => {
   it('repins known terminal evidence into the snapshot before final confirmation', async () => {
     const current = await fixture();
     current.status.mockResolvedValue({ status: 'complete' });
-    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    current.stop.mockImplementation(async context => terminalStop(context));
     expect(await current.port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true });
     const proofId = `cp-stop-proof:${current.snapshotId}:${current.attempt.id}`;
     await env.DB.prepare('DELETE FROM task_events WHERE event_id = ?').bind(proofId).run();
@@ -353,7 +383,7 @@ describe('immutable stop execution pins', () => {
   ('rejects %s after per-task stop proof but before the window CAS', async mutation => {
     const current = await fixture();
     current.status.mockResolvedValue({ status: 'complete' });
-    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    current.stop.mockImplementation(async context => terminalStop(context));
     const service = new CpStopTargetsService(current.store, current.port);
     const update = current.store.updateCpStopWindow.bind(current.store);
     vi.spyOn(current.store, 'updateCpStopWindow').mockImplementationOnce(async input => {
@@ -376,7 +406,7 @@ describe('immutable stop execution pins', () => {
       if (mutation === 'proof-profile') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].profileId', 'foreign') WHERE event_id = ?").bind(proofId).run();
       if (mutation === 'proof-run') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].runId', 'foreign') WHERE event_id = ?").bind(proofId).run();
       if (mutation === 'proof-generation') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].ownerGeneration', 99) WHERE event_id = ?").bind(proofId).run();
-      if (mutation === 'proof-exit') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].exitObserved', json('false')) WHERE event_id = ?").bind(proofId).run();
+      if (mutation === 'proof-exit') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.nativeStops[0].runnerTerminalStatusObserved', json('false')) WHERE event_id = ?").bind(proofId).run();
       if (mutation === 'proof-source') await env.DB.prepare("UPDATE task_events SET source = 'executor' WHERE event_id = ?").bind(proofId).run();
       if (mutation === 'proof-kind') await env.DB.prepare("UPDATE task_events SET kind = 'run_started' WHERE event_id = ?").bind(proofId).run();
       if (mutation === 'proof-event') await env.DB.prepare("UPDATE task_events SET payload_json = json_set(payload_json, '$.event', 'unrelated') WHERE event_id = ?").bind(proofId).run();
@@ -455,7 +485,7 @@ describe('immutable stop execution pins', () => {
       const generation = await current.store.bumpGeneration(current.taskId);
       await current.store.startRun(current.taskId, { generation,
         sessionId: 'run_ffffffff-ffff-ffff-ffff-ffffffffffff' });
-      return { state: 'stopped' as const, result: result(context) };
+      return terminalStop(context);
     });
     const port = new CfWorkflowPort({ get: vi.fn() } as unknown as Workflow, current.store, undefined, { stop });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
@@ -471,7 +501,7 @@ describe('immutable stop execution pins', () => {
 
   it('terminates only the exact generation-pinned Workflow after the native exit is proven', async () => {
     const current = await fixture();
-    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
+    const stop = vi.fn(async (context: ExternalStopContext) => terminalStop(context));
     const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: 'cancelled' });
@@ -486,7 +516,7 @@ describe('immutable stop execution pins', () => {
     const originalResult = { original: taskStatus, answer: 'preserve original terminal result' };
     await current.store.finishRun(current.attempt.id, 'failed');
     await current.store.commit(current.taskId, 1, { status: taskStatus, stage: 'finished', result: originalResult });
-    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
+    const stop = vi.fn(async (context: ExternalStopContext) => terminalStop(context));
     const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: taskStatus });
@@ -502,7 +532,7 @@ describe('immutable stop execution pins', () => {
     expect(JSON.parse((await current.store.requireTask(current.taskId)).result_json!)).toEqual(originalResult);
   });
 
-  it('preserves a finished export failure while recording separate successful native exit evidence', async () => {
+  it('preserves a finished export failure while recording separate terminal-status evidence', async () => {
     const current = await fixture();
     const originalResult = { reason: 'export_not_persisted', persistence: 'failed' };
     await current.store.finishRun(current.attempt.id, 'failed', {
@@ -510,8 +540,7 @@ describe('immutable stop execution pins', () => {
     });
     await current.store.commit(current.taskId, 1, { status: 'failed', stage: 'finished', result: originalResult });
     const before = await current.store.requireRun(current.attempt.id);
-    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const,
-      result: { ...result(context), outcome: 'succeeded' as const, exitCode: 0, exitSignal: null } }));
+    const stop = vi.fn(async (context: ExternalStopContext) => terminalStop(context, 'succeeded'));
     const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: 'failed' });
@@ -520,7 +549,7 @@ describe('immutable stop execution pins', () => {
       .filter(payload => payload.event === 'native_stop.confirmed');
     expect(proofs).toHaveLength(1);
     expect(proofs[0].nativeStops).toMatchObject([{ attemptId: current.attempt.id, runId: current.runId,
-      ownerGeneration: 1, state: 'succeeded', exitObserved: true }]);
+      ownerGeneration: 1, state: 'succeeded', exitObserved: false, runnerTerminalStatusObserved: true }]);
     current.status.mockResolvedValueOnce({ status: 'complete' });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: 'failed' });
     expect(await current.store.requireRun(current.attempt.id)).toEqual(before);
@@ -586,7 +615,7 @@ describe('immutable stop execution pins', () => {
       logicalMessageId: `${current.taskId}-delivery`, channel: 'telegram', message: { text: 'pending fixture' } });
     await current.store.claimCpStopTarget(current.target, current.snapshotId);
     await env.DB.prepare("UPDATE durable_tasks SET status = 'cancelled' WHERE id = ?").bind(current.taskId).run();
-    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
+    const stop = vi.fn(async (context: ExternalStopContext) => terminalStop(context));
     const workflow = { get: vi.fn(async () => ({ status: async () => ({ status: 'complete' }) })) } as unknown as Workflow;
     const store = new TaskStore(env.DB);
     const port = new CfWorkflowPort(workflow, store, undefined, { stop });
@@ -608,7 +637,7 @@ describe('immutable stop execution pins', () => {
     const gate = new Promise<void>(resolve => { releaseLate = resolve; });
     const entered = new Promise<void>(resolve => { enterLate = resolve; });
     const stop = vi.fn<(context: ExternalStopContext) => Promise<ExternalStopOutcome>>(
-      async context => ({ state: 'stopped', result: result(context) }))
+      async context => terminalStop(context))
       .mockImplementationOnce(async () => { enterLate(); await gate; return { state: 'pending' }; });
     current.status.mockResolvedValue({ status: 'complete' });
     const workflow = { get: vi.fn(async () => ({ status: current.status })) } as unknown as Workflow;
@@ -639,10 +668,13 @@ describe('immutable stop execution pins', () => {
     expect((await current.store.requireTask(current.taskId)).generation).toBe(1);
   });
 
-  it('rejects false exit provenance and never publishes it into the task result or native proof', async () => {
+  it('rejects mismatched Runner generation and never publishes a false stop proof', async () => {
     const current = await fixture();
-    const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const,
-      result: { ...result(context), ownerGeneration: 99 } }));
+    const stop = vi.fn(async (context: ExternalStopContext) => {
+      const outcome = terminalStop(context);
+      outcome.runnerStatus.ownerGeneration = 99;
+      return outcome;
+    });
     const port = new CfWorkflowPort({ get: vi.fn() } as unknown as Workflow, current.store, undefined, { stop });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
     expect(await current.store.requireTask(current.taskId)).toMatchObject({ result_json: null });

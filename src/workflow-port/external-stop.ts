@@ -1,4 +1,4 @@
-import type { RunnerApiAdapter, RunnerResult } from '../runner-adapter/runner-api-adapter';
+import type { RunnerApiAdapter, RunnerStatusView } from '../runner-adapter/runner-api-adapter';
 import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from '../runner-adapter/errors';
 import type { TaskStore } from '../taskstore';
 import type { CpStopTarget, CpStopWindowRow } from '../taskstore';
@@ -16,7 +16,7 @@ export interface ExternalStopContext {
 }
 
 export type ExternalStopOutcome =
-  | { state: 'stopped'; result: RunnerResult; idempotencyKey?: string }
+  | { state: 'stopped'; runnerStatus: RunnerStatusView; idempotencyKey?: string }
   | { state: 'cancelled_before_admission'; userTaskId: string; ownerGeneration: number; idempotencyKey: string }
   | { state: 'pending' | 'rejected' | 'unknown'; diagnosticCode?: ExternalStopDiagnosticCode };
 
@@ -28,8 +28,6 @@ export type ExternalStopDiagnosticCode =
   | 'status_identity_mismatch'
   | 'status_connection_lost'
   | 'status_nonterminal'
-  | 'result_identity_mismatch'
-  | 'result_outcome_mismatch'
   | 'cancel_runner_unavailable'
   | 'cancel_runner_not_found'
   | 'cancel_stale_generation'
@@ -40,11 +38,6 @@ export type ExternalStopDiagnosticCode =
   | 'status_stale_generation'
   | 'status_runner_conflict'
   | 'status_transport_error'
-  | 'result_runner_unavailable'
-  | 'result_runner_not_found'
-  | 'result_stale_generation'
-  | 'result_runner_conflict'
-  | 'result_transport_error'
   | 'external_stop_unclassified';
 
 export interface ExternalStopPort {
@@ -55,29 +48,19 @@ export function confirmedExternalStop(context: ExternalStopContext, outcome: Ext
   if (outcome.state === 'cancelled_before_admission') return context.runId === null
     && typeof context.idempotencyKey === 'string' && outcome.idempotencyKey === context.idempotencyKey
     && outcome.userTaskId === context.taskId && outcome.ownerGeneration === context.ownerGeneration;
-  // Runner API records a terminal `preflight_refused` result only when the
-  // France worker rejected the launch before issuing an execution receipt.
-  // In that case there is no process exit to observe, but the authenticated
-  // terminal result is definitive proof that nothing remains to stop.
-  const preAdmissionRefusal = outcome.state === 'stopped' && outcome.result.outcome === 'failed'
-    && outcome.result.exitObserved === false && outcome.result.exitReason === 'preflight_refused'
-    && outcome.result.failure?.failureClass === 'preflight' && outcome.result.failure.retryable === false
-    && /^WORKER_[A-Z0-9_]{1,80}$/.test(outcome.result.failure.code);
-  if (outcome.state === 'stopped' && context.runId === null) return typeof context.idempotencyKey === 'string'
-    && outcome.idempotencyKey === context.idempotencyKey && isRunnerRunId(outcome.result.runId)
-    && outcome.result.userTaskId === context.taskId && outcome.result.profileId === context.profileId
-    && outcome.result.ownerGeneration === context.ownerGeneration
-    && (outcome.result.exitObserved === true || preAdmissionRefusal)
-    && ['succeeded', 'failed', 'cancelled'].includes(outcome.result.outcome);
-  return outcome.state === 'stopped' && context.runId !== null
-    && isRunnerRunId(context.runId)
-    && outcome.result.runId === context.runId && outcome.result.userTaskId === context.taskId
-    && outcome.result.profileId === context.profileId && outcome.result.ownerGeneration === context.ownerGeneration
-    && (outcome.result.exitObserved === true || preAdmissionRefusal)
-    && ['succeeded', 'failed', 'cancelled'].includes(outcome.result.outcome);
+  if (outcome.state === 'stopped' && 'runnerStatus' in outcome) {
+    const status = outcome.runnerStatus;
+    return !status.connectionLost && isRunnerRunId(status.runId)
+      && status.userTaskId === context.taskId && status.ownerGeneration === context.ownerGeneration
+      && ['succeeded', 'failed', 'cancelled'].includes(status.state)
+      && (context.runId === null
+        ? typeof context.idempotencyKey === 'string' && outcome.idempotencyKey === context.idempotencyKey
+        : context.runId === status.runId);
+  }
+  return false;
 }
 
-export function runnerExternalStopPort(adapter: Pick<RunnerApiAdapter, 'cancel' | 'status' | 'result'> & Partial<Pick<RunnerApiAdapter, 'cancelByIdempotencyKey'>>): ExternalStopPort {
+export function runnerExternalStopPort(adapter: Pick<RunnerApiAdapter, 'cancel' | 'status'> & Partial<Pick<RunnerApiAdapter, 'cancelByIdempotencyKey'>>): ExternalStopPort {
   return {
     async stop(context) {
       if (context.runId === null) {
@@ -100,17 +83,14 @@ export function runnerExternalStopPort(adapter: Pick<RunnerApiAdapter, 'cancel' 
           }
           if (status.connectionLost) return { state: 'unknown', diagnosticCode: 'status_connection_lost' };
           if (!['succeeded', 'failed', 'cancelled'].includes(status.state)) return { state: 'pending', diagnosticCode: 'status_nonterminal' };
-          const result = await adapter.result(runId);
-          const runContext = { ...context, runId };
-          const outcome: ExternalStopOutcome = { state: 'stopped', result, idempotencyKey: context.idempotencyKey };
-          if (result.runId !== runId || result.userTaskId !== context.taskId || result.profileId !== context.profileId
-            || result.ownerGeneration !== context.ownerGeneration) return { state: 'unknown', diagnosticCode: 'result_identity_mismatch' };
-          return confirmedExternalStop(runContext, outcome) && result.outcome === status.state
-            ? outcome : { state: 'unknown', diagnosticCode: 'result_outcome_mismatch' };
+          const outcome: ExternalStopOutcome = { state: 'stopped', runnerStatus: status,
+            idempotencyKey: context.idempotencyKey };
+          return confirmedExternalStop(context, outcome) ? outcome
+            : { state: 'unknown', diagnosticCode: 'status_identity_mismatch' };
         } catch { return { state: 'unknown', diagnosticCode: 'cancel_transport_error' }; }
       }
       if (!isRunnerRunId(context.runId)) return { state: 'unknown', diagnosticCode: 'run_id_invalid' };
-      let stage: 'cancel' | 'status' | 'result' = 'cancel';
+      let stage: 'cancel' | 'status' = 'cancel';
       try {
         const acknowledgement = await adapter.cancel(context.runId, { ownerGeneration: context.ownerGeneration, reason: context.reason });
         if (['rejected', 'stale_generation', 'not_found'].includes(acknowledgement.status)) {
@@ -125,13 +105,9 @@ export function runnerExternalStopPort(adapter: Pick<RunnerApiAdapter, 'cancel' 
           || status.ownerGeneration !== context.ownerGeneration) return { state: 'unknown', diagnosticCode: 'status_identity_mismatch' };
         if (status.connectionLost) return { state: 'unknown', diagnosticCode: 'status_connection_lost' };
         if (!['succeeded', 'failed', 'cancelled'].includes(status.state)) return { state: 'pending', diagnosticCode: 'status_nonterminal' };
-        stage = 'result';
-        const result = await adapter.result(context.runId);
-        const outcome: ExternalStopOutcome = { state: 'stopped', result };
-        if (result.runId !== context.runId || result.userTaskId !== context.taskId || result.profileId !== context.profileId
-          || result.ownerGeneration !== context.ownerGeneration) return { state: 'unknown', diagnosticCode: 'result_identity_mismatch' };
-        return confirmedExternalStop(context, outcome) && result.outcome === status.state
-          ? outcome : { state: 'unknown', diagnosticCode: 'result_outcome_mismatch' };
+        const outcome: ExternalStopOutcome = { state: 'stopped', runnerStatus: status };
+        return confirmedExternalStop(context, outcome) ? outcome
+          : { state: 'unknown', diagnosticCode: 'status_identity_mismatch' };
       } catch (error) {
         const stagePrefix = stage;
         const suffix = error instanceof RunnerUnavailableError ? 'runner_unavailable'
