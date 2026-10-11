@@ -414,42 +414,11 @@ export class CfWorkflowPort implements WorkflowPortApi {
         ...(verified.nativeStopState ? { nativeStopState: verified.nativeStopState } : {}) };
     }
 
-    let terminated = false;
-    let terminateError: string | null = null;
-    let instance: Awaited<ReturnType<Workflow['get']>> | null = null;
-    try {
-      instance = await this.wf.get(priorWorkflowId);
-      let beforeTerminate: string | null = null;
-      try { beforeTerminate = (await instance.status()).status; } catch { /* older Workflow test doubles expose terminate only */ }
-      if (beforeTerminate && ['terminated', 'complete', 'errored'].includes(beforeTerminate)) terminated = true;
-      else { await instance.terminate(); terminated = true; }
-    } catch (e) {
-      terminateError = String((e as Error)?.message ?? e);
-      try {
-        instance ??= await this.wf.get(priorWorkflowId);
-        const engineStatus = (await instance.status()).status;
-        terminated = ['terminated', 'complete', 'errored'].includes(engineStatus);
-      } catch { /* a failed terminate without terminal workflow evidence stays unresolved */ }
-    }
-
+    const workflowTermination = await this.terminateWorkflow(priorWorkflowId);
     const active = await this.store.activeRun(taskId);
-    let initialRuns = await this.store.listRuns(taskId);
-    for (const attempt of initialRuns) {
-      if (attempt.finished_at !== null) continue;
-      const preflightFailure = await this.store.runnerSubmitKnownPreAdmissionFailure(taskId, attempt.id);
-      if (preflightFailure) {
-        await this.store.logEvent({ taskId, generation: attempt.generation, kind: 'progress',
-          executionId: attempt.id, source: 'executor', payload: { event: 'runner_submit_rejected',
-            attemptId: attempt.id, idempotencyKey: await stableAttemptKey(taskId, attempt.generation), reason: preflightFailure } });
-        await this.store.finishRun(attempt.id, 'failed', { errorClass: 'runner_rejected', errorText: preflightFailure });
-      }
-    }
-    initialRuns = await this.store.listRuns(taskId);
+    let initialRuns = await this.rejectKnownPreAdmissionAttempts(taskId);
     const unsettled = initialRuns.filter(run => run.finished_at === null);
-    const nativeAttempts: RunAttemptRow[] = [];
-    for (const attempt of unsettled) {
-      if (attempt.session_id || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.id)) nativeAttempts.push(attempt);
-    }
+    const nativeAttempts = await this.nativeAttemptsNeedingStop(taskId, unsettled);
     const nativeStops: NativeStopEvidence[] = [];
     let nativeStopState: CancelResult['nativeStopState'];
     if (nativeAttempts.length > 0) {
@@ -516,12 +485,12 @@ export class CfWorkflowPort implements WorkflowPortApi {
           stopConfirmed: false, nativeStops: await this.nativeStopEvidence(taskId), nativeStopState: 'unknown' };
       }
     }
-    if (!terminated) {
+    if (!workflowTermination.terminated) {
       await this.store.logEvent({
         taskId,
         kind: 'error',
         source: 'gateway',
-        payload: { where: 'cancel.terminate', message: terminateError, stopRequested: true },
+        payload: { where: 'cancel.terminate', message: workflowTermination.error, stopRequested: true },
       });
       return { cancelled: false, generation: requested.generation, status: requested.status,
         stopConfirmed: false, nativeStops: await this.nativeStopEvidence(taskId), nativeStopState: nativeStopState ?? 'unknown' };
@@ -545,6 +514,46 @@ export class CfWorkflowPort implements WorkflowPortApi {
       nativeStops: await this.nativeStopEvidence(taskId),
       ...(nativeStopState && !confirmed.cancelled ? { nativeStopState } : {}),
     };
+  }
+
+  private async terminateWorkflow(workflowId: string): Promise<{ terminated: boolean; error: string | null }> {
+    let instance: Awaited<ReturnType<Workflow['get']>> | null = null;
+    try {
+      instance = await this.wf.get(workflowId);
+      let status: string | null = null;
+      try { status = (await instance.status()).status; } catch { /* older Workflow doubles expose terminate only */ }
+      if (status && ['terminated', 'complete', 'errored'].includes(status)) return { terminated: true, error: null };
+      await instance.terminate();
+      return { terminated: true, error: null };
+    } catch (error) {
+      const message = String((error as Error)?.message ?? error);
+      try {
+        instance ??= await this.wf.get(workflowId);
+        const status = (await instance.status()).status;
+        return { terminated: ['terminated', 'complete', 'errored'].includes(status), error: message };
+      } catch { return { terminated: false, error: message }; }
+    }
+  }
+
+  private async rejectKnownPreAdmissionAttempts(taskId: string): Promise<RunAttemptRow[]> {
+    for (const attempt of await this.store.listRuns(taskId)) {
+      if (attempt.finished_at !== null) continue;
+      const failure = await this.store.runnerSubmitKnownPreAdmissionFailure(taskId, attempt.id);
+      if (!failure) continue;
+      await this.store.logEvent({ taskId, generation: attempt.generation, kind: 'progress',
+        executionId: attempt.id, source: 'executor', payload: { event: 'runner_submit_rejected',
+          attemptId: attempt.id, idempotencyKey: await stableAttemptKey(taskId, attempt.generation), reason: failure } });
+      await this.store.finishRun(attempt.id, 'failed', { errorClass: 'runner_rejected', errorText: failure });
+    }
+    return this.store.listRuns(taskId);
+  }
+
+  private async nativeAttemptsNeedingStop(taskId: string, attempts: RunAttemptRow[]): Promise<RunAttemptRow[]> {
+    const nativeAttempts: RunAttemptRow[] = [];
+    for (const attempt of attempts) {
+      if (attempt.session_id || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.id)) nativeAttempts.push(attempt);
+    }
+    return nativeAttempts;
   }
 
   private async cancelPinned(taskId: string, pin: { target: CpStopTarget; snapshotId: string }): Promise<CancelResult & { stopConfirmed: boolean }> {
