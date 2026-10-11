@@ -30,7 +30,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Require clean Telegram UX sandbox buffers before tests
+      - name: Reset previous Telegram UX sandbox test state
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: node tools/telegram-ux-state-cleanup.mjs --apply | tee telegram-ux-state-reset-before.json
+      - name: Require empty Telegram UX sandbox buffers before tests
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
@@ -58,6 +65,14 @@ jobs:
         with:
           name: communication-v1-quick-answer-${{ github.run_id }}
           path: quick-answer-smoke-report.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload pre-test state reset evidence
+        if: always() && hashFiles('telegram-ux-state-reset-before.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-ux-state-reset-before-${{ github.run_id }}
+          path: telegram-ux-state-reset-before.json
           if-no-files-found: error
           retention-days: 30
       - name: Upload state cleanup evidence

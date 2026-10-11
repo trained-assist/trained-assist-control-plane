@@ -24,7 +24,7 @@ function mockFetch({ taskRows = [], onRunnerCall = () => {} } = {}) {
       const counts = { ...zeroInventory, durable_tasks: rows.length };
       return Response.json({ success: true, result: [{ results: [counts], meta: { changed_db: false, changes: 0 } }] });
     }
-    if (sql.startsWith('SELECT id, status')) return Response.json({ success: true, result: [{ results: rows, meta: { changed_db: false, changes: 0 } }] });
+    if (sql.startsWith('SELECT t.id, t.status')) return Response.json({ success: true, result: [{ results: rows, meta: { changed_db: false, changes: 0 } }] });
     if (sql.startsWith('SELECT batch_id')) return Response.json({ success: true, result: [{ results: [], meta: { changed_db: false, changes: 0 } }] });
     const changes = sql.startsWith('DELETE FROM durable_tasks') ? rows.length : 0;
     if (sql.startsWith('DELETE FROM durable_tasks')) rows = [];
@@ -39,19 +39,19 @@ const baseEnv = {
 };
 
 test('check-empty fails closed when any profile buffer has rows', async () => {
-  const { fetchImpl } = mockFetch({ taskRows: [{ id: 'task-a', status: 'done' }] });
+  const { fetchImpl } = mockFetch({ taskRows: [{ id: 'task-a', status: 'done', request_id: 'test', execution_count: 0 }] });
   await assert.rejects(cleanupTelegramUxState({ env: baseEnv, mode: 'check-empty', fetchImpl }), /sandbox_buffers_not_empty/);
 });
 
 test('apply clears Runner state before deleting terminal CP records and verifies empty state', async () => {
-  const { fetchImpl, calls } = mockFetch({ taskRows: [{ id: 'task-a', status: 'done' }] });
+  const { fetchImpl, calls } = mockFetch({ taskRows: [{ id: 'task-a', status: 'done', request_id: 'live-v1-test:health', execution_count: 1 }] });
   const report = await cleanupTelegramUxState({ env: baseEnv, mode: 'apply', fetchImpl });
   const runnerIndex = calls.findIndex(call => call.kind === 'runner');
   const deleteIndex = calls.findIndex(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM'));
   assert.ok(runnerIndex >= 0 && runnerIndex < deleteIndex);
   assert.deepEqual(report, {
     lane: 'telegram-ux-v1', database: 'ta-integration-telegram-ux-v1-taskstore', mode: 'apply', empty: true,
-    terminalTasksFound: 1, runnerTasksCleaned: 1, pendingBatchesFound: 0, cpRowsDeleted: 1, counts: zeroInventory,
+    terminalTasksFound: 1, unstartedIntentProbesCleared: 0, runnerTasksCleaned: 1, pendingBatchesFound: 0, cpRowsDeleted: 1, counts: zeroInventory,
   });
   const cleanup = calls[runnerIndex];
   assert.equal(cleanup.init.headers['x-agent-profile-id'], 'integration-telegram-ux-v1');
@@ -60,7 +60,28 @@ test('apply clears Runner state before deleting terminal CP records and verifies
 });
 
 test('apply refuses nonterminal tasks before touching Runner or D1 state', async () => {
-  const { fetchImpl, calls } = mockFetch({ taskRows: [{ id: 'task-active', status: 'active' }] });
+  const { fetchImpl, calls } = mockFetch({ taskRows: [{ id: 'task-active', status: 'active', request_id: 'user-request', execution_count: 0 }] });
+  await assert.rejects(cleanupTelegramUxState({ env: baseEnv, mode: 'apply', fetchImpl }), /nonterminal_test_tasks_present/);
+  assert.equal(calls.some(call => call.kind === 'runner'), false);
+  assert.equal(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM')), false);
+});
+
+test('apply clears an unstarted synthetic agent-intent probe without requiring Runner credentials', async () => {
+  const task = { id: 'task-probe', status: 'active',
+    request_id: 'live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:agent-intent', execution_count: 0 };
+  const { fetchImpl, calls } = mockFetch({ taskRows: [task] });
+  const report = await cleanupTelegramUxState({ env: { CF_API_TOKEN: 'cf-test-token',
+    CLOUDFLARE_ACCOUNT_ID: 'd740a05e9442c1d0feacae2dfc673e93' }, mode: 'apply', fetchImpl });
+  assert.equal(report.unstartedIntentProbesCleared, 1);
+  assert.equal(report.runnerTasksCleaned, 0);
+  assert.equal(calls.some(call => call.kind === 'runner'), false);
+  assert.ok(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM durable_tasks')));
+});
+
+test('apply refuses synthetic agent-intent probe if an execution exists', async () => {
+  const task = { id: 'task-probe', status: 'active',
+    request_id: 'live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:agent-intent', execution_count: 1 };
+  const { fetchImpl, calls } = mockFetch({ taskRows: [task] });
   await assert.rejects(cleanupTelegramUxState({ env: baseEnv, mode: 'apply', fetchImpl }), /nonterminal_test_tasks_present/);
   assert.equal(calls.some(call => call.kind === 'runner'), false);
   assert.equal(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM')), false);
