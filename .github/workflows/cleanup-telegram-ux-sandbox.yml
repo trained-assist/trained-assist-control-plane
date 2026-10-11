@@ -56,21 +56,24 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
           RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
-        run: node tools/telegram-ux-state-cleanup.mjs --apply | tee telegram-ux-state-cleanup.log
+        run: |
+          node tools/telegram-ux-state-cleanup.mjs --apply | tee telegram-ux-state-cleanup.log
+          cp telegram-ux-state-cleanup-evidence.json telegram-ux-state-cleanup-apply.json
 
       - name: Require empty canonical CP test profile
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
-        run: node tools/telegram-ux-state-cleanup.mjs --check-empty | tee telegram-ux-state-empty.json
+        run: |
+          node tools/telegram-ux-state-cleanup.mjs --check-empty | tee telegram-ux-state-empty.json
 
       - uses: actions/upload-artifact@v4
-        if: always() && hashFiles('telegram-ux-runner-task-cleanup-evidence.json', 'telegram-ux-state-cleanup-evidence.json', 'telegram-ux-state-empty.json') != ''
+        if: always() && hashFiles('telegram-ux-runner-task-cleanup-evidence.json', 'telegram-ux-state-cleanup-apply.json', 'telegram-ux-state-empty.json') != ''
         with:
           name: telegram-ux-sandbox-cleanup-${{ github.run_id }}
           path: |
             telegram-ux-runner-task-cleanup-evidence.json
-            telegram-ux-state-cleanup-evidence.json
+            telegram-ux-state-cleanup-apply.json
             telegram-ux-state-empty.json
           if-no-files-found: ignore
           retention-days: 30
