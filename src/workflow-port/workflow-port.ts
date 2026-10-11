@@ -12,7 +12,7 @@ import type {
   SignalSource,
   TaskStore,
 } from '../taskstore';
-import { AnswerRejectedError, isTerminalStatus } from '../taskstore';
+import { AnswerRejectedError, isTerminalStatus, UnresolvedRunError } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
 import type { ManagedGtdContext } from '../gtd/types';
 import type { PlanParams } from './conversation-plan';
@@ -289,12 +289,13 @@ export class CfWorkflowPort implements WorkflowPortApi {
       const runs = await this.store.listRuns(task.id);
       runId = runs.find((r) => r.status === 'running')?.id ?? null;
       if (!runId) {
-        const stale = runs.find((r) => r.status === 'unknown' || r.status === 'interrupted');
+        const stale = runs.find((r) => (r.status === 'unknown' || r.status === 'interrupted')
+          && r.generation >= task.generation);
         if (stale) {
-          await this.store.bumpGeneration(task.id, {
-            reason: `new attempt after ${stale.status}`,
-            source: 'gateway',
-          });
+          // A duplicate submit is not an explicit restart decision. The old
+          // external process may still be running, so preserve this attempt
+          // and require the caller to reconcile it or explicitly resume.
+          throw new UnresolvedRunError(task.id, stale.status === 'unknown' ? 'unknown' : 'interrupted');
         }
         const run = await this.store.startRun(task.id, {
           generation: (await this.store.requireTask(task.id)).generation,
@@ -556,10 +557,12 @@ export class CfWorkflowPort implements WorkflowPortApi {
       if (!pinnedRunId) {
         const run = await this.store.requireRun(attempt.attemptId);
         const submitStarted = await this.store.runnerSubmitMayHaveStarted(taskId, attempt.attemptId);
-        if (!submitStarted) {
-          if (run.finished_at === null) return unresolved;
+        if (!submitStarted && run.finished_at !== null) {
           continue;
         }
+        // Fence admission even when CP did not persist runner_submit_started.
+        // The event is written immediately before the side effect, but only a
+        // Runner fence closes the cross-service race with a delayed submit.
         if (!this.externalStop) return unresolved;
         const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
           runId: null, ownerGeneration: attempt.ownerGeneration, idempotencyKey: attempt.idempotencyKey,
@@ -616,6 +619,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
     if (!await matches()) return unresolved;
     const quickAnswer = await this.quickAnswerStopEvidence(target, snapshotId, generation);
     if (quickAnswer === 'delivery_pending') return unresolved;
+    const everyAttemptFencedBeforeAdmission = target.attempts.length > 0
+      && target.attempts.every(attempt => nativeStops.some(proof => proof.attemptId === attempt.attemptId
+        && proof.runId === null && proof.ownerGeneration === attempt.ownerGeneration
+        && proof.state === 'cancelled' && proof.exitObserved === false && proof.preAdmissionCancellation === true));
     try {
       // A pinned generation uses its immutable Workflow ID. Legacy tasks may
       // still be inspected through taskId, but that mutable handle is never
@@ -631,7 +638,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
       if (!['terminated', 'complete', 'errored'].includes(workflowStatus)) return unresolved;
       if (target.attempts.length === 0 && !await this.store.recordCpStopNoRunWorkflow(target, snapshotId, generation, workflowStatus)) return unresolved;
     } catch (error) {
-      if (quickAnswer !== 'quiescent' || !(error instanceof Error) || error.message !== 'instance.not_found') return unresolved;
+      if ((quickAnswer !== 'quiescent' && !everyAttemptFencedBeforeAdmission)
+        || !(error instanceof Error) || error.message !== 'instance.not_found') return unresolved;
     }
     if (quickAnswer === 'quiescent' && await this.quickAnswerStopEvidence(target, snapshotId, generation) !== 'quiescent') return unresolved;
     if (!await matches()) return unresolved;

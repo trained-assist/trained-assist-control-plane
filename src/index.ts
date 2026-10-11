@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { FencedError, TaskNotFoundError, TaskStore, TerminalStateError } from './taskstore';
+import { FencedError, TaskNotFoundError, TaskStore, TerminalStateError, UnresolvedRunError } from './taskstore';
 import type { AdmissionScope, AwaitingKind, AwaitingPurpose, TaskRow } from './taskstore';
 import { authorizeIntake, resolvePrincipal, requirePermission } from './intake/authorization';
 import { toC02Event } from './events';
@@ -439,7 +439,7 @@ const errorStatus = (e: unknown): number => {
   if (e instanceof EnvelopeConflictError) return 409;
   if (e instanceof IngressArtifactRejectedError) return 403;
   if (e instanceof IngressArtifactUnavailableError) return 503;
-  if (e instanceof FencedError || e instanceof TerminalStateError) return 409;
+  if (e instanceof FencedError || e instanceof TerminalStateError || e instanceof UnresolvedRunError) return 409;
   if (e instanceof TaskNotFoundError) return 404;
   if (e instanceof AnswerConflictError || e instanceof AnswerRejectedError) return 409;
   // Отказ контроля (P23) — с явным статусом: contract error не превращается в
