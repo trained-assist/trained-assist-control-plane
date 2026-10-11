@@ -19,7 +19,7 @@ const stateIds = bindings => bindings
   .map(item => item.id ?? item.namespace_id)
   .filter(Boolean);
 
-export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindings, counts, principalRows, cpHealth,
+export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBindings, otherGatewayBindings, counts, principalRows, cpHealth,
   expectedCpSha = null }) {
   const otherState = new Set(otherGatewayBindings.flatMap(stateIds));
   const tgState = stateIds(tgBindings);
@@ -30,7 +30,8 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
   const physicalDispatchBindings = cpBindings.filter(item => /(?:^|_)(?:VM_WORKER|EXECUTION_WORKER|GHA_RUNNER|GITHUB_ACTIONS_RUNNER)_(?:URL|TOKEN)$/i.test(item.name));
   const runnerService = binding(cpBindings, 'RUNNER_API_SERVICE');
   const directServiceBindings = cpBindings.filter(item => item.type === 'service'
-    && !(item.name === 'RUNNER_API_SERVICE' && item.service === 'trained-assist-runner-api-sandbox3'));
+    && !(item.name === 'RUNNER_API_SERVICE' && item.service === 'trained-assist-runner-api-sandbox3')
+    && !(item.name === 'COMMUNICATION_SERVICE' && item.service === 'trained-assist-communication-v1-sandbox'));
   const reusable = ['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
     .every(name => Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000)
     && counts.nonterminalTasks <= counts.tasks && counts.foreignProfileTasks <= counts.tasks
@@ -44,6 +45,13 @@ export function evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindi
       && binding(cpBindings, 'DB')?.id === D1_ID ? 'PASS' : 'BLOCKED',
     cpWorkflow: binding(cpBindings, 'TASK_WORKFLOW')?.type === 'workflow'
       && binding(cpBindings, 'TASK_WORKFLOW')?.workflow_name === WORKFLOW ? 'PASS' : 'BLOCKED',
+    communicationV1Routing: binding(cpBindings, 'COMMUNICATION_SERVICE')?.type === 'service'
+      && binding(cpBindings, 'COMMUNICATION_SERVICE')?.service === 'trained-assist-communication-v1-sandbox'
+      && value(cpBindings, 'ROUTER_SELECTOR') === 'communication_v1'
+      && value(cpBindings, 'ROUTER_SELECTOR_NAMES_ONLY') === 'true'
+      && value(cpBindings, 'ROUTER_CONTINUATION_ENABLED') === 'true'
+      && value(cpBindings, 'ROUTER_AGENT_ENGINE') === 'eu-vm-agent-run'
+      && cpSecretNames.includes('COMMUNICATION_TOKEN') ? 'PASS' : 'BLOCKED',
     cpHasNoDirectExecutorBinding: physicalDispatchBindings.length === 0 && directServiceBindings.length === 0 ? 'PASS' : 'BLOCKED',
     cpStateReusable: reusable ? 'PASS' : 'BLOCKED',
     cpPrincipal: intakePrincipals.length === 1
@@ -102,6 +110,7 @@ async function main() {
     return data.result;
   }
   const workerBindings = async name => (await api(`/workers/scripts/${name}/settings`)).bindings ?? [];
+  const workerSecretNames = async name => (await api(`/workers/scripts/${name}/secrets`)).map(item => item.name);
   const queryCounts = async () => {
     const result = await api(`/d1/database/${D1_ID}/query`, {
       method: 'POST', body: JSON.stringify({ sql: `SELECT
@@ -129,8 +138,8 @@ async function main() {
       scopes: (() => { try { return JSON.parse(row.scopes); } catch { return []; } })(),
     }));
   };
-  const [cpBindings, tgBindings, ...otherGatewayBindings] = await Promise.all([
-    workerBindings(CP_WORKER), workerBindings(TG_WORKER), ...OTHER_GATEWAYS.map(workerBindings),
+  const [cpBindings, cpSecretNames, tgBindings, ...otherGatewayBindings] = await Promise.all([
+    workerBindings(CP_WORKER), workerSecretNames(CP_WORKER), workerBindings(TG_WORKER), ...OTHER_GATEWAYS.map(workerBindings),
   ]);
   const [counts, principalRows, healthResponse, runnerApiReady] = await Promise.all([
     queryCounts(), queryPrincipals(),
@@ -138,7 +147,7 @@ async function main() {
     verifyRunnerApiBoundary(),
   ]);
   const cpHealth = healthResponse.ok ? await healthResponse.json().catch(() => ({})) : {};
-  const report = evaluateSandbox3Lane({ cpBindings, tgBindings, otherGatewayBindings,
+  const report = evaluateSandbox3Lane({ cpBindings, cpSecretNames, tgBindings, otherGatewayBindings,
     counts, principalRows, cpHealth,
     expectedCpSha: process.env.EXPECTED_CP_SHA ?? null });
   report.checks.runnerApiBoundary = runnerApiReady ? 'PASS' : 'BLOCKED';

@@ -38,7 +38,10 @@ test('sandbox-3 target uses isolated state and enables only its isolated Telegra
     assert.equal(sandbox3.d1_databases[0].database_id, '1e1b8108-9186-43e2-8e50-436598233165');
     assert.equal(sandbox3.workflows.length, 1);
     assert.equal(sandbox3.workflows[0].name, 'ta-cp-sandbox3-task-workflow');
-    assert.deepEqual(sandbox3.services ?? [], [{ binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-sandbox3' }]);
+    assert.deepEqual(sandbox3.services ?? [], [
+      { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
+      { binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-sandbox3' },
+    ]);
     assert.deepEqual(sandbox3.r2_buckets ?? [], []);
     assert.equal(sandbox3.vars.DEPLOYMENT_ENV, 'sandbox3');
     assert.equal(sandbox3.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
@@ -56,6 +59,10 @@ test('sandbox-3 target uses isolated state and enables only its isolated Telegra
     assert.equal(sandbox3.vars.PILOT_ENABLED, 'true');
     assert.equal(sandbox3.vars.PILOT_ACTIVATED_AT, '2026-10-11T00:00:00Z');
     assert.equal(sandbox3.vars.PILOT_COHORT_PROFILE_IDS, 'integration-sandbox3-v1');
+    assert.equal(sandbox3.vars.ROUTER_SELECTOR, 'communication_v1');
+    assert.equal(sandbox3.vars.ROUTER_SELECTOR_NAMES_ONLY, 'true');
+    assert.equal(sandbox3.vars.ROUTER_CONTINUATION_ENABLED, 'true');
+    assert.equal(sandbox3.vars.ROUTER_AGENT_ENGINE, 'eu-vm-agent-run');
     assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'true');
     assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sharedTelegram.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev');
