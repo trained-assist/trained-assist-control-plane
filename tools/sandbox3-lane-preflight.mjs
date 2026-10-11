@@ -52,7 +52,8 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
       && value(cpBindings, 'ROUTER_SELECTOR') === 'communication_v1'
       && value(cpBindings, 'ROUTER_SELECTOR_NAMES_ONLY') === 'false'
       && value(cpBindings, 'ROUTER_CONTINUATION_ENABLED') === 'true'
-      && value(cpBindings, 'ROUTER_AGENT_ENGINE') === 'eu-vm-agent-run'
+      && value(cpBindings, 'RUNNER_API_ENGINE_SELECTION') === 'agent_api'
+      && value(cpBindings, 'ROUTER_AGENT_ENGINE') === null
       && cpSecretNames.includes('COMMUNICATION_TOKEN') ? 'PASS' : 'BLOCKED',
     cpHasNoDirectExecutorBinding: physicalDispatchBindings.length === 0 && directServiceBindings.length === 0 ? 'PASS' : 'BLOCKED',
     cpStateReusable: reusable ? 'PASS' : 'BLOCKED',
@@ -68,6 +69,7 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
     cpPrincipalSecret: binding(cpBindings, 'PRINCIPAL_SECRET_SANDBOX3')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     tgPrincipalSignature: binding(tgBindings, 'CONTROL_PLANE_PRINCIPAL_SIGNATURE')?.type === 'secret_text' ? 'PASS' : 'BLOCKED',
     agentApiBindings: value(cpBindings, 'RUNNER_API_URL') === SANDBOX3_RUNNER_URL
+      && value(cpBindings, 'RUNNER_API_ENGINE_SELECTION') === 'agent_api'
       && runnerService?.type === 'service' && runnerService.service === 'trained-assist-runner-api-sandbox3'
       && value(cpBindings, 'RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID') === 'sandbox3-agent-api-principal'
       && value(cpBindings, 'RUNNER_PROFILE_DELEGATION_TENANT_ID') === 'sandbox3-acceptance-a-20261008'
