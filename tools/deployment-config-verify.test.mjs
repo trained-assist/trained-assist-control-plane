@@ -46,7 +46,7 @@ test('sandbox-3 target uses isolated state and enables only its isolated Telegra
     assert.equal(sandbox3.vars.DEPLOYMENT_ENV, 'sandbox3');
     assert.equal(sandbox3.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sandbox3.vars.COMMUNICATION_API_URL, 'https://trained-assist-communication-v1-sandbox.skillset-apply.workers.dev');
-    assert.equal(sandbox3.vars.COMMUNICATION_TIMEOUT_MS, '60000');
+    assert.equal(sandbox3.vars.COMMUNICATION_TIMEOUT_MS, '20000');
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'sandbox3-agent-api-principal');
     assert.equal(sandbox3.vars.RUNNER_PROFILE_DELEGATION_TENANT_ID, 'sandbox3-acceptance-a-20261008');
     assert.equal(sandbox3.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev');

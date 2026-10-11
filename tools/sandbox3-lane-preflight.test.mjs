@@ -14,7 +14,7 @@ const ready = () => ({
     { name: 'PRINCIPAL_SECRET_SANDBOX3', type: 'secret_text' },
     plain('RUNNER_API_URL', SANDBOX3_RUNNER_URL),
     plain('COMMUNICATION_API_URL', 'https://trained-assist-communication-v1-sandbox.skillset-apply.workers.dev'),
-    plain('COMMUNICATION_TIMEOUT_MS', '60000'),
+    plain('COMMUNICATION_TIMEOUT_MS', '20000'),
     { name: 'RUNNER_API_KEY_AGENT_API', type: 'secret_text' },
     { name: 'RUNNER_PROFILE_DELEGATION_SECRET', type: 'secret_text' },
     plain('RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID', 'sandbox3-agent-api-principal'),
