@@ -41,9 +41,11 @@ The buffer returns HTTP 200 only after confirming object existence, immutable ve
 {"verified":true,"manifest":{"contractVersion":1,"ref":"opaque-buffer-ref","version":"immutable-object-version","ownerProfileId":"profile-1","mediaType":"audio/ogg","name":"voice.ogg","sizeBytes":12345,"sha256":"<digest>"}}
 ```
 
-The buffer accepts only the shared `INGRESS_BUFFER_TOKEN`, configured as a secret independently on the buffer Worker, CP sandbox, and Telegram sandbox. CP sends this credential over the private service binding for verification and content reads; it is never included in an intake envelope, RunSpec, or logs. Missing binding, missing token, unavailable buffer, missing object, or mismatched metadata prevents task admission; there is no text-only partial fallback. The verifier is an admission check, not the Runner byte transport. Runner materialization remains a separate required integration before media execution can be enabled.
+The buffer accepts the established `INGRESS_BUFFER_TOKEN` and may also accept a separately provisioned `INGRESS_BUFFER_TOKEN_SANDBOX3` credential for the isolated sandbox3 lane. Sandbox3 TG and CP receive the same sandbox3-only value as their `INGRESS_BUFFER_TOKEN` Worker secret; the established shared credential is not rotated. CP sends its credential over the private service binding for verification and content reads; it is never included in an intake envelope, RunSpec, or logs. Missing binding, missing token, unavailable buffer, missing object, or mismatched metadata prevents task admission; there is no text-only partial fallback. The verifier is an admission check, not the Runner byte transport. Runner materialization remains a separate required integration before media execution can be enabled.
 
 For the Telegram integration sandbox, `wrangler.integration-v1.jsonc` binds `INGRESS_BUFFER` to `trained-assist-ingress-buffer-sandbox`. Provision the same secret on that deployed Worker with `wrangler secret put INGRESS_BUFFER_TOKEN --config wrangler.integration-v1.jsonc`; do not use the production/default config as a substitute for the integration target.
+
+The isolated sandbox3 CP config also binds `INGRESS_BUFFER` to the passive buffer. Its `INGRESS_BUFFER_TOKEN` is installed by the protected sandbox3 deploy workflow from the sandbox3-only secret. The production and general staging configs keep media intake disabled and have no ingress-buffer binding.
 
 ## Runner read API
 

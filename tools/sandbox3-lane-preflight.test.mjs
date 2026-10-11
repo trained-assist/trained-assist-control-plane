@@ -45,8 +45,24 @@ const ready = () => ({
 test('configured resources still report that Runner journal and real E2E are unverified', () => {
   const report = evaluateSandbox3Lane(ready());
   assert.equal(report.outcome, 'CONFIGURED');
+  assert.equal(report.capabilities.mediaIntake, 'NOT_CONFIGURED');
   assert.equal(report.runnerAdmissionJournal, 'NOT_VERIFIED');
   assert.equal(report.realTelegramE2E, 'NOT_RUN');
+});
+
+test('passive ingress buffer is an allowed CP capability and reports media readiness separately', () => {
+  const input = ready();
+  input.cpBindings.push({ name: 'INGRESS_BUFFER', type: 'service', service: 'trained-assist-ingress-buffer-sandbox' });
+  input.cpSecretNames.push('INGRESS_BUFFER_TOKEN');
+  input.tgBindings.push({ name: 'INGRESS_BUFFER', type: 'service', service: 'trained-assist-ingress-buffer-sandbox' });
+  input.tgSecretNames = ['INGRESS_BUFFER_TOKEN'];
+  input.bufferBindings = [{ name: 'INGRESS_MEDIA_BUCKET', type: 'r2_bucket' }];
+  input.bufferSecretNames = ['INGRESS_BUFFER_TOKEN_SANDBOX3'];
+  input.tgHealth = { capabilities: { mediaIntake: 'configured' } };
+  const report = evaluateSandbox3Lane(input);
+  assert.equal(report.outcome, 'CONFIGURED');
+  assert.equal(report.checks.cpHasNoDirectExecutorBinding, 'PASS');
+  assert.equal(report.capabilities.mediaIntake, 'CONFIGURED');
 });
 
 test('shared Telegram route, reused state and disabled execution block the lane', () => {

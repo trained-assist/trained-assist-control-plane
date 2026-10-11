@@ -41,6 +41,7 @@ test('sandbox-3 target uses isolated state and enables only its isolated Telegra
     assert.deepEqual(sandbox3.services ?? [], [
       { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
       { binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-sandbox3' },
+      { binding: 'INGRESS_BUFFER', service: 'trained-assist-ingress-buffer-sandbox' },
     ]);
     assert.deepEqual(sandbox3.r2_buckets ?? [], []);
     assert.equal(sandbox3.vars.DEPLOYMENT_ENV, 'sandbox3');

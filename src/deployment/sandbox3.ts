@@ -4,6 +4,7 @@ export const SANDBOX3 = {
   diagnosticPrincipalId: 'sandbox3-ops-read-v1',
   runnerWorkerName: 'trained-assist-runner-api-sandbox3',
   runnerUrl: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev',
+  ingressBufferWorkerName: 'trained-assist-ingress-buffer-sandbox',
   mockRunnerWorkerName: 'trained-assist-runner-api-cp-sandbox3',
   mockRunnerUrl: 'https://trained-assist-runner-api-cp-sandbox3.skillset-apply.workers.dev',
   mockTaskId: 'sandbox3-cp-api-contract-probe-v1',
