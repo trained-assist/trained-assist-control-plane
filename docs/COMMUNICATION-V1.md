@@ -31,7 +31,7 @@ The shared writer receives prepared verified text, evidence references and a fix
 
 Context contains all preceding task inputs and results for the same conversation and profile. No turn/character truncation is performed. Oversized input, no matching option, unknown ID, malformed response and network/timeout failures select agent; the original durable input and full context remain in agent instructions. Only error codes are retained, not provider response bodies or credentials.
 
-The selected result is persisted in the existing task journal with a unique event ID per task/generation. Concurrent selections use the same durable winner. Quick-answer commits use existing terminal/generation guards. Agent first-run identity and `run_started` are idempotent in Task Store; Workflow identity remains the accepted task ID. Workflow creation can be retried after a crash between journal/start and engine creation without selecting a new task or run.
+The selected result is persisted in the existing task journal with a unique event ID per task/generation. Concurrent selections use the same durable winner. Quick-answer commits use existing terminal/generation guards. Agent first-run identity and `run_started` are idempotent in Task Store; each Workflow generation has a deterministic immutable instance ID recorded before create. Workflow creation can be retried after a crash between journal/start and engine creation without selecting a new task or run.
 
 ## Validation
 
