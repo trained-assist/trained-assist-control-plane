@@ -47,6 +47,7 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
       && binding(cpBindings, 'TASK_WORKFLOW')?.workflow_name === WORKFLOW ? 'PASS' : 'BLOCKED',
     communicationV1Routing: binding(cpBindings, 'COMMUNICATION_SERVICE')?.type === 'service'
       && binding(cpBindings, 'COMMUNICATION_SERVICE')?.service === 'trained-assist-communication-v1-sandbox'
+      && value(cpBindings, 'COMMUNICATION_API_URL') === 'https://trained-assist-communication-v1-sandbox.skillset-apply.workers.dev'
       && value(cpBindings, 'ROUTER_SELECTOR') === 'communication_v1'
       && value(cpBindings, 'ROUTER_SELECTOR_NAMES_ONLY') === 'true'
       && value(cpBindings, 'ROUTER_CONTINUATION_ENABLED') === 'true'
