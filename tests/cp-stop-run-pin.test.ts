@@ -4,7 +4,7 @@ import { TaskStore } from '../src/taskstore';
 import { CfWorkflowPort, workflowInstanceIdForGeneration } from '../src/workflow-port/workflow-port';
 import { CpStopTargetsService, runnerExternalStopPort } from '../src/workflow-port/external-stop';
 import type { ExternalStopContext, ExternalStopOutcome } from '../src/workflow-port/external-stop';
-import type { RunnerResult } from '../src/runner-adapter/runner-api-adapter';
+import type { RunnerApiAdapter, RunnerResult } from '../src/runner-adapter/runner-api-adapter';
 
 let sequence = 0;
 
@@ -46,6 +46,44 @@ function result(context: ExternalStopContext): RunnerResult {
 }
 
 describe('serverless Runner run ids', () => {
+  it('confirms a Runner cancellation fence against the exact task, attempt key, and generation', async () => {
+    const context: ExternalStopContext = { taskId: 'task-before-admission', profileId: 'profile-before-admission',
+      attemptId: 'attempt-before-admission', runId: null, ownerGeneration: 4, idempotencyKey: 'stable-attempt-4' };
+    const adapter = {
+      cancel: vi.fn(), status: vi.fn(), result: vi.fn(),
+      cancelByIdempotencyKey: vi.fn(async input => ({ status: 'cancelled_before_admission' as const,
+        userTaskId: input.userTaskId, ownerGeneration: input.ownerGeneration, runId: null })),
+    };
+    const port = runnerExternalStopPort(adapter as unknown as Pick<RunnerApiAdapter, 'cancel' | 'status' | 'result' | 'cancelByIdempotencyKey'>);
+    expect(await port.stop(context)).toEqual({ state: 'cancelled_before_admission', userTaskId: context.taskId,
+      ownerGeneration: 4, idempotencyKey: context.idempotencyKey });
+    expect(adapter.cancelByIdempotencyKey).toHaveBeenCalledWith({ userTaskId: context.taskId,
+      idempotencyKey: context.idempotencyKey, ownerGeneration: 4 });
+    expect(adapter.status).not.toHaveBeenCalled();
+  });
+
+  it('resolves an unreceipted submit to its exact Runner run before terminal reconciliation', async () => {
+    const runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
+    const context: ExternalStopContext = { taskId: 'task-late-receipt', profileId: 'profile-late-receipt',
+      attemptId: 'attempt-late-receipt', runId: null, ownerGeneration: 2, idempotencyKey: 'stable-attempt-2' };
+    const resultValue: RunnerResult = { runId, userTaskId: context.taskId, profileId: context.profileId,
+      ownerGeneration: 2, outcome: 'cancelled', exitReason: 'cancelled', exitCode: null, exitSignal: 'SIGTERM',
+      exitObserved: true, startedAt: '', finishedAt: '', usage: { status: 'unknown' }, outputRefs: [],
+      persistence: 'not_required', cleanup: 'completed', logPath: '' };
+    const adapter = {
+      cancel: vi.fn(),
+      cancelByIdempotencyKey: vi.fn(async () => ({ status: 'stop_pending' as const,
+        userTaskId: context.taskId, ownerGeneration: 2, runId })),
+      status: vi.fn(async () => ({ runId, userTaskId: context.taskId, ownerGeneration: 2,
+        connectionLost: false, state: 'cancelled' })),
+      result: vi.fn(async () => resultValue),
+    };
+    const port = runnerExternalStopPort(adapter as unknown as Pick<RunnerApiAdapter, 'cancel' | 'status' | 'result' | 'cancelByIdempotencyKey'>);
+    expect(await port.stop(context)).toMatchObject({ state: 'stopped', result: resultValue, idempotencyKey: context.idempotencyKey });
+    expect(adapter.status).toHaveBeenCalledWith(runId);
+    expect(adapter.result).toHaveBeenCalledWith(runId);
+  });
+
   it('allows cancellation and confirmation for Durable Object sharded run ids', async () => {
     const runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
     const context: ExternalStopContext = { taskId: 'task-serverless-run', profileId: 'profile-serverless-run',
@@ -88,6 +126,31 @@ describe('serverless Runner run ids', () => {
 });
 
 describe('immutable stop execution pins', () => {
+  it('persists a generation-scoped native proof when stop fences an unreceipted submit', async () => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('unreceipted target resolution failed');
+    const pinned = resolved.targets[0]!;
+    current.target.attempts = pinned.attempts;
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+    const idempotencyKey = pinned.attempts[0]!.idempotencyKey;
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey } });
+    current.stop.mockResolvedValue({ state: 'cancelled_before_admission', userTaskId: current.taskId,
+      ownerGeneration: 1, idempotencyKey });
+
+    expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
+      .toMatchObject({ stopConfirmed: true, status: 'cancelled' });
+    expect(current.stop).toHaveBeenCalledWith(expect.objectContaining({ runId: null, idempotencyKey }));
+    expect(await current.store.requireRun(current.attempt.id)).toMatchObject({ status: 'cancelled', finished_at: expect.any(Number) });
+    const proof = (await current.store.history(current.taskId)).find(event => event.event_id === `cp-stop-proof:${current.snapshotId}:${current.attempt.id}`);
+    expect(JSON.parse(proof!.payload_json).nativeStops).toEqual([expect.objectContaining({ runId: null,
+      state: 'cancelled', exitObserved: false, preAdmissionCancellation: true })]);
+  });
+
   it('binds a receipt arriving after the stop snapshot only to its original attempt and idempotency key', async () => {
     const current = await fixture();
     await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
@@ -206,7 +269,7 @@ describe('immutable stop execution pins', () => {
     current.status.mockResolvedValue({ status: 'complete' });
     const service = new CpStopTargetsService(current.store, current.port);
     expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: state === 'finished' });
-    expect(current.stop).not.toHaveBeenCalled();
+    expect(current.stop).toHaveBeenCalledTimes(state === 'submitted' ? 1 : 0);
   });
 
   it('accepts an exact durable pre-admission rejection as no native run during stop reconciliation', async () => {

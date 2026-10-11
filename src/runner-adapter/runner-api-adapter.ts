@@ -294,6 +294,13 @@ export class RunnerApiAdapter {
   async cancel(runId: string, opts: { ownerGeneration?: number; reason?: string } = {}): Promise<{ status: string; reason?: string; state?: string }> {
     return this.request('POST', `/v1/runs/${runId}/cancel`, { body: { ownerGeneration: opts.ownerGeneration, reason: opts.reason } });
   }
+
+  async cancelByIdempotencyKey(input: { userTaskId: string; idempotencyKey: string; ownerGeneration: number }): Promise<{
+    status: 'cancelled_before_admission' | 'stop_pending' | 'already_terminal';
+    userTaskId: string; ownerGeneration: number; runId: string | null; state?: string;
+  }> {
+    return this.request('POST', '/v1/runs/cancel-by-idempotency-key', { body: input });
+  }
 }
 
 /**

@@ -450,13 +450,34 @@ export class CfWorkflowPort implements WorkflowPortApi {
       try {
         for (const attempt of nativeAttempts) {
           const context = { taskId, profileId: task.profile_id, attemptId: attempt.id,
-            runId: attempt.session_id, ownerGeneration: attempt.generation, reason: opts.reason };
+            runId: attempt.session_id, ownerGeneration: attempt.generation,
+            idempotencyKey: await stableAttemptKey(taskId, attempt.generation), reason: opts.reason };
           const outcome = this.externalStop ? await this.externalStop.stop(context) : null;
           if (!outcome || !confirmedExternalStop(context, outcome)) stopped = false;
           if (!outcome || outcome.state === 'unknown' || outcome.state === 'rejected') nativeStopState = outcome?.state ?? 'unknown';
           else if (outcome.state === 'pending') nativeStopState = 'pending';
+          else if (outcome.state === 'cancelled_before_admission' && context.runId === null) {
+            const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: attempt.id, runId: null,
+              ownerGeneration: attempt.generation, state: 'cancelled', exitObserved: false, preAdmissionCancellation: true };
+            if (attempt.finished_at === null) await this.store.finishRun(attempt.id, 'cancelled', { errorText: opts.reason ?? 'cancelled_before_runner_admission' });
+            await this.store.recordNativeStopEvidence(taskId, [proof]);
+            nativeStops.push(proof);
+          }
           else if (outcome.state === 'stopped' && context.runId !== null) {
             const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: attempt.id, runId: context.runId,
+              ownerGeneration: attempt.generation, state: outcome.result.outcome, exitObserved: outcome.result.exitObserved,
+              ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
+            if (attempt.finished_at === null) {
+              const runOutcome = outcome.result.outcome === 'succeeded' ? 'success' : outcome.result.outcome;
+              await this.store.finishRun(attempt.id, runOutcome, { errorText: opts.reason ?? 'native_stop_confirmed' });
+            }
+            await this.store.recordNativeStopEvidence(taskId, [proof]);
+            nativeStops.push(proof);
+          }
+          else if (outcome.state === 'stopped' && context.runId === null && outcome.idempotencyKey === context.idempotencyKey) {
+            await this.store.attachRunnerRun(attempt.id, outcome.result.runId,
+              { ownerGeneration: attempt.generation, idempotencyKey: context.idempotencyKey! });
+            const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: attempt.id, runId: outcome.result.runId,
               ownerGeneration: attempt.generation, state: outcome.result.outcome, exitObserved: outcome.result.exitObserved,
               ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
             if (attempt.finished_at === null) {
@@ -476,8 +497,13 @@ export class CfWorkflowPort implements WorkflowPortApi {
       }
       const current = await this.store.requireTask(taskId);
       const currentRuns = await this.store.listRuns(taskId);
-      if (current.generation !== requested.generation || JSON.stringify(currentRuns.map(run => [run.id, run.session_id, run.generation]))
-        !== JSON.stringify(initialRuns.map(run => [run.id, run.session_id, run.generation]))) {
+      const sameRunIdentities = currentRuns.length === initialRuns.length && initialRuns.every((initial) => {
+        const currentRun = currentRuns.find((candidate) => candidate.id === initial.id);
+        if (!currentRun || currentRun.generation !== initial.generation) return false;
+        return currentRun.session_id === initial.session_id || initial.session_id === null
+          && nativeStops.some((proof) => proof.attemptId === initial.id && proof.runId === currentRun.session_id);
+      });
+      if (current.generation !== requested.generation || !sameRunIdentities) {
         return { cancelled: false, generation: current.generation, status: current.status,
           stopConfirmed: false, nativeStops: await this.nativeStopEvidence(taskId), nativeStopState: 'unknown' };
       }
@@ -529,10 +555,34 @@ export class CfWorkflowPort implements WorkflowPortApi {
       const pinnedRunId = await this.store.pinnedRunnerRunId(target, attempt);
       if (!pinnedRunId) {
         const run = await this.store.requireRun(attempt.attemptId);
-        if (run.finished_at === null || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.attemptId)) return unresolved;
-        continue;
+        const submitStarted = await this.store.runnerSubmitMayHaveStarted(taskId, attempt.attemptId);
+        if (!submitStarted) {
+          if (run.finished_at === null) return unresolved;
+          continue;
+        }
+        if (!this.externalStop) return unresolved;
+        const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
+          runId: null, ownerGeneration: attempt.ownerGeneration, idempotencyKey: attempt.idempotencyKey,
+          reason: `cp_stop_window:${snapshotId}` };
+        const outcome = await this.externalStop.stop(context);
+        if (outcome.state === 'cancelled_before_admission' && confirmedExternalStop(context, outcome)) {
+          if (!await this.store.finishCpStopAttempt(target, snapshotId, generation, attempt.attemptId, 'cancelled')) return unresolved;
+          const observed: NativeStopEvidence = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
+            runId: null, ownerGeneration: attempt.ownerGeneration, state: 'cancelled', exitObserved: false,
+            preAdmissionCancellation: true };
+          if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, observed)) return unresolved;
+          nativeStops.push(observed);
+          continue;
+        }
+        if (outcome.state !== 'stopped' || !confirmedExternalStop(context, outcome)) {
+          return { ...unresolved, nativeStopState: outcome.state === 'pending' ? 'pending' : 'unknown' };
+        }
+        if (!await this.store.attachRunnerRun(attempt.attemptId, outcome.result.runId,
+          { ownerGeneration: attempt.ownerGeneration, idempotencyKey: attempt.idempotencyKey }).then(() => true).catch(() => false)) return unresolved;
       }
-      const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === pinnedRunId
+      const resolvedRunId = pinnedRunId ?? (await this.store.pinnedRunnerRunId(target, attempt));
+      if (!resolvedRunId) return unresolved;
+      const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === resolvedRunId
         && value.ownerGeneration === attempt.ownerGeneration && value.profileId === target.profileId);
       if (proof) {
         if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, proof)) return unresolved;
@@ -541,22 +591,23 @@ export class CfWorkflowPort implements WorkflowPortApi {
       }
       if (!this.externalStop || !await matches()) return unresolved;
       const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
-        runId: pinnedRunId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
+        runId: resolvedRunId, ownerGeneration: attempt.ownerGeneration, idempotencyKey: attempt.idempotencyKey,
+        reason: `cp_stop_window:${snapshotId}` };
       const outcome = await this.externalStop.stop(context);
       if (!confirmedExternalStop(context, outcome) || outcome.state !== 'stopped') {
         await this.store.logEvent({ taskId, kind: 'error', source: 'gateway', generation: target.taskGeneration,
           executionId: attempt.attemptId, payload: { where: 'cancel.pinned_external_stop',
             reasonCode: outcome.state === 'stopped' ? 'stop_result_unconfirmed'
-              : outcome.diagnosticCode ?? 'external_stop_unclassified' } });
+              : ('diagnosticCode' in outcome ? outcome.diagnosticCode : undefined) ?? 'external_stop_unclassified' } });
         return { ...unresolved, nativeStopState: outcome.state === 'pending' ? 'pending' : 'unknown' };
       }
       if (!await matches()) return unresolved;
       const state = outcome.result.outcome;
       if (!await this.store.finishCpStopAttempt(target, snapshotId, generation, attempt.attemptId,
-        state === 'succeeded' ? 'success' : state)) return unresolved;
+        state === 'succeeded' ? 'success' : state, resolvedRunId)) return unresolved;
       if (!await matches()) return unresolved;
       const observed: NativeStopEvidence = { taskId, profileId: target.profileId,
-        attemptId: attempt.attemptId, runId: pinnedRunId, ownerGeneration: attempt.ownerGeneration,
+        attemptId: attempt.attemptId, runId: resolvedRunId, ownerGeneration: attempt.ownerGeneration,
         state, exitObserved: outcome.result.exitObserved,
         ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
       if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, observed)) return unresolved;
@@ -667,16 +718,19 @@ export class CfWorkflowPort implements WorkflowPortApi {
       if (!Array.isArray(payload?.nativeStops)) continue;
       for (const value of payload.nativeStops) {
         const proof = value as NativeStopEvidence | null;
+        const preAdmissionCancellation = proof?.runId === null && proof.preAdmissionCancellation === true
+          && proof.state === 'cancelled' && proof.exitObserved === false;
         if (!proof || proof.taskId !== taskId || proof.profileId !== task.profile_id
-          || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed'))
+          || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation)
           || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
-          || !isRunnerRunId(proof.runId)
+          || (proof.runId !== null && !isRunnerRunId(proof.runId))
           || !runs.some(run => run.id === proof.attemptId && run.task_id === taskId && run.session_id === proof.runId
             && run.generation === proof.ownerGeneration && run.finished_at !== null
             && ['success', 'failed', 'cancelled'].includes(run.status))) continue;
         proofs.set(proof.attemptId, { taskId, profileId: task.profile_id, attemptId: proof.attemptId,
           runId: proof.runId, ownerGeneration: proof.ownerGeneration, state: proof.state, exitObserved: proof.exitObserved,
-          ...(proof.preAdmissionRefusal === true ? { preAdmissionRefusal: true } : {}) });
+          ...(proof.preAdmissionRefusal === true ? { preAdmissionRefusal: true } : {}),
+          ...(preAdmissionCancellation ? { preAdmissionCancellation: true } : {}) });
       }
     }
     return [...proofs.values()];
@@ -693,26 +747,40 @@ export class CfWorkflowPort implements WorkflowPortApi {
 
     const proofs = new Map((await this.nativeStopEvidence(taskId)).map(proof => [proof.attemptId, proof]));
     for (const run of runs) {
+      let runnerRunId = run.session_id;
       if (!run.session_id) {
-        if (await this.store.runnerSubmitMayHaveStarted(taskId, run.id) || run.finished_at === null) {
-          return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
+        if (!await this.store.runnerSubmitMayHaveStarted(taskId, run.id)) {
+          if (run.finished_at === null) return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
+          continue;
         }
-        continue;
       }
       if (proofs.has(run.id)) continue;
       if (!this.externalStop) return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
-      const context = { taskId, profileId: task.profile_id, attemptId: run.id, runId: run.session_id,
-        ownerGeneration: run.generation, reason };
+      const context = { taskId, profileId: task.profile_id, attemptId: run.id, runId: runnerRunId,
+        ownerGeneration: run.generation, ...(!runnerRunId ? { idempotencyKey: await stableAttemptKey(taskId, run.generation) } : {}), reason };
       let outcome: ExternalStopOutcome;
       try { outcome = await this.externalStop.stop(context); }
       catch { return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' }; }
       if (outcome.state === 'pending') return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'pending' };
+      if (outcome.state === 'cancelled_before_admission' && confirmedExternalStop(context, outcome)) {
+        const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: run.id,
+          runId: null, ownerGeneration: run.generation, state: 'cancelled', exitObserved: false, preAdmissionCancellation: true };
+        if (run.finished_at === null) await this.store.finishRun(run.id, 'cancelled', { errorText: reason ?? 'cancelled_before_runner_admission' });
+        await this.store.recordNativeStopEvidence(taskId, [proof]);
+        proofs.set(run.id, proof);
+        continue;
+      }
       if (outcome.state !== 'stopped' || !confirmedExternalStop(context, outcome)) {
         return { stopConfirmed: false, nativeStops: [...proofs.values()],
           nativeStopState: outcome.state === 'rejected' ? 'rejected' : 'unknown' };
       }
+      if (!runnerRunId) {
+        await this.store.attachRunnerRun(run.id, outcome.result.runId,
+          { ownerGeneration: run.generation, idempotencyKey: context.idempotencyKey! });
+        runnerRunId = outcome.result.runId;
+      }
       const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: run.id,
-        runId: run.session_id, ownerGeneration: run.generation, state: outcome.result.outcome,
+        runId: runnerRunId, ownerGeneration: run.generation, state: outcome.result.outcome,
         exitObserved: outcome.result.exitObserved,
         ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
       if (run.finished_at === null) {
