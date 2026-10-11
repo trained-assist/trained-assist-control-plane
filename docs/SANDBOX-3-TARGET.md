@@ -53,6 +53,16 @@ disabled. Neither pairing step starts a task or calls the France worker/model.
 
 ## Deployment and preflight
 
+The sandbox3 Telegram E2E uses the same `communication_v1` route as the
+canonical Telegram UX sandbox. CP binds
+`trained-assist-communication-v1-sandbox`, stores its scoped bearer as the
+`COMMUNICATION_TOKEN` Worker secret, and enables `ROUTER_CONTINUATION_ENABLED`
+for agent selections and classifier-failure fallback. The deploy workflow
+syncs that secret from the protected `staging` environment. Preflight blocks
+the lane if the selector, service binding, continuation policy, or secret is
+missing; this prevents a legacy fixture route from accepting input without
+starting an execution or committing a terminal reply.
+
 Use **Deploy isolated CP sandbox-3** from protected `main` with its confirmation
 input enabled. The workflow uses the protected `staging` GitHub environment,
 checks the expected Cloudflare account, pins `BUILD_SHA`, and performs read-only

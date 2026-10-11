@@ -10,6 +10,7 @@ const ready = () => ({
     { name: 'DB', type: 'd1', id: '1e1b8108-9186-43e2-8e50-436598233165' },
     { name: 'TASK_WORKFLOW', type: 'workflow', workflow_name: 'ta-cp-sandbox3-task-workflow' },
     { name: 'RUNNER_API_SERVICE', type: 'service', service: 'trained-assist-runner-api-sandbox3' },
+    { name: 'COMMUNICATION_SERVICE', type: 'service', service: 'trained-assist-communication-v1-sandbox' },
     { name: 'PRINCIPAL_SECRET_SANDBOX3', type: 'secret_text' },
     plain('RUNNER_API_URL', SANDBOX3_RUNNER_URL),
     { name: 'RUNNER_API_KEY_AGENT_API', type: 'secret_text' },
@@ -21,7 +22,10 @@ const ready = () => ({
     plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'),
     plain('PILOT_ACTIVATED_AT', '2026-10-11T00:00:00Z'), plain('PILOT_COHORT_PROFILE_IDS', 'integration-sandbox3-v1'),
     plain('ROUTER_AGENT_ALLOWED', 'true'),
+    plain('ROUTER_SELECTOR', 'communication_v1'), plain('ROUTER_SELECTOR_NAMES_ONLY', 'true'),
+    plain('ROUTER_CONTINUATION_ENABLED', 'true'), plain('ROUTER_AGENT_ENGINE', 'eu-vm-agent-run'),
   ],
+  cpSecretNames: ['COMMUNICATION_TOKEN'],
   tgBindings: [
     state('INTAKE', 'sandbox3-do', 'durable_object_namespace'), state('SESSIONS', 'sandbox3-kv'),
     state('TG_SLICE', 'sandbox3-slice'),
@@ -68,6 +72,16 @@ test('execution readiness is restricted to one sandbox3 profile and requires act
     assert.equal(report.checks.executionEnabled, 'BLOCKED');
     assert.equal(report.outcome, 'BLOCKED');
   }
+});
+
+test('sandbox3 blocks the legacy router and missing communication credentials', () => {
+  const input = ready();
+  input.cpBindings.find(item => item.name === 'ROUTER_SELECTOR').text = 'legacy';
+  input.cpBindings = input.cpBindings.filter(item => item.name !== 'COMMUNICATION_SERVICE');
+  input.cpSecretNames = [];
+  const report = evaluateSandbox3Lane(input);
+  assert.equal(report.checks.communicationV1Routing, 'BLOCKED');
+  assert.equal(report.outcome, 'BLOCKED');
 });
 
 test('live Runner bindings reject a mismatched delegated principal or tenant', () => {

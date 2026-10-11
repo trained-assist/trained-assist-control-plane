@@ -44,7 +44,15 @@ jobs:
           npx wrangler whoami 2>&1 | tee /tmp/whoami.txt
           grep -F "d740a05e9442c1d0feacae2dfc673e93" /tmp/whoami.txt
           grep -F "Typeformowner@gmail.com's Account" /tmp/whoami.txt
-      - name: Deploy disabled sandbox-3 Worker
+      - name: Install scoped Communication Worker credential
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          COMMUNICATION_TOKEN: ${{ secrets.COMMUNICATION_TOKEN }}
+        run: |
+          test -n "$COMMUNICATION_TOKEN"
+          printf '%s' "$COMMUNICATION_TOKEN" | npx wrangler secret put COMMUNICATION_TOKEN --config wrangler.sandbox3.jsonc
+      - name: Deploy isolated sandbox-3 Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
