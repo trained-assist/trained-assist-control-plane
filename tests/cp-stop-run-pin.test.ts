@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
-import { CfWorkflowPort } from '../src/workflow-port/workflow-port';
+import { CfWorkflowPort, workflowInstanceIdForGeneration } from '../src/workflow-port/workflow-port';
 import { CpStopTargetsService, runnerExternalStopPort } from '../src/workflow-port/external-stop';
 import type { ExternalStopContext, ExternalStopOutcome } from '../src/workflow-port/external-stop';
 import type { RunnerResult } from '../src/runner-adapter/runner-api-adapter';
@@ -27,12 +27,13 @@ async function fixture() {
   const opened = await store.openCpStopWindow({ ...input, targets: [target] });
   if (!opened.ok) throw new Error('fixture window failed');
   const snapshotId = opened.window.snapshot_id;
-  const terminate = vi.fn(async () => {});
   const status = vi.fn(async () => ({ status: 'running' }));
+  const terminate = vi.fn(async () => { status.mockResolvedValue({ status: 'terminated' }); });
   const workflow = { get: vi.fn(async () => ({ status, terminate })) } as unknown as Workflow;
   const stop = vi.fn<(context: ExternalStopContext) => Promise<ExternalStopOutcome>>(async () => ({ state: 'pending' }));
   const port = new CfWorkflowPort(workflow, store, undefined, { stop });
   const pin = { target, snapshotId };
+  await store.recordWorkflowInstance(taskId, 1, await workflowInstanceIdForGeneration(taskId, 1));
   return { store, taskId, profileId, conversationId, requestId, runId, attempt, input, target,
     snapshotId, terminate, status, stop, port, pin };
 }
@@ -275,16 +276,14 @@ describe('immutable stop execution pins', () => {
     expect(await current.store.listDeliveries(current.taskId)).toEqual([]);
   });
 
-  it('holds on live Workflow even after real native exit; never uses mutable task-ID terminate', async () => {
+  it('terminates only the exact generation-pinned Workflow after the native exit is proven', async () => {
     const current = await fixture();
     const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
     const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
-    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
-    expect(current.terminate).not.toHaveBeenCalled();
-    expect((await current.store.requireTask(current.taskId)).status).not.toBe('cancelled');
-    current.status.mockResolvedValueOnce({ status: 'complete' });
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: 'cancelled' });
+    expect(current.terminate).toHaveBeenCalledOnce();
+    expect(workflow.get).toHaveBeenCalledWith(await current.store.workflowInstanceId(current.taskId, 1));
     expect(stop).toHaveBeenCalledOnce();
   });
 
@@ -297,11 +296,11 @@ describe('immutable stop execution pins', () => {
     const stop = vi.fn(async (context: ExternalStopContext) => ({ state: 'stopped' as const, result: result(context) }));
     const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
-    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
-    expect(current.status).toHaveBeenCalledOnce();
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: taskStatus });
+    expect(current.status).toHaveBeenCalledTimes(2);
     current.status.mockRejectedValueOnce(new Error('Workflow status unavailable'));
     expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
-    expect(current.terminate).not.toHaveBeenCalled();
+    expect(current.terminate).toHaveBeenCalledOnce();
     expect(JSON.parse((await current.store.requireTask(current.taskId)).result_json!)).toEqual(originalResult);
     current.status.mockResolvedValueOnce({ status: 'complete' });
     expect(await port.cancel(current.taskId, { stopPin: current.pin }))
@@ -322,7 +321,7 @@ describe('immutable stop execution pins', () => {
       result: { ...result(context), outcome: 'succeeded' as const, exitCode: 0, exitSignal: null } }));
     const workflow = { get: vi.fn(async () => ({ status: current.status, terminate: current.terminate })) } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store, undefined, { stop });
-    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: false });
+    expect(await port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({ stopConfirmed: true, status: 'failed' });
     expect(await current.store.requireRun(current.attempt.id)).toEqual(before);
     const proofs = (await current.store.history(current.taskId)).map(event => JSON.parse(event.payload_json))
       .filter(payload => payload.event === 'native_stop.confirmed');
@@ -334,7 +333,7 @@ describe('immutable stop execution pins', () => {
     expect(await current.store.requireRun(current.attempt.id)).toEqual(before);
     expect(JSON.parse((await current.store.requireTask(current.taskId)).result_json!)).toEqual(originalResult);
     expect(stop).toHaveBeenCalledOnce();
-    expect(current.terminate).not.toHaveBeenCalled();
+    expect(current.terminate).toHaveBeenCalledOnce();
   });
 
   it('guards terminal commit when a new attempt appears between validation and status mutation', async () => {

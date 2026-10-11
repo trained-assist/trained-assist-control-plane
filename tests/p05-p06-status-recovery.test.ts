@@ -279,7 +279,9 @@ describe('P05/P06: replay без rerun и отмена', () => {
     // Доводим экземпляр до errored: поднимаем поколение и будим сигналом —
     // план пишет старым поколением, получает fencing и падает (NonRetryable).
     await store.bumpGeneration(taskId, { reason: 'test: force errored' });
-    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, taskId);
+    const instanceId = await store.workflowInstanceId(taskId, submit.generation);
+    expect(instanceId).toBeTruthy();
+    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, instanceId!);
     await port.signal(taskId, 'user_reply', { answer: 'да' }, { idempotencyKey: 'web:errored' });
     await instance.waitForStatus('errored');
     await instance.dispose();

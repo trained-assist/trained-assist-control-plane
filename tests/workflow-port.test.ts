@@ -178,8 +178,8 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     const { store, port } = setup();
     const taskId = nextId('stale-gen');
 
-    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, taskId);
     const submit = await port.submit({ id: taskId, profileId: 'p', goal: 'старый generation', awaitingPurpose: 'missing_fact' });
+    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, submit.instanceId);
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     // Новый владелец взял задачу (lease истёк) — поколение поднято.
@@ -264,7 +264,6 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
     const { store, port } = setup();
     const taskId = nextId('late-timeout');
 
-    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, taskId);
     const submit = await port.submit({
       id: taskId,
       profileId: 'p',
@@ -275,6 +274,7 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       // поверх done (issue #90).
       waitTimeoutSec: 5,
     });
+    const instance = await introspectWorkflowInstance(env.TASK_WORKFLOW, submit.instanceId);
     await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
 
     // Другой актор закрыл задачу, пока экземпляр ждал ответа.

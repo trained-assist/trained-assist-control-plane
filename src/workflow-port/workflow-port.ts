@@ -44,6 +44,14 @@ function parsePilotRoute(userValue: string | null): { route: 'new-plane' | 'lega
   return { route: 'new-plane', reason: 'no_pilot_route' };
 }
 
+/** Cloudflare Workflow instance IDs are immutable and limited to 100 chars. */
+export async function workflowInstanceIdForGeneration(taskId: string, generation: number): Promise<string> {
+  if (!Number.isSafeInteger(generation) || generation < 1) throw new Error('invalid_workflow_generation');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(taskId));
+  const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  return `ta-wf-${hash}-g${generation.toString(36)}`;
+}
+
 export interface SubmitInput extends AdmitTaskInput {
   awaitingInputId?: string | null;
   idempotentRun?: boolean;
@@ -170,6 +178,17 @@ export class CfWorkflowPort implements WorkflowPortApi {
     private readonly externalStop?: ExternalStopPort,
   ) {}
 
+  private async currentWorkflowInstanceId(taskId: string, generation: number): Promise<string> {
+    // Legacy instances used taskId directly. Keep status/signal/recovery
+    // compatible while all newly created generations receive a durable pin.
+    return await this.store.workflowInstanceId(taskId, generation)
+      ?? await this.latestWorkflowInstanceId(taskId, generation) ?? taskId;
+  }
+
+  private async latestWorkflowInstanceId(taskId: string, throughGeneration: number): Promise<string> {
+    return (await this.store.latestWorkflowInstance(taskId, throughGeneration))?.instanceId ?? taskId;
+  }
+
   /**
    * Идемпотентный запуск: строка задачи создаётся с ON CONFLICT DO NOTHING,
    * экземпляр — по id задачи. Повтор submit возвращает тот же экземпляр и
@@ -293,27 +312,29 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // run_started), а не поведение create на разных платформах (в miniflare
     // повторный create не бросает ошибку, в проде бросает).
     let instanceCreated = false;
+    const workflowId = await workflowInstanceIdForGeneration(task.id, task.generation);
     if (needInstance || input.idempotentRun) {
       try {
         let exists = false;
         if (input.idempotentRun) {
-          try { await (await this.wf.get(task.id)).status(); exists = true; } catch { exists = false; }
+          try { await (await this.wf.get(await this.currentWorkflowInstanceId(task.id, task.generation))).status(); exists = true; } catch { exists = false; }
         }
         if (!exists) {
-          await this.wf.create({ id: task.id, params });
+          await this.store.recordWorkflowInstance(task.id, task.generation, workflowId);
+          await this.wf.create({ id: workflowId, params });
           instanceCreated = true;
         }
       } catch (e) {
         // Экземпляр уже существует (гонка или повтор) — берём прежний.
         try {
-          await this.wf.get(task.id);
+          await this.wf.get(await this.store.workflowInstanceId(task.id, task.generation) ?? workflowId);
         } catch {
           throw e;
         }
       }
     }
 
-    return { taskId: task.id, instanceId: task.id, created, instanceCreated, generation: task.generation, runId, pilotRoute: pilotRoute.route, pilotReason: pilotRoute.reason };
+    return { taskId: task.id, instanceId: await this.currentWorkflowInstanceId(task.id, task.generation), created, instanceCreated, generation: task.generation, runId, pilotRoute: pilotRoute.route, pilotReason: pilotRoute.reason };
   }
 
   /**
@@ -348,7 +369,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
 
     try {
-      const instance = await this.wf.get(taskId);
+      const task = await this.store.requireTask(taskId);
+      const instance = await this.wf.get(await this.currentWorkflowInstanceId(taskId, task.generation));
       await instance.sendEvent({ type: eventType, payload });
       return { delivered: true, signalId: signal.id, duplicate: !inserted };
     } catch (e) {
@@ -369,6 +391,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
    */
   async cancel(taskId: string, opts: { reason?: string; stopPin?: { target: CpStopTarget; snapshotId: string } } = {}): Promise<CancelResult & { stopConfirmed: boolean }> {
     if (opts.stopPin) return this.cancelPinned(taskId, opts.stopPin);
+    const prior = await this.store.requireTask(taskId);
+    const priorWorkflowId = await this.currentWorkflowInstanceId(taskId, prior.generation);
     const requested = await this.store.requestCancel(taskId, { reason: opts.reason });
     if (!requested.requested) {
       const verified = await this.verifyTerminalNativeStops(taskId, opts.reason);
@@ -385,7 +409,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
     let terminateError: string | null = null;
     let instance: Awaited<ReturnType<Workflow['get']>> | null = null;
     try {
-      instance = await this.wf.get(taskId);
+      instance = await this.wf.get(priorWorkflowId);
       let beforeTerminate: string | null = null;
       try { beforeTerminate = (await instance.status()).status; } catch { /* older Workflow test doubles expose terminate only */ }
       if (beforeTerminate && ['terminated', 'complete', 'errored'].includes(beforeTerminate)) terminated = true;
@@ -393,7 +417,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
     } catch (e) {
       terminateError = String((e as Error)?.message ?? e);
       try {
-        instance ??= await this.wf.get(taskId);
+        instance ??= await this.wf.get(priorWorkflowId);
         const engineStatus = (await instance.status()).status;
         terminated = ['terminated', 'complete', 'errored'].includes(engineStatus);
       } catch { /* a failed terminate without terminal workflow evidence stays unresolved */ }
@@ -537,8 +561,17 @@ export class CfWorkflowPort implements WorkflowPortApi {
     const quickAnswer = await this.quickAnswerStopEvidence(target, snapshotId, generation);
     if (quickAnswer === 'delivery_pending') return unresolved;
     try {
-      const instance = await this.wf.get(taskId);
-      const workflowStatus = (await instance.status()).status;
+      // A pinned generation uses its immutable Workflow ID. Legacy tasks may
+      // still be inspected through taskId, but that mutable handle is never
+      // terminated by a pinned stop.
+      const workflowId = await this.store.workflowInstanceId(taskId, target.taskGeneration);
+      const instance = await this.wf.get(workflowId ?? taskId);
+      let workflowStatus = (await instance.status()).status;
+      if (!['terminated', 'complete', 'errored'].includes(workflowStatus) && workflowId) {
+        if (!await matches()) return unresolved;
+        await instance.terminate();
+        workflowStatus = (await instance.status()).status;
+      }
       if (!['terminated', 'complete', 'errored'].includes(workflowStatus)) return unresolved;
       if (target.attempts.length === 0 && !await this.store.recordCpStopNoRunWorkflow(target, snapshotId, generation, workflowStatus)) return unresolved;
     } catch (error) {
@@ -602,7 +635,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
     const taskStore = await this.store.statusRow(taskId);
     let engine: unknown = null;
     try {
-      engine = await (await this.wf.get(taskId)).status();
+      const task = await this.store.requireTask(taskId);
+      engine = await (await this.wf.get(await this.currentWorkflowInstanceId(taskId, task.generation))).status();
     } catch (e) {
       engine = { error: String((e as Error)?.message ?? e) };
     }
@@ -701,7 +735,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
    * него сохраняется).
    */
   async replay(taskId: string, opts: { fromStep?: string } = {}): Promise<{ restarted: boolean }> {
-    const instance = await this.wf.get(taskId);
+    const task = await this.store.requireTask(taskId);
+    const instance = await this.wf.get(await this.currentWorkflowInstanceId(taskId, task.generation));
     await instance.restart(opts.fromStep ? { from: { name: opts.fromStep } } : undefined);
     return { restarted: true };
   }
@@ -735,6 +770,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // прав), затем остановка прежнего экземпляра и запуск нового с новым
     // поколением (A3 §3.2.5: сверка и отзыв прав прежнего процесса до нового
     // запуска).
+    const prior = await this.store.requireTask(taskId);
+    const priorWorkflowId = await this.currentWorkflowInstanceId(taskId, prior.generation);
     const { run, generation } = await this.store.resumeRun(taskId, opts);
     if (opts.executionContext) {
       await this.store.logEvent({ taskId, kind: 'progress', generation, source: 'router',
@@ -742,10 +779,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
 
     // Остановка прежнего экземпляра и запуск нового с новым поколением.
-    // terminate и delete — РАЗНЫЕ шаги: упавший/завершённый экземпляр нельзя
-    // terminate (бросает), но можно delete; иначе create упадёт already_exists.
+    // The prior generation has an immutable ID. The next one gets a new ID and
+    // does not reuse/delete the previous instance identity.
     try {
-      await (await this.wf.get(taskId)).terminate();
+      await (await this.wf.get(priorWorkflowId)).terminate();
     } catch (e) {
       await this.store.logEvent({
         taskId,
@@ -755,7 +792,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       });
     }
     try {
-      await (await this.wf.get(taskId)).delete();
+      await (await this.wf.get(priorWorkflowId)).delete();
     } catch (e) {
       await this.store.logEvent({
         taskId,
@@ -769,8 +806,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
     // Продолжение получает адрес последнего ожидания: если ответ уже durable —
     // план идёт сразу к результату, если ожидание открыто — продолжает ждать.
     const available = await this.store.availableContinuationData(taskId);
+    const workflowId = await workflowInstanceIdForGeneration(taskId, generation);
+    await this.store.recordWorkflowInstance(taskId, generation, workflowId);
     await this.wf.create({
-      id: taskId,
+      id: workflowId,
       params: {
         taskId,
         generation,
@@ -827,7 +866,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       return false;
     }
     try {
-      const instance = await this.wf.get(task.id);
+      const instance = await this.wf.get(await this.currentWorkflowInstanceId(task.id, task.generation));
       const status = (await instance.status()).status;
       if (!['running', 'waiting', 'queued'].includes(status)) return false;
       await instance.sendEvent({ type: 'credential_ready', payload: { awaitingInputId: record.awaiting_input_id } });
@@ -867,7 +906,8 @@ export class CfWorkflowPort implements WorkflowPortApi {
     const out: unknown[] = [];
     for (const t of await this.store.unfinishedTasks()) {
       try {
-        const instance = await this.wf.get(t.id);
+        const task = await this.store.requireTask(t.id);
+        const instance = await this.wf.get(await this.currentWorkflowInstanceId(t.id, task.generation));
         const engineStatus = (await instance.status()).status;
         if (['running', 'waiting', 'queued'].includes(engineStatus)) {
           await instance.sendEvent({ type: '__wake', payload: null });

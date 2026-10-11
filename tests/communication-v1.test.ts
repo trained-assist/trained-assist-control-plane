@@ -305,10 +305,11 @@ describe('Task Store and Output ownership', () => {
     expect((await store.listRuns(id))).toHaveLength(1);
     expect((await store.history(id)).filter((event) => event.kind === 'run_started')).toHaveLength(1);
     expect((await store.requireTask(id)).generation).toBe(1);
-    expect(instances.get(id)).toMatchObject({ taskId: id, generation: 1, instructions: expect.stringContaining('Режим запуска: explore') });
-    expect((instances.get(id) as { goal: string; instructions: string }).instructions).toContain('Проверить запрошенное пользователем состояние.');
-    expect((instances.get(id) as { goal: string; instructions: string }).instructions).toContain('perform original task');
-    expect((instances.get(id) as { autoRun?: boolean }).autoRun).not.toBe(true);
+    const created = [...instances.values()].find(value => (value as { taskId?: string }).taskId === id) as { goal: string; instructions: string; autoRun?: boolean } | undefined;
+    expect(created).toMatchObject({ taskId: id, generation: 1, instructions: expect.stringContaining('Режим запуска: explore') });
+    expect(created?.instructions).toContain('Проверить запрошенное пользователем состояние.');
+    expect(created?.instructions).toContain('perform original task');
+    expect(created?.autoRun).not.toBe(true);
     await dispatchAcceptedAgent(store, port, task, result);
     expect((await store.listRuns(id))).toHaveLength(1);
   });
@@ -393,7 +394,9 @@ describe('Task Store and Output ownership', () => {
     expect((await worker.fetch(request(), bindings)).status).toBe(200);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(await store.listRuns(id)).toHaveLength(1);
-    const launched = instances.get(id) as { goal: string; instructions: string; generation: number; runnerEngine: string };
+    const launched = [...instances.values()].find(value => (value as { taskId?: string }).taskId === id) as { goal: string; instructions: string; generation: number; runnerEngine: string } | undefined;
+    expect(launched).toBeDefined();
+    if (!launched) throw new Error('Workflow instance was not created for the admitted task');
     expect(launched).toMatchObject({ goal, generation: 1, runnerEngine: 'dynamic-ip-azure-agent-run' });
     expect(launched.instructions).toContain(goal);
     expect(launched.instructions.match(/\[work-style:v1\]/g)).toHaveLength(1);
