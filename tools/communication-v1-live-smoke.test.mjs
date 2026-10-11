@@ -51,12 +51,15 @@ function fixture(context) {
         reasonCode: state.fallback ? 'COMMUNICATION_FALLBACK' : 'COMMUNICATION_SELECTED',
         ...(state.missingDecisionId ? {} : { decisionId: `decision:${body.taskId}` }),
         ...(name === 'agent-intent' ? { workOrder: { goal: 'Составь три идеи для вопросов на собеседовании.' } }
-          : { reply: { text: replay && state.answerMismatch ? sentinel : 'Fixture answer' } }), continuation: { issued: false } });
+          : { reply: { text: replay && state.answerMismatch ? sentinel
+            : name === 'health' ? 'Fixture: control plane отвечает.' : 'Доступные quick answers: fixture.' } }),
+        continuation: { issued: false } });
     }
     assert.equal(url.pathname, '/status');
     const statusName = state.tasks.get(body.taskId);
+    const answer = statusName === 'health' ? 'Fixture: control plane отвечает.' : 'Доступные quick answers: fixture.';
     return Response.json({ taskStore: { id: body.taskId, status: statusName === 'agent-intent' ? 'accepted' : 'done', generation: 1,
-      ...(statusName === 'agent-intent' ? {} : { result: { answer: 'Fixture answer', quickAnswer: { id: capabilityId },
+      ...(statusName === 'agent-intent' ? {} : { result: { answer, quickAnswer: { id: capabilityId },
         rendering: { source: 'communication_writer', failure: state.renderingFailure } } }) },
       runs: Array.from({ length: state.engineRuns }, () => ({ status: 'running' })) });
   };
@@ -78,15 +81,19 @@ test('preserves quick-answer and agent-intent evidence without starting an engin
     if (evidence.name === 'agent-intent') {
       assert.equal(evidence.route, 'agent');
       assert.equal(evidence.reasonCode, 'COMMUNICATION_SELECTED');
-      assert.equal(evidence.workOrderContainsInput, true);
-    } else assert.deepEqual(evidence.rendering, { source: 'communication_writer', failure: null });
+      assert.equal(evidence.inputText, 'Составь три идеи для вопросов на собеседовании.');
+      assert.equal(evidence.workOrderMatchesInput, true);
+    } else {
+      assert.equal(evidence.replyMatchesExpected, true);
+      assert.ok(evidence.rendering);
+    }
     assert.ok(evidence.decisionId && evidence.requestId && evidence.userTaskId && evidence.elapsedMs >= 0);
   }
   const intentEvidence = result.report.scenarios.find(value => value.name === 'agent-intent');
   const intentTaskId = intentEvidence.userTaskId;
   assert.deepEqual(fixtureData.state.calls.filter(call => call.path === '/route' && call.body.taskId === intentTaskId)
     .map(call => call.body.continue), [false, false]);
-  assert.equal(JSON.parse(readFileSync(fixtureData.reportPath, 'utf8')).scenarios.at(-1).workOrderContainsInput, true);
+  assert.equal(JSON.parse(readFileSync(fixtureData.reportPath, 'utf8')).scenarios.at(-1).workOrderMatchesInput, true);
   assert.equal(statSync(fixtureData.reportPath).mode & 0o777, 0o600);
 });
 
