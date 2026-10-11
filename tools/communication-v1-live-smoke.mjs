@@ -98,6 +98,7 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
     for (const [name, text, capabilityId] of [
       ['health', 'Работает?', 'system_health'],
       ['capabilities', 'Какие у тебя функции и что можно подключить?', 'catalog.brief'],
+      ['agent-intent', 'Составь три идеи для вопросов на собеседовании.', null],
     ]) {
       const started = performance.now();
       const evidence = { name, outcome: 'fail', requestId: `${runId}:${name}`, telegramDelivered: false };
@@ -122,31 +123,48 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
         phase = 'route_transport';
         evidence.phase = phase;
         checkpoint();
-        const route = await request('/route', { taskId: receipt.userTaskId, continue: true });
+        const route = await request('/route', { taskId: receipt.userTaskId, continue: name !== 'agent-intent' });
         phase = 'route_not_quick_answer';
-        assert.equal(route.route, 'deterministic');
-        assert.equal(route.capabilityId, capabilityId);
-        assert.ok(typeof route.reply?.text === 'string' && route.reply.text.trim());
+        if (name === 'agent-intent') {
+          assert.equal(route.route, 'agent');
+          assert.equal(route.reasonCode, 'COMMUNICATION_SELECTED');
+          assert.ok(typeof route.workOrder?.goal === 'string' && route.workOrder.goal.includes(text));
+          assert.equal(route.continuation?.issued, false);
+          Object.assign(evidence, { route: route.route, reasonCode: route.reasonCode, workOrderContainsInput: true });
+        } else {
+          assert.equal(route.route, 'deterministic');
+          assert.equal(route.capabilityId, capabilityId);
+          assert.ok(typeof route.reply?.text === 'string' && route.reply.text.trim());
+        }
         assert.ok(identity(route.decisionId));
         evidence.decisionId = route.decisionId;
         checkpoint();
         phase = 'route_replay_transport';
-        const replay = await request('/route', { taskId: receipt.userTaskId, continue: true });
+        const replay = await request('/route', { taskId: receipt.userTaskId, continue: name !== 'agent-intent' });
         phase = 'route_replay_invalid';
         assert.ok(identity(replay.decisionId));
         assert.equal(replay.decisionId, route.decisionId);
-        assert.equal(replay.reply?.text, route.reply.text);
+        if (name === 'agent-intent') {
+          assert.equal(replay.route, 'agent');
+          assert.equal(replay.workOrder?.goal, route.workOrder.goal);
+        } else assert.equal(replay.reply?.text, route.reply.text);
         assert.equal(replay.continuation?.issued, false);
         phase = 'status_transport';
         const state = await request('/status', { taskId: receipt.userTaskId });
         phase = 'persisted_answer_invalid';
         assert.equal(state.taskStore?.id, receipt.userTaskId);
-        assert.equal(state.taskStore?.status, 'done');
-        assert.equal(state.taskStore.result?.answer, route.reply.text);
-        assert.equal(state.taskStore.result?.quickAnswer?.id, capabilityId);
-        assert.ok(Number.isSafeInteger(state.taskStore.generation) && state.taskStore.generation > 0);
         assert.ok(Array.isArray(state.runs));
         assert.equal(state.runs.length, 0);
+        if (name === 'agent-intent') {
+          assert.notEqual(state.taskStore.status, 'done');
+          Object.assign(evidence, { outcome: 'pass', phase: 'verified_agent_intent', route: 'agent',
+            reasonCode: route.reasonCode, workOrderContainsInput: true, engineRuns: 0,
+            intakeReplaySameTask: true, routeReplaySameDecision: true });
+        } else {
+          assert.equal(state.taskStore?.status, 'done');
+          assert.equal(state.taskStore.result?.answer, route.reply.text);
+          assert.equal(state.taskStore.result?.quickAnswer?.id, capabilityId);
+          assert.ok(Number.isSafeInteger(state.taskStore.generation) && state.taskStore.generation > 0);
         const rendering = state.taskStore.result.rendering;
         if (['communication_writer', 'deterministic'].includes(rendering?.source)) {
           evidence.rendering = { source: rendering.source,
@@ -154,6 +172,7 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
         }
         Object.assign(evidence, { outcome: 'pass', phase: 'verified_quick_answer', capabilityId, generation: state.taskStore.generation,
           persistedAnswer: true, engineRuns: 0, intakeReplaySameTask: true, routeReplaySameDecision: true });
+        }
       } catch (error) {
         evidence.reason = error instanceof CheckpointError ? 'report_checkpoint' : phase;
         evidence.phase = evidence.reason;

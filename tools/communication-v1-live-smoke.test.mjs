@@ -33,7 +33,7 @@ function fixture(context) {
     if (state.oversized) return new Response('x'.repeat(4194305));
     if (state.malformed) return new Response(`<html>${sentinel}</html>`);
     if (url.pathname === '/intake') {
-      const name = body.requestId.endsWith(':health') ? 'health' : 'capabilities';
+      const name = body.requestId.split(':').at(-1);
       const taskId = `fixture-${name}`;
       state.tasks.set(taskId, name);
       return Response.json({ userTaskId: taskId, durable: true });
@@ -47,34 +47,46 @@ function fixture(context) {
       assert.equal(evidence.phase, 'route_transport');
       state.routeCalls.set(body.taskId, (state.routeCalls.get(body.taskId) ?? 0) + 1);
       const replay = state.routeCalls.get(body.taskId) > 1;
-      return Response.json({ route: state.fallback ? 'agent' : 'deterministic', capabilityId,
+      return Response.json({ route: name === 'agent-intent' || state.fallback ? 'agent' : 'deterministic', capabilityId,
+        reasonCode: state.fallback ? 'COMMUNICATION_FALLBACK' : 'COMMUNICATION_SELECTED',
         ...(state.missingDecisionId ? {} : { decisionId: `decision:${body.taskId}` }),
-        reply: { text: replay && state.answerMismatch ? sentinel : 'Fixture answer' }, continuation: { issued: false } });
+        ...(name === 'agent-intent' ? { workOrder: { goal: 'Составь три идеи для вопросов на собеседовании.' } }
+          : { reply: { text: replay && state.answerMismatch ? sentinel : 'Fixture answer' } }), continuation: { issued: false } });
     }
     assert.equal(url.pathname, '/status');
-    return Response.json({ taskStore: { id: body.taskId, status: 'done', generation: 1,
-      result: { answer: 'Fixture answer', quickAnswer: { id: capabilityId },
-        rendering: { source: 'communication_writer', failure: state.renderingFailure } } },
+    const statusName = state.tasks.get(body.taskId);
+    return Response.json({ taskStore: { id: body.taskId, status: statusName === 'agent-intent' ? 'accepted' : 'done', generation: 1,
+      ...(statusName === 'agent-intent' ? {} : { result: { answer: 'Fixture answer', quickAnswer: { id: capabilityId },
+        rendering: { source: 'communication_writer', failure: state.renderingFailure } } }) },
       runs: Array.from({ length: state.engineRuns }, () => ({ status: 'running' })) });
   };
   return { environment, bindings, bindingsPath, reportPath, state, fetchImpl };
 }
 
-test('preserves both factual scenarios, receipt/route identity, timings and zero-engine evidence', async context => {
+test('preserves quick-answer and agent-intent evidence without starting an engine', async context => {
   const fixtureData = fixture(context);
   const result = await runSmoke(fixtureData.environment, fixtureData.fetchImpl);
   assert.equal(result.ok, true);
   assert.equal(result.report.outcome, 'pass');
-  assert.deepEqual(result.report.scenarios.map(value => value.name), ['health', 'capabilities']);
+  assert.deepEqual(result.report.scenarios.map(value => value.name), ['health', 'capabilities', 'agent-intent']);
   for (const evidence of result.report.scenarios) {
     assert.equal(evidence.outcome, 'pass');
     assert.equal(evidence.engineRuns, 0);
     assert.equal(evidence.intakeReplaySameTask, true);
     assert.equal(evidence.routeReplaySameDecision, true);
     assert.equal(evidence.telegramDelivered, false);
-    assert.deepEqual(evidence.rendering, { source: 'communication_writer', failure: null });
+    if (evidence.name === 'agent-intent') {
+      assert.equal(evidence.route, 'agent');
+      assert.equal(evidence.reasonCode, 'COMMUNICATION_SELECTED');
+      assert.equal(evidence.workOrderContainsInput, true);
+    } else assert.deepEqual(evidence.rendering, { source: 'communication_writer', failure: null });
     assert.ok(evidence.decisionId && evidence.requestId && evidence.userTaskId && evidence.elapsedMs >= 0);
   }
+  const intentEvidence = result.report.scenarios.find(value => value.name === 'agent-intent');
+  const intentTaskId = intentEvidence.userTaskId;
+  assert.deepEqual(fixtureData.state.calls.filter(call => call.path === '/route' && call.body.taskId === intentTaskId)
+    .map(call => call.body.continue), [false, false]);
+  assert.equal(JSON.parse(readFileSync(fixtureData.reportPath, 'utf8')).scenarios.at(-1).workOrderContainsInput, true);
   assert.equal(statSync(fixtureData.reportPath).mode & 0o777, 0o600);
 });
 
