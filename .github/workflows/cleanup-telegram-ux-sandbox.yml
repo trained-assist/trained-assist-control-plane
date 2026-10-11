@@ -1,8 +1,14 @@
 name: Clean Telegram UX sandbox and task-owned Runner state
+run-name: Telegram UX sandbox cleanup ${{ inputs.request_id || github.run_id }}
 
 on:
   workflow_dispatch:
     inputs:
+      request_id:
+        description: Unique caller correlation ID
+        required: false
+        type: string
+        default: ''
       runner_task_ids:
         description: Optional comma-separated Runner task IDs from a verified sandbox test artifact
         required: false
