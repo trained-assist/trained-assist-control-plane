@@ -35,7 +35,7 @@ async function fixture() {
   const pin = { target, snapshotId };
   await store.recordWorkflowInstance(taskId, 1, await workflowInstanceIdForGeneration(taskId, 1));
   return { store, taskId, profileId, conversationId, requestId, runId, attempt, input, target,
-    snapshotId, terminate, status, stop, port, pin };
+    snapshotId, terminate, status, stop, port, pin, workflow };
 }
 
 function result(context: ExternalStopContext): RunnerResult {
@@ -126,6 +126,32 @@ describe('serverless Runner run ids', () => {
 });
 
 describe('immutable stop execution pins', () => {
+  it('fences a possibly delayed submit even when the pre-submit witness is absent and its Workflow is missing', async () => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('pre-submit target resolution failed');
+    const pinned = resolved.targets[0]!;
+    current.target.attempts = pinned.attempts;
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+    expect(await current.store.runnerSubmitMayHaveStarted(current.taskId, current.attempt.id)).toBe(false);
+    current.stop.mockResolvedValue({ state: 'cancelled_before_admission', userTaskId: current.taskId,
+      ownerGeneration: 1, idempotencyKey: pinned.attempts[0]!.idempotencyKey });
+    current.port = new CfWorkflowPort({ get: async () => { throw new Error('instance.not_found'); } } as unknown as Workflow,
+      current.store, undefined, { stop: current.stop });
+
+    expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
+      .toMatchObject({ stopConfirmed: true, status: 'cancelled' });
+    expect(current.stop).toHaveBeenCalledWith(expect.objectContaining({ runId: null,
+      idempotencyKey: pinned.attempts[0]!.idempotencyKey, ownerGeneration: 1 }));
+    expect(await current.store.requireRun(current.attempt.id)).toMatchObject({ status: 'cancelled', finished_at: expect.any(Number) });
+    const proof = (await current.store.history(current.taskId)).find(event => event.event_id === `cp-stop-proof:${current.snapshotId}:${current.attempt.id}`);
+    expect(JSON.parse(proof!.payload_json).nativeStops).toEqual([expect.objectContaining({ runId: null,
+      state: 'cancelled', exitObserved: false, preAdmissionCancellation: true })]);
+  });
+
   it('persists a generation-scoped native proof when stop fences an unreceipted submit', async () => {
     const current = await fixture();
     await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
@@ -269,7 +295,7 @@ describe('immutable stop execution pins', () => {
     current.status.mockResolvedValue({ status: 'complete' });
     const service = new CpStopTargetsService(current.store, current.port);
     expect(await service.stop(current.input)).toMatchObject({ stopConfirmed: state === 'finished' });
-    expect(current.stop).toHaveBeenCalledTimes(state === 'submitted' ? 1 : 0);
+    expect(current.stop).toHaveBeenCalledTimes(state === 'submitted' || state === 'unfinished' ? 1 : 0);
   });
 
   it('accepts an exact durable pre-admission rejection as no native run during stop reconciliation', async () => {

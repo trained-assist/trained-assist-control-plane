@@ -52,6 +52,14 @@ export class TerminalStateError extends TaskStoreError {
   }
 }
 
+/** A same-generation attempt with unknown outcome must be reconciled before retry. */
+export class UnresolvedRunError extends TaskStoreError {
+  constructor(taskId: string, public readonly runStatus: 'unknown' | 'interrupted') {
+    super(`run outcome is ${runStatus}; reconcile before starting another attempt`, taskId);
+    this.name = 'UnresolvedRunError';
+  }
+}
+
 /** У задачи уже есть открытое ожидание (частично-уникальный idx_awaiting_one_open). */
 export class AlreadyOpenAwaitingError extends TaskStoreError {
   constructor(

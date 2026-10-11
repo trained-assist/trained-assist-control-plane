@@ -1,5 +1,5 @@
 import { abortAllDurableObjects, introspectWorkflowInstance } from 'cloudflare:test';
-import { FencedError, TaskStore } from '../src/taskstore';
+import { FencedError, TaskStore, UnresolvedRunError } from '../src/taskstore';
 import { CfWorkflowPort, PLAN_VERSION } from '../src/workflow-port';
 import { describe, expect, it } from 'vitest';
 import { env } from './env';
@@ -135,6 +135,27 @@ describe('Workflow Port: submit -> wait -> сигнал -> done', () => {
       return row.status === 'done' ? row : null;
     });
     expect((await store.history(taskId)).filter((e) => e.task_item_id === 'prepare')).toHaveLength(1);
+  }, 60_000);
+
+  it('обычный повтор submit не начинает новую попытку после unknown в том же поколении', async () => {
+    const { store, port } = setup();
+    const taskId = nextId('unknown-submit');
+    const input = { id: taskId, profileId: 'p', goal: 'unknown attempt', awaitingPurpose: 'missing_fact' as const };
+    const first = await port.submit(input);
+    await pollUntil('awaiting_input', async () => store.getOpenAwaiting(taskId));
+    if (!first.runId) throw new Error('initial attempt missing');
+    await port.markConnectionLost(first.runId);
+
+    await expect(port.submit(input)).rejects.toBeInstanceOf(UnresolvedRunError);
+    expect(await store.requireTask(taskId)).toMatchObject({ generation: first.generation, status: 'awaiting_input' });
+    expect(await store.listRuns(taskId)).toHaveLength(1);
+    expect(await store.requireRun(first.runId)).toMatchObject({ status: 'unknown' });
+
+    await port.signal(taskId, 'user_reply', { answer: 'resume current run' }, { idempotencyKey: `unknown:${taskId}` });
+    await pollUntil('done after reconciling the original generation', async () => {
+      const task = await store.requireTask(taskId);
+      return task.status === 'done' ? task : null;
+    });
   }, 60_000);
 
   it('позднее событие после done отклоняется портом: статус и result не тронуты', async () => {
