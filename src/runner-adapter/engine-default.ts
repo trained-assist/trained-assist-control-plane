@@ -4,3 +4,9 @@ export function runnerEngineOf(requested: unknown, configured?: string): string 
   const fallback = configured?.trim();
   return fallback || undefined;
 }
+
+/** The Agent API owns placement; CP records an API mode instead of a worker name. */
+export function runnerDispatchModeOf(selection: string | undefined, requested: unknown, configured?: string): string | undefined {
+  if (selection === 'agent_api') return 'agent_api';
+  return runnerEngineOf(requested, configured);
+}

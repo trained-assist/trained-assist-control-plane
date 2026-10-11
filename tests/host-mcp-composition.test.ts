@@ -97,8 +97,8 @@ describe('inactive host MCP routing composition', () => {
     } } as unknown as Workflow;
     const port = new CfWorkflowPort(workflow, current.store);
     const task = await current.store.requireTask(current.taskId);
-    await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
-    await dispatchAcceptedAgent(current.store, port, task, routed, 'dynamic-ip-azure-agent-run', current.hostMcp);
+    await dispatchAcceptedAgent(current.store, port, task, routed, 'agent_api', current.hostMcp);
+    await dispatchAcceptedAgent(current.store, port, task, routed, 'agent_api', current.hostMcp);
     expect(create).toHaveBeenCalledOnce();
     expect(params).toMatchObject({ taskId: current.taskId, profileId: current.profileId, generation: 1,
       instructions: expect.stringContaining(routed.agentInstructions!) });
@@ -111,11 +111,12 @@ describe('inactive host MCP routing composition', () => {
       if (path === '/v1/runs') {
         const body = JSON.parse(String(init?.body));
         submit(body);
-        expect(body).toMatchObject({ userTaskId: current.taskId, engine: { name: 'dynamic-ip-azure-agent-run' },
+        expect(body).toMatchObject({ userTaskId: current.taskId,
         mcp: { servers: [{ serverId: current.state.mcp!.servers[0]!.serverId, transport: 'remote',
           url: current.state.mcp!.servers[0]!.url, bindingRef: current.state.mcp!.servers[0]!.bindingRef,
           allowedTools: [routed.mcpInstruction!.name], catalogueVersion: 'registry-fixture-catalogue-v1',
           policyVersion: routed.mcpInstruction!.policyVersion }] } });
+        expect(body).not.toHaveProperty('engine');
         expect(body.mcp.servers[0]).not.toHaveProperty('scope');
         expect(body.mcp.servers[0]).not.toHaveProperty('registryDigest');
         expect(body.instructions).toContain(routed.agentInstructions);
@@ -127,7 +128,7 @@ describe('inactive host MCP routing composition', () => {
       if (path.endsWith('/events')) return Response.json({ events: [], cursor: 0, hasMore: false });
       if (path.endsWith('/artifacts')) return Response.json({ artifacts: [] });
       throw new Error('Unexpected fixture Runner request');
-    });
+    }, 'agent_api');
     const context: StepCtx = { step: async (_name, callback) => callback({ attempt: 1 }), sleep: async () => {},
       waitFor: async () => { throw new Error('Unexpected awaiting'); } };
     expect(await conversationPlan(context, current.store, params!, { adapter,

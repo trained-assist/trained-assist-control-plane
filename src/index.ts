@@ -39,7 +39,7 @@ import { RunnerConflictError, RunnerNotFoundError, RunnerUnavailableError } from
 import { runSpecPolicyOf } from './run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, profileRunnerUrlOf, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from './run-spec/profile-runtime';
 import { runnerExternalStopPort } from './workflow-port/external-stop';
-import { runnerEngineOf } from './runner-adapter/engine-default';
+import { runnerDispatchModeOf } from './runner-adapter/engine-default';
 import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/external-stop';
 import { SANDBOX3 } from './deployment/sandbox3';
 import { TELEGRAM_UX_SANDBOX } from './deployment/telegram-ux-sandbox';
@@ -538,7 +538,7 @@ const scheduleClockOf = (env: Env): Clock =>
   env.SCHEDULE_CLOCK ? new VirtualClock(Number(env.SCHEDULE_CLOCK)) : systemClock;
 
 const credentialExecutionOf = (env: Env) => {
-  const runnerEngine = env.ROUTER_AGENT_ENGINE?.trim();
+  const runnerEngine = runnerDispatchModeOf(env.RUNNER_API_ENGINE_SELECTION, undefined, env.ROUTER_AGENT_ENGINE);
   if (!runnerEngine) return undefined;
   try {
     const bindings = env as unknown as Record<string, string | undefined>;
@@ -558,6 +558,9 @@ const workflowPortOf = (env: Env, store: TaskStore) =>
       return runtime.adapter ? runnerExternalStopPort(runtime.adapter).stop(context) : { state: 'unknown' };
     },
   } : undefined);
+
+const runnerEngineForRequest = (env: Env, requested?: unknown): string | undefined =>
+  runnerDispatchModeOf(env.RUNNER_API_ENGINE_SELECTION, requested, env.ROUTER_AGENT_ENGINE);
 
 const scheduleServiceOf = (env: Env, store: TaskStore, port: CfWorkflowPort, clock?: Clock): ScheduleService =>
   new ScheduleService({
@@ -753,7 +756,7 @@ async function handleRouteRoute(
   const continuation = ordinaryV1 && result.continuation && body.continue === true
     ? env.ROUTER_CONTINUATION_ENABLED === 'true'
       ? runtime.adapter
-        ? await dispatchAcceptedAgent(store, port, task, result, env.ROUTER_AGENT_ENGINE?.trim() || 'opencode', hostMcp)
+        ? await dispatchAcceptedAgent(store, port, task, result, runnerEngineForRequest(env) ?? 'opencode', hostMcp)
         : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
     : await issueContinuation(result, env, store, port, body);
@@ -2035,7 +2038,7 @@ const store = new TaskStore(env.DB);
             question: body.question as string | undefined,
             waitTimeoutSec: body.waitTimeoutSec as number | undefined,
             crashRunOnce: body.crashRunOnce as boolean | undefined,
-            runnerEngine: runnerEngineOf(body.runnerEngine, env.ROUTER_AGENT_ENGINE),
+            runnerEngine: runnerEngineForRequest(env, body.runnerEngine),
             autoRun: body.autoRun as boolean | undefined,
             gtd: managed,
             criteria: (body.criteria as Record<string, unknown> | undefined) ?? null,

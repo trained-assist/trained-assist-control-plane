@@ -19,7 +19,7 @@ const ctx: StepCtx = {
   },
 };
 
-const makeRunner = (opts: { stdout?: string[]; manifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string; mime: string }> } = {}) => {
+const makeRunner = (opts: { stdout?: string[]; statusAnswer?: string; manifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string; mime: string }> } = {}) => {
   const runId = nextId('run');
   const stdout = opts.stdout ?? ['Отчёт готов.'];
   const adapter = {
@@ -27,7 +27,7 @@ const makeRunner = (opts: { stdout?: string[]; manifests?: Array<{ artifactId: s
       return { requestId: `req-${runId}`, userTaskId: input.userTaskId, runId, deduplicated: false };
     },
     async status() {
-      return { state: 'succeeded', connectionLost: false };
+      return { state: 'succeeded', connectionLost: false, ...(opts.statusAnswer ? { answer: opts.statusAnswer } : {}) };
     },
     async result() {
       return {
@@ -105,6 +105,21 @@ describe('reporting: текст движка и манифесты артефа�
     const snapshot = await reportSnapshot(store, taskId);
     expect(snapshot.status).toBe('done');
     expect(snapshot.answer).toBeNull();
+  });
+
+  it('uses the normalized Runner API answer without knowing the worker engine name', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-agent-api-answer');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'return the normalized result' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'cloudflare-workflows' });
+    const { adapter, runId } = makeRunner({ stdout: [], statusAnswer: 'API-ANSWER-MARKER' });
+
+    await conversationPlan(ctx, store, { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id,
+      goal: 'return the normalized result', runnerEngine: 'agent_api', runnerPollSec: 1, runnerTimeoutSec: 30 },
+    { adapter: adapter as unknown as RunnerApiAdapter });
+
+    const snapshot = await reportSnapshot(store, taskId);
+    expect(snapshot.answer).toBe('API-ANSWER-MARKER');
   });
 
   it('манифесты артефактов несут размер и контрольную сумму для проверки скачанного', async () => {

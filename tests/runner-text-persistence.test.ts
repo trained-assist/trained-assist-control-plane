@@ -63,7 +63,7 @@ describe('text-only native persistence contract', () => {
       sleep: async () => {},
       waitFor: async () => { throw new Error('Unexpected awaiting'); },
     };
-    const params = { taskId, profileId, generation: 1, runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run' };
+    const params = { taskId, profileId, generation: 1, runId: attempt.id, runnerEngine: 'agent_api' };
     const deps = { adapter, runSpecPolicy: { ...defaultRunSpecPolicy(), outputs: declared ? [{ path: 'outputs/required.csv' }] : [] } };
     await expect(conversationPlan(context, store, params, deps)).rejects.toBe(suspension);
     expect(await store.requireTask(taskId)).toMatchObject({ status: 'active', generation: 1 });
@@ -121,7 +121,7 @@ describe('text-only native persistence contract', () => {
       waitFor: async () => { throw new Error('Unexpected awaiting'); },
     };
     const params = { taskId, profileId, generation: 1, runId: attempt.id,
-      runnerEngine: 'dynamic-ip-azure-agent-run', runnerPersistencePollSec: 0 };
+      runnerEngine: 'agent_api', runnerPersistencePollSec: 0 };
     const deps = { adapter, runSpecPolicy: { ...defaultRunSpecPolicy(), outputs: [{ path: 'outputs/summary.csv' }] } };
 
     expect((await conversationPlan(context, store, params, deps)).ok).toBe(true);
@@ -159,7 +159,7 @@ describe('text-only native persistence contract', () => {
       sleep: async () => {}, waitFor: async () => { throw new Error('Unexpected awaiting'); },
     };
     expect(await conversationPlan(context, store, { taskId, profileId, generation: 1, runId: attempt.id,
-      runnerEngine: 'dynamic-ip-azure-agent-run' }, { adapter, runSpecPolicy: defaultRunSpecPolicy() }))
+      runnerEngine: 'agent_api' }, { adapter, runSpecPolicy: defaultRunSpecPolicy() }))
       .toMatchObject({ ok: false, reason: 'export_not_persisted' });
     expect(submit).not.toHaveBeenCalled();
     expect(await store.requireTask(taskId)).toMatchObject({ status: 'failed', generation: 1 });
