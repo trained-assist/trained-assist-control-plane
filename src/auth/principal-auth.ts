@@ -40,14 +40,16 @@ export function principalAuthOf(env: Record<string, string | undefined>): Princi
   const telegramUxSecret = env.PRINCIPAL_SECRET_TELEGRAM_UX?.trim();
   const sandbox3Secret = env.PRINCIPAL_SECRET_SANDBOX3?.trim();
   const sandbox3OpsSecret = env.DEPLOYMENT_ENV === 'sandbox3' ? env.PRINCIPAL_SECRET_SANDBOX3_OPS?.trim() : undefined;
+  const sandbox3RunnerSecret = env.DEPLOYMENT_ENV === 'sandbox3' ? env.PRINCIPAL_SECRET_SANDBOX3_RUNNER?.trim() : undefined;
   const integrationV1Secret = env.PRINCIPAL_SECRET_INTEGRATION_V1?.trim();
   const codexSmokeSecret = env.PRINCIPAL_SECRET_CODEX_SMOKE?.trim();
   return {
     secret: secret ? secret : null,
-    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || integrationV1Secret || codexSmokeSecret ? { secretOverrides: {
+    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret ? { secretOverrides: {
       ...(telegramUxSecret ? { 'integration-telegram-ux-v1': telegramUxSecret } : {}),
       ...(sandbox3Secret ? { 'integration-sandbox3-v1': sandbox3Secret } : {}),
       ...(sandbox3OpsSecret ? { [SANDBOX3.diagnosticPrincipalId]: sandbox3OpsSecret } : {}),
+      ...(sandbox3RunnerSecret ? { [SANDBOX3.runnerIngressPrincipalId]: sandbox3RunnerSecret } : {}),
       ...(integrationV1Secret ? { 'integration-v1': integrationV1Secret } : {}),
       ...(codexSmokeSecret ? { 'sde-codex-smoke-v1': codexSmokeSecret } : {}),
     } } : {}),
@@ -81,7 +83,8 @@ export async function verifyPrincipal(req: Request, auth: PrincipalAuth): Promis
     logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'principal_id_malformed' });
     return null;
   }
-  if (principalId === SANDBOX3.diagnosticPrincipalId && !auth.secretOverrides?.[principalId]) return null;
+  if ((principalId === SANDBOX3.diagnosticPrincipalId || principalId === SANDBOX3.runnerIngressPrincipalId)
+    && !auth.secretOverrides?.[principalId]) return null;
   const secret = auth.secretOverrides?.[principalId] ?? auth.secret;
   if (!secret) {
     logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'secret_not_configured' });

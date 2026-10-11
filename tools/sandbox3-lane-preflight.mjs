@@ -25,6 +25,7 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
   const otherState = new Set(otherGatewayBindings.flatMap(stateIds));
   const tgState = stateIds(tgBindings);
   const intakePrincipals = principalRows.filter(row => row.principal_id === 'integration-sandbox3-v1');
+  const runnerIngressPrincipals = principalRows.filter(row => row.principal_id === 'sandbox3-vm2-ingress-reader-v1');
   const serviceRoute = binding(tgBindings, 'CONTROL_PLANE_SERVICE');
   const selectedServiceMatches = !serviceRoute || (serviceRoute.type === 'service'
     && serviceRoute.service === CP_WORKER && (!serviceRoute.environment || serviceRoute.environment === 'production'));
@@ -72,6 +73,11 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
       && intakePrincipals[0].profile_id === 'integration-sandbox3-v1' && intakePrincipals[0].enabled === 1
       && Array.isArray(intakePrincipals[0].scopes) && ['tasks:intake', 'tasks:read', 'tasks:control', 'tasks:signal']
         .every(scope => intakePrincipals[0].scopes.includes(scope)) ? 'PASS' : 'BLOCKED',
+    cpRunnerIngressPrincipal: runnerIngressPrincipals.length === 1
+      && runnerIngressPrincipals[0].profile_id === 'integration-sandbox3-v1' && runnerIngressPrincipals[0].enabled === 1
+      && Array.isArray(runnerIngressPrincipals[0].scopes)
+      && runnerIngressPrincipals[0].scopes.length === 1 && runnerIngressPrincipals[0].scopes[0] === 'tasks:read'
+      && cpSecretNames.includes('PRINCIPAL_SECRET_SANDBOX3_RUNNER') ? 'PASS' : 'BLOCKED',
     tgStateIsolated: tgState.length >= 3 && new Set(tgState).size === tgState.length
       && tgState.every(id => !otherState.has(id)) ? 'PASS' : 'BLOCKED',
     tgRoute: selectedServiceMatches && value(tgBindings, 'CONTROL_PLANE_URL') === CP_URL

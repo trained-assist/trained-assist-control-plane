@@ -2,6 +2,7 @@ export const SANDBOX3 = {
   workerName: 'trained-assist-cp-sandbox3',
   profileId: 'integration-sandbox3-v1',
   diagnosticPrincipalId: 'sandbox3-ops-read-v1',
+  runnerIngressPrincipalId: 'sandbox3-vm2-ingress-reader-v1',
   runnerWorkerName: 'trained-assist-runner-api-sandbox3',
   runnerUrl: 'https://trained-assist-runner-api-sandbox3.skillset-apply.workers.dev',
   ingressBufferWorkerName: 'trained-assist-ingress-buffer-sandbox',
