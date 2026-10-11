@@ -22,6 +22,7 @@
     "sandbox:deploy:telegram-ux": "node --experimental-strip-types tools/deploy-telegram-ux-sandbox.mjs --deploy",
     "sandbox:preflight:telegram-ux": "node --experimental-strip-types tools/deploy-telegram-ux-sandbox.mjs --preflight",
     "sandbox:preflight:sandbox3": "node tools/sandbox3-lane-preflight.mjs",
+    "sandbox:provision:sandbox3-runner-ingress": "node tools/provision-sandbox3-runner-ingress-principal.mjs",
     "sandbox:cleanup:sandbox3": "node tools/sandbox3-test-cleanup.mjs",
     "sandbox:cleanup:telegram-ux": "node tools/telegram-ux-state-cleanup.mjs",
     "sandbox:p16": "./tools/p16-sandbox-probe.sh",

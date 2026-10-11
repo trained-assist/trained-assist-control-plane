@@ -61,6 +61,15 @@ jobs:
           set -euo pipefail
           test -n "$INGRESS_BUFFER_TOKEN"
           printf '%s' "$INGRESS_BUFFER_TOKEN" | npx wrangler secret put INGRESS_BUFFER_TOKEN --config wrangler.sandbox3.jsonc
+      - name: Install France VM ingress resolver principal credential
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          RUNNER_INGRESS_SECRET: ${{ secrets.SANDBOX3_RUNNER_INGRESS_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$RUNNER_INGRESS_SECRET"
+          printf '%s' "$RUNNER_INGRESS_SECRET" | npx wrangler secret put PRINCIPAL_SECRET_SANDBOX3_RUNNER --config wrangler.sandbox3.jsonc
       - name: Deploy isolated sandbox-3 Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

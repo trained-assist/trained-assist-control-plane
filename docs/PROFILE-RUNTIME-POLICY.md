@@ -442,3 +442,23 @@ cohort for real Telegram E2E. Other profiles remain on the legacy route and
 production bindings are independent. Existing credential bindings refuse the
 initial pairing mode, so partial provisioning must be reconciled using its
 sanitized operation evidence before repeating writes.
+
+### France VM ingress resolver principal
+
+The France VM retrieves an immutable task input manifest and its file bytes
+from `/runner/input-manifest` and `/runner/input-artifact`. It authenticates
+with a separate `sandbox3-vm2-ingress-reader-v1` principal, whose D1 row is
+bound only to `integration-sandbox3-v1` and `tasks:read`. Its independent
+`PRINCIPAL_SECRET_SANDBOX3_RUNNER` Cloudflare secret is provisioned from the
+`staging` GitHub environment secret `SANDBOX3_RUNNER_INGRESS_SECRET`; the same
+value is installed only on the isolated France VM as
+`RUNNER_CONTROL_PLANE_PRINCIPAL_SECRET`. The VM environment group also sets
+`RUNNER_CONTROL_PLANE_URL` to this CP Worker and
+`RUNNER_CONTROL_PLANE_PRINCIPAL` to the dedicated principal ID. Do not reuse
+the Telegram intake, operator diagnostic, or Runner API credential. The three
+VM variables are installed together and checked via value-free `/version`
+binding presence before running file-intake E2E. Provision the narrowly scoped
+D1 row with `npm run sandbox:provision:sandbox3-runner-ingress`; this command
+only inserts when absent and fails closed if an existing row has different
+profile, scope, or enabled state. The lane preflight requires both that exact
+row and the matching secret binding before reporting readiness.

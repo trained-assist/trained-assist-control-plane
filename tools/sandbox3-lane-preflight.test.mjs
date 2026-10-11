@@ -27,7 +27,7 @@ const ready = () => ({
     plain('ROUTER_SELECTOR', 'communication_v1'), plain('ROUTER_SELECTOR_NAMES_ONLY', 'false'),
     plain('ROUTER_CONTINUATION_ENABLED', 'true'), plain('RUNNER_API_ENGINE_SELECTION', 'agent_api'),
   ],
-  cpSecretNames: ['COMMUNICATION_TOKEN'],
+  cpSecretNames: ['COMMUNICATION_TOKEN', 'PRINCIPAL_SECRET_SANDBOX3_RUNNER'],
   tgBindings: [
     state('INTAKE', 'sandbox3-do', 'durable_object_namespace'), state('SESSIONS', 'sandbox3-kv'),
     state('TG_SLICE', 'sandbox3-slice'),
@@ -39,7 +39,9 @@ const ready = () => ({
   otherGatewayBindings: [[state('SESSIONS', 'other-kv')]],
   counts: { tasks: 0, executions: 0, nonterminalTasks: 0, foreignProfileTasks: 0, nonterminalExecutions: 0 },
   principalRows: [{ principal_id: 'integration-sandbox3-v1', profile_id: 'integration-sandbox3-v1',
-    scopes: ['tasks:intake', 'tasks:read', 'tasks:control', 'tasks:signal'], enabled: 1 }],
+    scopes: ['tasks:intake', 'tasks:read', 'tasks:control', 'tasks:signal'], enabled: 1 },
+  { principal_id: 'sandbox3-vm2-ingress-reader-v1', profile_id: 'integration-sandbox3-v1',
+    scopes: ['tasks:read'], enabled: 1 }],
 });
 
 test('configured resources still report that Runner journal and real E2E are unverified', () => {
@@ -147,6 +149,17 @@ test('the paired read-only operator does not invalidate the Telegram intake iden
   }
   input.principalRows.push(input.principalRows[0]);
   assert.equal(evaluateSandbox3Lane(input).checks.cpPrincipal, 'BLOCKED');
+});
+
+test('France VM ingress resolver requires its own read-only principal and binding', () => {
+  const input = ready();
+  assert.equal(evaluateSandbox3Lane(input).checks.cpRunnerIngressPrincipal, 'PASS');
+  for (const patch of [{ enabled: 0 }, { profile_id: 'foreign' }, { scopes: ['tasks:read', 'tasks:control'] }]) {
+    const changed = { ...input, principalRows: [input.principalRows[0], { ...input.principalRows[1], ...patch }] };
+    assert.equal(evaluateSandbox3Lane(changed).checks.cpRunnerIngressPrincipal, 'BLOCKED');
+  }
+  assert.equal(evaluateSandbox3Lane({ ...input, cpSecretNames: ['COMMUNICATION_TOKEN'] }).checks.cpRunnerIngressPrincipal, 'BLOCKED');
+  assert.equal(evaluateSandbox3Lane({ ...input, principalRows: [input.principalRows[0]] }).checks.cpRunnerIngressPrincipal, 'BLOCKED');
 });
 
 test('terminal history permits repeat tests while nonterminal/foreign state blocks reuse', () => {

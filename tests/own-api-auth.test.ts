@@ -221,3 +221,16 @@ it('sandbox3 diagnostic principal requires its own secret and exact deployment',
     expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf(bindings))).toBeNull();
   }
 });
+
+it('sandbox3 France VM ingress principal has an independent secret and sandbox-only auth', async () => {
+  const principal = SANDBOX3.runnerIngressPrincipalId;
+  const own = 'synthetic-sandbox3-vm-ingress-secret';
+  const signature = await signPrincipal(principal, own);
+  const configured = { PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_SANDBOX3_RUNNER: own };
+  expect(await verifyPrincipal(req(principal, signature), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'sandbox3' }))).toBe(principal);
+  expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'sandbox3' }))).toBeNull();
+  for (const bindings of [configured, { ...configured, DEPLOYMENT_ENV: 'production' }, { PRINCIPAL_SECRET: SECRET, DEPLOYMENT_ENV: 'sandbox3' }]) {
+    expect(await verifyPrincipal(req(principal, signature), principalAuthOf(bindings))).toBeNull();
+    expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf(bindings))).toBeNull();
+  }
+});

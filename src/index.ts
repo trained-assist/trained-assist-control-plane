@@ -170,6 +170,8 @@ export interface Env {
   /** Dedicated HMAC credential for the sandbox-3 Telegram principal. */
   PRINCIPAL_SECRET_SANDBOX3?: string;
   PRINCIPAL_SECRET_SANDBOX3_OPS?: string;
+  /** Dedicated tasks:read credential for the isolated France VM ingress resolver. */
+  PRINCIPAL_SECRET_SANDBOX3_RUNNER?: string;
   DEPLOYMENT_ENV?: string;
   SANDBOX_RUNNER_MOCK_PROBE_PROFILE?: string;
   /** Dedicated HMAC credential for the isolated integration-v1 sandbox principal. */
