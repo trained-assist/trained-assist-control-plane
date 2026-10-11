@@ -1543,8 +1543,10 @@ export class TaskStore {
     const unique = new Map<string, NativeStopEvidence>();
     for (const proof of proofs) {
       const run = runs.find((item) => item.id === proof.attemptId);
+      const preAdmissionCancellation = proof.runId === null && proof.preAdmissionCancellation === true
+        && proof.state === 'cancelled' && proof.exitObserved === false;
       if (proof.taskId !== taskId || proof.profileId !== task.profile_id
-        || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed'))
+        || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation)
         || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
         || !run || run.session_id !== proof.runId || run.generation !== proof.ownerGeneration
         || run.finished_at === null || !['success', 'failed', 'cancelled'].includes(run.status)) {
@@ -1554,6 +1556,7 @@ export class TaskStore {
         taskId, profileId: task.profile_id, attemptId: run.id, runId: proof.runId,
         ownerGeneration: run.generation, state: proof.state, exitObserved: proof.exitObserved,
         ...(proof.preAdmissionRefusal === true ? { preAdmissionRefusal: true } : {}),
+        ...(preAdmissionCancellation ? { preAdmissionCancellation: true } : {}),
       });
     }
     if (unique.size === 0) return;
@@ -2716,14 +2719,14 @@ export class TaskStore {
   }
 
   async finishCpStopAttempt(target: CpStopTarget, snapshotId: string, generation: number,
-    attemptId: string, outcome: 'success' | 'failed' | 'cancelled'): Promise<boolean> {
+    attemptId: string, outcome: 'success' | 'failed' | 'cancelled', resolvedRunId?: string | null): Promise<boolean> {
     const attempt = target.attempts.find(value => value.attemptId === attemptId);
     if (!attempt) return false;
-    const pinnedRunId = await this.pinnedRunnerRunId(target, attempt);
-    if (!pinnedRunId) return false;
+    const pinnedRunId = resolvedRunId === undefined ? await this.pinnedRunnerRunId(target, attempt) : resolvedRunId;
+    if (!pinnedRunId && !(outcome === 'cancelled' && attempt.runId === null)) return false;
     const effectiveAttempts = await this.effectiveCpStopAttempts(target);
     const updated = await this.db.prepare(`UPDATE executions SET status = ?, finished_at = ?
-      WHERE id = ? AND task_id = ? AND generation = ? AND session_id = ? AND finished_at IS NULL
+      WHERE id = ? AND task_id = ? AND generation = ? AND session_id IS ? AND finished_at IS NULL
         AND EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND ${CP_STOP_MEMBERSHIP_GUARD_SQL})`)
       .bind(outcome, Date.now(), attempt.attemptId, target.userTaskId, attempt.ownerGeneration, pinnedRunId,
         target.userTaskId, ...this.cpStopMembershipGuardValues(target, snapshotId, generation, effectiveAttempts)).run();
@@ -2739,17 +2742,19 @@ export class TaskStore {
   async recordCpStopEvidence(target: CpStopTarget, snapshotId: string, generation: number,
     proof: NativeStopEvidence): Promise<boolean> {
     const attempt = target.attempts.find(value => value.attemptId === proof.attemptId);
+    const preAdmissionCancellation = proof.runId === null && proof.preAdmissionCancellation === true
+      && proof.state === 'cancelled' && proof.exitObserved === false;
     if (!attempt || proof.taskId !== target.userTaskId || proof.profileId !== target.profileId
       || proof.ownerGeneration !== attempt.ownerGeneration
-      || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed'))
+      || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation)
       || !['succeeded', 'failed', 'cancelled'].includes(proof.state)) return false;
     const pinnedRunId = await this.pinnedRunnerRunId(target, attempt);
-    if (!pinnedRunId || proof.runId !== pinnedRunId) return false;
+    if (proof.runId !== pinnedRunId || (pinnedRunId === null) !== preAdmissionCancellation) return false;
     const effectiveAttempts = await this.effectiveCpStopAttempts(target);
     const eventId = `cp-stop-proof:${snapshotId}:${proof.attemptId}`;
     await this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
       SELECT ?, id, 'progress', generation, 'gateway', ?, ? FROM durable_tasks WHERE id = ? AND ${CP_STOP_MEMBERSHIP_GUARD_SQL}
-        AND EXISTS (SELECT 1 FROM executions WHERE id = ? AND session_id = ? AND finished_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM executions WHERE id = ? AND session_id IS ? AND finished_at IS NOT NULL
           AND status IN ('success','failed','cancelled'))`)
       .bind(eventId, JSON.stringify({ event: 'native_stop.confirmed', nativeStops: [proof] }), Date.now(), target.userTaskId,
         ...this.cpStopMembershipGuardValues(target, snapshotId, generation, effectiveAttempts), proof.attemptId, pinnedRunId).run();
@@ -2918,6 +2923,22 @@ export class TaskStore {
                  AND claim.kind = 'cancel_requested' AND claim.source = 'gateway' AND claim.generation = task.generation
                  AND claim.payload_json = target.value)))
        ),
+       pre_admission_cancel_proofs AS MATERIALIZED (
+         SELECT proof.user_task_id, proof.generation, proof.event_id,
+           json_extract(observed.value, '$.taskId') AS task_id,
+           json_extract(observed.value, '$.profileId') AS profile_id,
+           json_extract(observed.value, '$.attemptId') AS attempt_id,
+           json_extract(observed.value, '$.ownerGeneration') AS owner_generation
+         FROM events AS proof,
+           json_each(CASE WHEN json_type(proof.payload, '$.nativeStops') = 'array'
+             THEN json_extract(proof.payload, '$.nativeStops') ELSE '[]' END) AS observed
+         WHERE proof.kind = 'progress' AND proof.source = 'gateway'
+           AND json_extract(proof.payload, '$.event') = 'native_stop.confirmed'
+           AND observed.type = 'object' AND json_extract(observed.value, '$.runId') IS NULL
+           AND json_type(observed.value, '$.exitObserved') = 'false'
+           AND json_type(observed.value, '$.preAdmissionCancellation') = 'true'
+           AND json_extract(observed.value, '$.state') = 'cancelled'
+       ),
        attempts_valid AS MATERIALIZED (
          SELECT * FROM pinned AS task
          WHERE (SELECT count(*) FROM executions WHERE task_id = task.id) = json_array_length(task.attempts)
@@ -2937,7 +2958,13 @@ export class TaskStore {
                      AND rejection.generation = json_extract(attempt.value, '$.ownerGeneration')
                      AND json_extract(rejection.payload, '$.event') = 'runner_submit_rejected'
                      AND json_extract(rejection.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
-                     AND json_extract(rejection.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey'))))
+                     AND json_extract(rejection.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey'))
+                   AND NOT EXISTS (SELECT 1 FROM pre_admission_cancel_proofs AS stop_proof
+                     WHERE stop_proof.user_task_id = task.id AND stop_proof.generation = task.generation
+                       AND stop_proof.event_id = 'cp-stop-proof:' || task.window_snapshot || ':' || json_extract(attempt.value, '$.attemptId')
+                       AND stop_proof.task_id = task.id AND stop_proof.profile_id = task.profile_id
+                       AND stop_proof.attempt_id = json_extract(attempt.value, '$.attemptId')
+                       AND stop_proof.owner_generation = json_extract(attempt.value, '$.ownerGeneration'))))
                OR NOT EXISTS (SELECT 1 FROM executions AS execution
                  WHERE execution.task_id = task.id AND execution.id = json_extract(attempt.value, '$.attemptId')
                    AND execution.generation = json_extract(attempt.value, '$.ownerGeneration')
