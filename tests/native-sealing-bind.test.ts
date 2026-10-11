@@ -69,7 +69,7 @@ describe('native result sealing binds', () => {
     } as unknown as RunnerApiAdapter;
     const ctx = { step: async (_name: string, operation: () => Promise<unknown>) => operation() } as StepCtx;
     const params = { taskId, profileId: 'fixture-profile', generation: 1, runId: attempt.id,
-      runnerEngine: 'dynamic-ip-azure-agent-run' };
+      runnerEngine: 'agent_api' };
     const outcome = await conversationPlan(ctx, store, params, { adapter });
     expect(fetchArtifacts).toHaveBeenCalledWith(`https://runner.fixture/v1/runs/${runnerRunId}/artifacts`, expect.objectContaining({ method: 'GET' }));
     if (shape === 'malformed') {

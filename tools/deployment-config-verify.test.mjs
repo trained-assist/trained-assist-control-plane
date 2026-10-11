@@ -65,11 +65,11 @@ test('sandbox-3 target uses isolated state and enables only its isolated Telegra
     assert.equal(sandbox3.vars.ROUTER_SELECTOR, 'communication_v1');
     assert.equal(sandbox3.vars.ROUTER_SELECTOR_NAMES_ONLY, 'false');
     assert.equal(sandbox3.vars.ROUTER_CONTINUATION_ENABLED, 'true');
-    assert.equal(sandbox3.vars.ROUTER_AGENT_ENGINE, 'eu-vm-agent-run');
+    assert.equal(sandbox3.vars.ROUTER_AGENT_ENGINE, undefined);
     assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'true');
     assert.equal(sharedTelegram.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(sharedTelegram.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev');
     assert.equal(sharedTelegram.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'integration-telegram-ux-v1');
-    assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, 'dynamic-ip-azure-agent-run');
+    assert.equal(sharedTelegram.vars.ROUTER_AGENT_ENGINE, undefined);
     assert.equal(sharedTelegram.vars.RUN_SPEC_REPOSITORY, undefined);
 });

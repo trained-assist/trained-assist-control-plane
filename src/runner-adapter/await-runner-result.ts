@@ -22,7 +22,7 @@ export interface AwaitRunnerResultOptions {
   runId: string;
   taskId: string;
   generation: number;
-  engineName?: string;
+  answerMode?: 'runner_api' | 'stdout';
   declaredOutputPaths?: readonly string[];
   pollSec?: number;
   timeoutSec?: number;
@@ -223,16 +223,18 @@ async function finalize(
   // контракте Runner'а текста нет. Отсутствие текста не прячется за ok=true —
   // вызывающий видит `engineText: null` и решает сам.
   const engineText = extractEngineText(seenEvents);
-  const native = opts.engineName === 'dynamic-ip-azure-agent-run';
-  const text = native
-    ? typeof status.answer === 'string' && status.answer.trim().length > 0 ? status.answer : null
-    : engineText?.text ?? result.text ?? null;
+  // In API mode, status.answer is the normalized public result. Legacy callers
+  // can still use the versioned stdout contract; this switch is a caller/API
+  // contract, never a physical worker name.
+  const statusAnswer = typeof status.answer === 'string' && status.answer.trim().length > 0
+    ? status.answer : null;
+  const text = opts.answerMode === 'runner_api' ? statusAnswer : engineText?.text ?? result.text ?? null;
   const resolution = [...seenEvents].sort((first, second) => second.sequence - first.sequence)
     .find((event) => event.type === 'agent_exit_resolved')?.payload as { answerSource?: unknown } | undefined;
-  const answerSource = native && text !== null && (resolution?.answerSource === 'agent_file' || resolution?.answerSource === 'engine_stdout')
+  const answerSource = text !== null && (resolution?.answerSource === 'agent_file' || resolution?.answerSource === 'engine_stdout')
     ? resolution.answerSource : null;
   const answer: RunnerAnswer = { text, answerSource,
-    source: text === null ? null : native ? 'runner_status_answer' : engineText ? engineText.source : 'runner_result_text',
-    version: text === null ? null : native ? 'runner-answer-v1' : engineText?.version ?? 'runner-answer-v1' };
+    source: text === null ? null : opts.answerMode === 'runner_api' ? 'runner_status_answer' : engineText ? engineText.source : 'runner_result_text',
+    version: text === null ? null : opts.answerMode === 'runner_api' ? 'runner-answer-v1' : engineText?.version ?? 'runner-answer-v1' };
   return { ok: true, result, eventsRecorded, artifacts, engineText, answer };
 }

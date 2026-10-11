@@ -209,7 +209,7 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
     { answer: undefined, source: 'agent_file', expected: null },
     { answer: null, source: null, expected: null },
     { answer: '  \n', source: 'engine_stdout', expected: null },
-  ])('uses only explicit native answers, preserves provenance and terminal replay: %j', async ({ answer, source, expected }) => {
+  ])('uses only normalized Runner API answers, preserves provenance and terminal replay: %j', async ({ answer, source, expected }) => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-native-answer');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'process the CSV' });
@@ -222,7 +222,7 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
       return { ...page, events: [...page.events, { type: 'agent_exit_resolved', sequence: page.cursor + 1, payload: { answerSource: source } }], cursor: page.cursor + 1 };
     };
     const native = { ...adapter, submit, status, events, result: async () => ({ ...await adapter.result(), text: 'result-text fallback must not leak' }) };
-    const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run', goal: 'process the CSV' };
+    const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'agent_api', goal: 'process the CSV' };
     expect(await conversationPlan(ctx, store, params, { adapter: native as unknown as RunnerApiAdapter })).toMatchObject({ ok: true, answer: expected });
     const task = await store.requireTask(taskId);
     const result = JSON.parse(task.result_json!);
@@ -241,7 +241,7 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
     expect(await store.listRuns(taskId)).toHaveLength(1);
   });
 
-  it('replays a pre-upgrade cached wait by reading native status, never stdout or new jobs', async () => {
+  it('replays a pre-upgrade cached wait by reading normalized API status, never stdout or new jobs', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-native-cached-answer');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'original task' });
@@ -259,7 +259,7 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
       return value;
     } };
     const outcome = await conversationPlan(cachedCtx, store,
-      { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'dynamic-ip-azure-agent-run', goal: 'original task' },
+      { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'agent_api', goal: 'original task' },
       { adapter: { ...adapter, submit, status } as unknown as RunnerApiAdapter });
     expect(outcome).toMatchObject({ ok: true, answer: 'Authoritative answer' });
     expect(JSON.parse((await store.requireTask(taskId)).result_json!)).toMatchObject({ answerSource: 'runner_status_answer' });

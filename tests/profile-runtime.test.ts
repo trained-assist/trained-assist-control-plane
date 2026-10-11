@@ -215,13 +215,13 @@ describe('Workflow durable-profile execution', () => {
     const nativeRunId = `run_${crypto.randomUUID()}`;
     const submits: Record<string, unknown>[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${generic ? bindings.RUNNER_API_KEY_TELEGRAM_UX : bindings.RUNNER_API_KEY}`);
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-agent-api-key');
       const path = new URL(url).pathname;
       if (path === '/v1/runs') {
         const body = JSON.parse(String(init?.body));
         submits.push(body);
         expect(body.input.inlinePrompt).toBe(goal);
-        expect(body.outputs ?? []).toEqual(generic ? [] : JSON.parse(bindings.RUN_SPEC_OUTPUTS));
+        expect(body.outputs ?? []).toEqual([]);
         return Response.json({ requestId: 'fixture-request', userTaskId: taskId, runId: nativeRunId, deduplicated: false });
       }
       if (path.endsWith('/status')) return Response.json({ state: generic ? 'succeeded' : 'failed', connectionLost: false,
@@ -235,9 +235,13 @@ describe('Workflow durable-profile execution', () => {
       throw new Error('Unexpected fixture request');
     }));
     const payload: PlanParams = { taskId, generation: 1, profileId: generic ? 'integration-v1' : TELEGRAM_UX_PROFILE,
-      goal, runId: run.id, runnerEngine: 'dynamic-ip-azure-agent-run' };
+      goal, runId: run.id, runnerEngine: 'agent_api' };
     const step = { do: async (_name: string, _options: unknown, callback: (context: unknown) => Promise<unknown>) => callback({ attempt: 1 }) };
-    const execute = () => TaskWorkflow.prototype.run.call({ env: { ...env, ...bindings, RUN_SPEC_MCP: 'null', RUN_SPEC_INPUT_REFS: '[]' } } as unknown as TaskWorkflow,
+    const execute = () => TaskWorkflow.prototype.run.call({ env: { ...env, ...bindings,
+      RUNNER_API_ENGINE_SELECTION: 'agent_api', RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
+      RUNNER_PROFILE_DELEGATION_SECRET: 'fixture-delegation-secret',
+      RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'fixture-principal', RUNNER_PROFILE_DELEGATION_TENANT_ID: 'fixture-tenant',
+      RUN_SPEC_MCP: 'null', RUN_SPEC_INPUT_REFS: '[]' } } as unknown as TaskWorkflow,
       { payload } as WorkflowEvent<PlanParams>, step as unknown as WorkflowStep);
     const outcome = await execute();
     expect(outcome.ok).toBe(generic);

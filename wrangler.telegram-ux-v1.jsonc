@@ -25,7 +25,6 @@
     "NATIVE_CANCEL_CONFIRMATION": "true",
     "ROUTER_CONTINUATION_ENABLED": "true",
     "ROUTER_AGENT_ALLOWED": "true",
-    "ROUTER_AGENT_ENGINE": "dynamic-ip-azure-agent-run",
     "RUNNER_API_ENGINE_SELECTION": "agent_api",
     "RUNNER_API_URL": "https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev",
     "RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID": "integration-telegram-ux-v1",

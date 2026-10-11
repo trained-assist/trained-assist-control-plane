@@ -726,7 +726,7 @@ export async function conversationPlan(
           runId: runnerRunId,
           taskId,
           generation,
-          engineName: p.runnerEngine ?? 'opencode',
+          answerMode: p.runnerEngine === 'agent_api' ? 'runner_api' : 'stdout',
           declaredOutputPaths: runnerDeclaredOutputs,
           pollSec: p.runnerPollSec ?? 1,
           timeoutSec: runnerResultTimeoutSec,
@@ -747,17 +747,23 @@ export async function conversationPlan(
       return { ok: false, reason: outcome.reason };
     }
     const runnerResult = outcome.result;
-    const native = p.runnerEngine === 'dynamic-ip-azure-agent-run';
-    const cachedStatus = native && !outcome.answer ? await adapter.status(runnerRunId) : null;
-    const cachedNativeText = typeof cachedStatus?.answer === 'string' && cachedStatus.answer.trim().length > 0 ? cachedStatus.answer : null;
-    const text = outcome.answer ? outcome.answer.text : native ? cachedNativeText : outcome.engineText?.text ?? runnerResult.text ?? null;
+    let normalizedApiAnswer = outcome.answer;
+    if (p.runnerEngine === 'agent_api' && normalizedApiAnswer === undefined) {
+      const latestStatus = await adapter.status(runnerRunId);
+      if (typeof latestStatus.answer === 'string' && latestStatus.answer.trim().length > 0) {
+        normalizedApiAnswer = { text: latestStatus.answer, source: 'runner_status_answer', version: 'runner-answer-v1', answerSource: null };
+      }
+    }
+    const text = p.runnerEngine === 'agent_api'
+      ? normalizedApiAnswer?.text ?? null
+      : outcome.engineText?.text ?? runnerResult.text ?? null;
     engine = {
       ok: runnerResult.outcome === 'succeeded',
       // Конечный текст движка (stdout), а не ответ человека.
       text,
-      textSource: outcome.answer?.source ?? (native ? cachedNativeText === null ? null : 'runner_status_answer' : outcome.engineText?.source ?? null),
-      textVersion: outcome.answer?.version ?? (native ? cachedNativeText === null ? null : 'runner-answer-v1' : outcome.engineText?.version ?? null),
-      answerSource: outcome.answer?.answerSource ?? null,
+      textSource: normalizedApiAnswer?.source ?? (p.runnerEngine === 'agent_api' ? null : outcome.engineText?.source ?? null),
+      textVersion: normalizedApiAnswer?.version ?? (p.runnerEngine === 'agent_api' ? null : outcome.engineText?.version ?? null),
+      answerSource: normalizedApiAnswer?.answerSource ?? null,
       artifacts: outcome.artifacts,
       persistence: runnerResult.persistence,
       persistenceReason: runnerResult.persistenceReason ?? null,
