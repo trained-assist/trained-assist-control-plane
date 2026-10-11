@@ -128,13 +128,17 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
         if (name === 'agent-intent') {
           assert.equal(route.route, 'agent');
           assert.equal(route.reasonCode, 'COMMUNICATION_SELECTED');
-          assert.ok(typeof route.workOrder?.goal === 'string' && route.workOrder.goal.includes(text));
+          assert.equal(route.workOrder?.goal, text);
           assert.equal(route.continuation?.issued, false);
-          Object.assign(evidence, { route: route.route, reasonCode: route.reasonCode, workOrderContainsInput: true });
+          Object.assign(evidence, { route: route.route, reasonCode: route.reasonCode,
+            inputText: text, workOrderMatchesInput: true });
         } else {
           assert.equal(route.route, 'deterministic');
           assert.equal(route.capabilityId, capabilityId);
           assert.ok(typeof route.reply?.text === 'string' && route.reply.text.trim());
+          const expectedReplyMarker = name === 'health' ? 'control plane отвечает' : 'Доступные quick answers';
+          assert.ok(route.reply.text.toLowerCase().includes(expectedReplyMarker.toLowerCase()));
+          evidence.replyMatchesExpected = true;
         }
         assert.ok(identity(route.decisionId));
         evidence.decisionId = route.decisionId;
