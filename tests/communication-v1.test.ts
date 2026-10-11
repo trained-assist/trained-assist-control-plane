@@ -366,6 +366,57 @@ describe('Task Store and Output ownership', () => {
     if (transport === 'service') expect(externalFetch).not.toHaveBeenCalled();
   });
 
+  it('shows the selected agent intent and persisted input without starting a Runner execution', async () => {
+    const store = new TaskStore(env.DB);
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile',
+      scopes: ['tasks:intake', 'tasks:read', 'tasks:control'] });
+    const marker = `INTENT-${crypto.randomUUID()}`;
+    const text = `Create a concise three-step checklist for organizing a small community event. Include this unique marker exactly once: ${marker}`;
+    const requestId = nextId();
+    const pilot = new PilotRouter({ config: { enabled: true, activatedAt: null,
+      cohortProfileIds: ['selector-profile'], legacyProfileIds: null } });
+    const admitted = await new IntakeService(store, pilot).admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1, requestId, profileId: 'selector-profile', inputItems: [{ text }],
+    });
+    createdIds.push(admitted.userTaskId);
+    const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const rpc = JSON.parse(String(init?.body));
+      expect(rpc.params.name).toBe('resolve_user_intent');
+      expect(rpc.params.arguments.input_bundle.events[0].text).toBe(text);
+      return Response.json({ id: rpc.id, result: { structuredContent: {
+        user_goal: 'Подготовить план небольшого мероприятия.', decision: 'agent',
+      } } });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const signature = await signPrincipal('selector-principal', 'test-principal-secret');
+    const routeRequest = () => new Request('https://control.example.test/route', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature },
+      body: JSON.stringify({ taskId: admitted.userTaskId, continue: false }),
+    });
+    const bindings = { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'test-principal-secret',
+      ROUTER_SELECTOR: 'communication_v1', COMMUNICATION_API_URL: 'https://communication.example.test',
+      COMMUNICATION_TOKEN: 'test-credential' };
+
+    const response = await worker.fetch(routeRequest(), bindings);
+    expect(response.status).toBe(200);
+    const selected = await response.json() as Record<string, unknown>;
+    expect(selected).toMatchObject({ route: 'agent', mode: 'ai-agent-job', reasonCode: 'COMMUNICATION_SELECTED',
+      needsExecutor: true, continuation: { owner: 'output', requested: false, issued: false } });
+    expect(selected.workOrder).toBeTruthy();
+    const task = await store.requireTask(admitted.userTaskId);
+    expect(JSON.parse(task.user_value ?? '{}').inputItems).toEqual([{ text }]);
+    expect(task.user_value).toContain(marker);
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+
+    const replayResponse = await worker.fetch(routeRequest(), bindings);
+    expect(replayResponse.status).toBe(200);
+    const replay = await replayResponse.json() as Record<string, unknown>;
+    expect(replay.decisionId).toBe(selected.decisionId);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+  });
+
   it('HTTP fallback dispatches through Output without requiring gateway start', async () => {
     const store = new TaskStore(env.DB);
     const goal = 'Разбери паттерны сильных заголовков Instagram и предложи 10 свежих вариантов для карусели про неожиданные поступки кандидатов на собеседовании. Не повторяй формулировки из исходных историй.';
