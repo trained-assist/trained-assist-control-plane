@@ -69,21 +69,30 @@ export async function cleanupTelegramUxState({ env = process.env, mode = 'check-
     return assertCountRecord(result.results?.[0]);
   };
   const before = await inventory();
-  const tasksResult = await query('SELECT id, status FROM durable_tasks WHERE profile_id = ? ORDER BY id', [PROFILE_ID]);
+  const tasksResult = await query(`SELECT t.id, t.status, t.request_id,
+      (SELECT COUNT(*) FROM executions e WHERE e.task_id = t.id) AS execution_count
+    FROM durable_tasks t WHERE t.profile_id = ? ORDER BY t.id`, [PROFILE_ID]);
   assertReadOnly(tasksResult);
   const tasks = tasksResult.results;
-  if (!Array.isArray(tasks) || tasks.some(task => typeof task.id !== 'string' || typeof task.status !== 'string')) throw new Error('cleanup_task_inventory_invalid');
+  if (!Array.isArray(tasks) || tasks.some(task => typeof task.id !== 'string' || typeof task.status !== 'string'
+      || !Number.isSafeInteger(task.execution_count) || task.execution_count < 0)) throw new Error('cleanup_task_inventory_invalid');
   if (mode === 'check-empty') {
     if (Object.values(before).some(count => count !== 0)) throw new Error('sandbox_buffers_not_empty');
     return { lane: 'telegram-ux-v1', database: DATABASE_NAME, mode, empty: true, counts: before };
   }
-  if (tasks.some(task => !['done', 'failed', 'cancelled'].includes(task.status))) throw new Error('nonterminal_test_tasks_present');
+  const terminal = task => ['done', 'failed', 'cancelled'].includes(task.status);
+  const safeUnstartedIntentProbe = task => !terminal(task)
+    && task.execution_count === 0
+    && /^live-v1-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}:agent-intent$/.test(task.request_id ?? '');
+  const strandedProbes = tasks.filter(safeUnstartedIntentProbe);
+  if (tasks.some(task => !terminal(task) && !safeUnstartedIntentProbe(task))) throw new Error('nonterminal_test_tasks_present');
 
   const runnerKey = env.RUNNER_API_KEY_AGENT_API?.trim() ?? '';
   const delegationSecret = env.RUNNER_PROFILE_DELEGATION_SECRET?.trim() ?? '';
-  if (tasks.length && (!runnerKey || !delegationSecret)) throw new Error('runner_cleanup_credentials_missing');
+  const runnerTasks = tasks.filter(task => task.execution_count > 0);
+  if (runnerTasks.length && (!runnerKey || !delegationSecret)) throw new Error('runner_cleanup_credentials_missing');
   let runnerTasksCleaned = 0;
-  for (const task of tasks) {
+  for (const task of runnerTasks) {
     const expiresAt = String(Date.now() + 60_000);
     const payload = `${PRINCIPAL_ID}\0${TENANT_ID}\0${PROFILE_ID}\0${expiresAt}`;
     const signature = createHmac('sha256', delegationSecret).update(payload).digest('hex');
@@ -128,7 +137,8 @@ export async function cleanupTelegramUxState({ env = process.env, mode = 'check-
   const after = await inventory();
   if (Object.values(after).some(count => count !== 0)) throw new Error('sandbox_buffers_not_empty_after_cleanup');
   return { lane: 'telegram-ux-v1', database: DATABASE_NAME, mode, empty: true,
-    terminalTasksFound: tasks.length, runnerTasksCleaned, pendingBatchesFound: batches.length, cpRowsDeleted, counts: after };
+    terminalTasksFound: tasks.filter(terminal).length, unstartedIntentProbesCleared: strandedProbes.length,
+    runnerTasksCleaned, pendingBatchesFound: batches.length, cpRowsDeleted, counts: after };
 }
 
 async function main() {
