@@ -142,7 +142,9 @@ describe('native cancellation requires actual terminal evidence', () => {
   it('bare UUID is not normalized or submitted as a native cancellation identity', async () => {
     const fixture = await setup();
     const hook = runnerExternalStopPort(fixture.adapter);
-    expect(await hook.stop({ ...fixture.context, runId: fixture.context.runId!.slice(4) })).toEqual({ state: 'unknown' });
+    expect(await hook.stop({ ...fixture.context, runId: fixture.context.runId!.slice(4) })).toEqual({
+      state: 'unknown', diagnosticCode: 'run_id_invalid',
+    });
     expect(fixture.adapter.cancel).not.toHaveBeenCalled();
   });
 

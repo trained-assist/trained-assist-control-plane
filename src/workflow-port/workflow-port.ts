@@ -543,6 +543,10 @@ export class CfWorkflowPort implements WorkflowPortApi {
         runId: attempt.runId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
       const outcome = await this.externalStop.stop(context);
       if (!confirmedExternalStop(context, outcome) || outcome.state !== 'stopped') {
+        await this.store.logEvent({ taskId, kind: 'error', source: 'gateway', generation: target.taskGeneration,
+          executionId: attempt.attemptId, payload: { where: 'cancel.pinned_external_stop',
+            reasonCode: outcome.state === 'stopped' ? 'stop_result_unconfirmed'
+              : outcome.diagnosticCode ?? 'external_stop_unclassified' } });
         return { ...unresolved, nativeStopState: outcome.state === 'pending' ? 'pending' : 'unknown' };
       }
       if (!await matches()) return unresolved;

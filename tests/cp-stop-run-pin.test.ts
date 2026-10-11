@@ -60,6 +60,31 @@ describe('serverless Runner run ids', () => {
     expect(await port.stop(context)).toMatchObject({ state: 'stopped' });
     expect(adapter.cancel).toHaveBeenCalledWith(runId, { ownerGeneration: 2, reason: undefined });
   });
+
+  it('classifies cancel transport failures without exposing raw error text', async () => {
+    const runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
+    const context: ExternalStopContext = { taskId: 'task-serverless-run', profileId: 'profile-serverless-run',
+      attemptId: 'attempt-serverless-run', runId, ownerGeneration: 2 };
+    const adapter = { cancel: vi.fn(async () => { throw new Error('private transport detail'); }),
+      status: vi.fn(), result: vi.fn() };
+    const port = runnerExternalStopPort(adapter as unknown as Pick<import('../src/runner-adapter/runner-api-adapter').RunnerApiAdapter, 'cancel' | 'status' | 'result'>);
+    expect(await port.stop(context)).toEqual({ state: 'unknown', diagnosticCode: 'cancel_transport_error' });
+    expect(adapter.status).not.toHaveBeenCalled();
+  });
+
+  it('records a sanitized diagnostic when a pinned Runner stop cannot be confirmed', async () => {
+    const current = await fixture();
+    current.stop.mockResolvedValue({ state: 'unknown', diagnosticCode: 'status_connection_lost' });
+
+    expect(await current.port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({
+      stopConfirmed: false, nativeStopState: 'unknown',
+    });
+    const event = (await current.store.history(current.taskId)).find(item => item.kind === 'error');
+    expect(event).toMatchObject({ source: 'gateway', generation: current.target.taskGeneration, execution_id: current.attempt.id });
+    expect(JSON.parse(event!.payload_json)).toEqual({
+      where: 'cancel.pinned_external_stop', reasonCode: 'status_connection_lost',
+    });
+  });
 });
 
 describe('immutable stop execution pins', () => {
