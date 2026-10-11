@@ -85,6 +85,13 @@ const CP_STOP_GUARD_SQL = `generation = ? AND profile_id = ? AND request_id = ?
               AND json_extract(receipt.payload_json, '$.requestId') = durable_tasks.request_id
               AND json_extract(receipt.payload_json, '$.ownerGeneration') = executions.generation
               AND json_extract(receipt.payload_json, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey')
+            LIMIT 1))
+          OR (json_type(attempt.value, '$.runId') = 'null' AND executions.session_id IS (
+            SELECT json_extract(legacy.payload_json, '$.runId') FROM task_events AS legacy
+            WHERE legacy.user_task_id = durable_tasks.id AND legacy.kind = 'run_started' AND legacy.source = 'executor'
+              AND legacy.generation = executions.generation
+              AND json_extract(legacy.payload_json, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey')
+              AND json_extract(legacy.payload_json, '$.runId') IS NOT NULL
             LIMIT 1)))))
   AND NOT EXISTS (SELECT 1 FROM task_events, json_each(?) AS attempt
     WHERE task_events.user_task_id = durable_tasks.id AND task_events.kind = 'progress' AND task_events.source = 'executor'
@@ -827,8 +834,7 @@ export class TaskStore {
       AND kind = 'progress' AND source = 'executor' AND generation = ?`)
       .bind(`runner-submit-receipt:${attempt.attemptId}`, target.userTaskId, attempt.ownerGeneration)
       .first<{ payload_json: string }>();
-    if (!row) return null;
-    try {
+    if (row) try {
       const receipt = JSON.parse(row.payload_json) as Record<string, unknown>;
       if (receipt.event !== 'runner_submit_receipt' || receipt.attemptId !== attempt.attemptId
         || receipt.userTaskId !== target.userTaskId || receipt.profileId !== target.profileId
@@ -838,6 +844,35 @@ export class TaskStore {
       return run.task_id === target.userTaskId && run.generation === attempt.ownerGeneration && run.session_id === receipt.runId
         ? receipt.runId : null;
     } catch { return null; }
+    // Before runner_submit_receipt was added, conversationPlan durably emitted
+    // run_started with the same stable idempotency key and Runner receipt. Accept
+    // that historical witness only when it is unique and matches the exact run
+    // already attached to this captured CP attempt.
+    const events = await this.history(target.userTaskId);
+    const hasSubmitWitness = events.some(event => event.kind === 'progress' && event.source === 'executor'
+      && event.generation === attempt.ownerGeneration && (() => {
+        try {
+          const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+          return payload.event === 'runner_submit_started' && payload.attemptId === attempt.attemptId
+            && payload.idempotencyKey === attempt.idempotencyKey;
+        } catch { return false; }
+      })());
+    if (!hasSubmitWitness) return null;
+    const legacyRunIds = new Set<string>();
+    for (const event of events) {
+      if (event.kind !== 'run_started' || event.source !== 'executor' || event.generation !== attempt.ownerGeneration) continue;
+      try {
+        const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+        if (payload.idempotencyKey === attempt.idempotencyKey && typeof payload.runId === 'string' && payload.runId) {
+          legacyRunIds.add(payload.runId);
+        }
+      } catch { /* malformed historical evidence is ignored */ }
+    }
+    if (legacyRunIds.size !== 1) return null;
+    const [legacyRunId] = legacyRunIds;
+    const run = await this.requireRun(attempt.attemptId);
+    return run.task_id === target.userTaskId && run.generation === attempt.ownerGeneration && run.session_id === legacyRunId
+      ? legacyRunId! : null;
   }
 
   async getRun(runId: string): Promise<RunAttemptRow | null> {
@@ -2822,7 +2857,7 @@ export class TaskStore {
          SELECT *, CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END AS payload FROM task_events
          WHERE user_task_id IN (SELECT json_extract(value, '$.userTaskId') FROM targets)
        ),
-       receipt_bindings AS MATERIALIZED (
+       receipt_candidates AS MATERIALIZED (
          SELECT task.id AS user_task_id, json_extract(attempt.value, '$.attemptId') AS attempt_id,
            json_extract(receipt.payload, '$.runId') AS run_id
          FROM targets AS target JOIN durable_tasks AS task ON task.id = json_extract(target.value, '$.userTaskId'),
@@ -2840,6 +2875,28 @@ export class TaskStore {
            AND json_extract(receipt.payload, '$.requestId') = task.request_id
            AND json_extract(receipt.payload, '$.ownerGeneration') = json_extract(attempt.value, '$.ownerGeneration')
            AND json_extract(receipt.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey')
+         UNION ALL
+         SELECT task.id AS user_task_id, json_extract(attempt.value, '$.attemptId') AS attempt_id,
+           json_extract(receipt.payload, '$.runId') AS run_id
+         FROM targets AS target JOIN durable_tasks AS task ON task.id = json_extract(target.value, '$.userTaskId'),
+           json_each(CASE WHEN json_type(target.value, '$.attempts') = 'array'
+             THEN json_extract(target.value, '$.attempts') ELSE '[]' END) AS attempt
+         JOIN events AS receipt ON receipt.user_task_id = task.id
+         WHERE attempt.type = 'object' AND json_type(attempt.value, '$.runId') = 'null'
+           AND receipt.kind = 'run_started' AND receipt.source = 'executor'
+           AND receipt.generation = json_extract(attempt.value, '$.ownerGeneration')
+           AND json_extract(receipt.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey')
+           AND json_extract(receipt.payload, '$.runId') IS NOT NULL
+           AND EXISTS (SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
+             AND submission.kind = 'progress' AND submission.source = 'executor'
+             AND submission.generation = json_extract(attempt.value, '$.ownerGeneration')
+             AND json_extract(submission.payload, '$.event') = 'runner_submit_started'
+             AND json_extract(submission.payload, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
+             AND json_extract(submission.payload, '$.idempotencyKey') = json_extract(attempt.value, '$.idempotencyKey'))
+       ),
+       receipt_bindings AS MATERIALIZED (
+         SELECT user_task_id, attempt_id, MIN(run_id) AS run_id FROM receipt_candidates
+         GROUP BY user_task_id, attempt_id HAVING COUNT(DISTINCT run_id) = 1
        ),
        pinned AS MATERIALIZED (
          SELECT task.*, target.value, target.window_snapshot,
