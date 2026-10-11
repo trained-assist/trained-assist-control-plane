@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { cleanupTelegramUxRunnerTask, TELEGRAM_UX_PROFILE, TELEGRAM_UX_PRINCIPAL, TELEGRAM_UX_TENANT } from './telegram-ux-runner-task-cleanup.mjs';
+import { cleanupTelegramUxRunnerTask, parseTelegramUxRunnerTaskIds, TELEGRAM_UX_PROFILE, TELEGRAM_UX_PRINCIPAL, TELEGRAM_UX_TENANT } from './telegram-ux-runner-task-cleanup.mjs';
 
 const env = { RUNNER_API_KEY_AGENT_API: 'test-api-key', RUNNER_PROFILE_DELEGATION_SECRET: 'test-delegation-secret' };
 
@@ -35,4 +35,11 @@ test('rejects invalid IDs and missing credentials before a request', async () =>
   await assert.rejects(cleanupTelegramUxRunnerTask({ userTaskId: 'task-a', env: {},
     fetchImpl: async () => { called = true; return Response.json({}); } }), /cleanup_credentials_missing/);
   assert.equal(called, false);
+});
+
+test('parses only bounded, explicit task IDs and removes duplicates', () => {
+  assert.deepEqual(parseTelegramUxRunnerTaskIds('ut-one, ut-two,ut-one'), ['ut-one', 'ut-two']);
+  assert.throws(() => parseTelegramUxRunnerTaskIds(''), /cleanup_task_ids_invalid/);
+  assert.throws(() => parseTelegramUxRunnerTaskIds('../other'), /cleanup_task_ids_invalid/);
+  assert.throws(() => parseTelegramUxRunnerTaskIds(Array.from({ length: 21 }, (_, i) => `task-${i}`).join(',')), /cleanup_task_ids_invalid/);
 });
