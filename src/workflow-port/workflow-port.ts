@@ -526,12 +526,13 @@ export class CfWorkflowPort implements WorkflowPortApi {
     const known = await this.nativeStopEvidence(taskId);
     for (const attempt of target.attempts) {
       if (!await matches()) return unresolved;
-      if (!attempt.runId) {
+      const pinnedRunId = await this.store.pinnedRunnerRunId(target, attempt);
+      if (!pinnedRunId) {
         const run = await this.store.requireRun(attempt.attemptId);
         if (run.finished_at === null || await this.store.runnerSubmitMayHaveStarted(taskId, attempt.attemptId)) return unresolved;
         continue;
       }
-      const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === attempt.runId
+      const proof = known.find(value => value.attemptId === attempt.attemptId && value.runId === pinnedRunId
         && value.ownerGeneration === attempt.ownerGeneration && value.profileId === target.profileId);
       if (proof) {
         if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, proof)) return unresolved;
@@ -540,7 +541,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       }
       if (!this.externalStop || !await matches()) return unresolved;
       const context = { taskId, profileId: target.profileId, attemptId: attempt.attemptId,
-        runId: attempt.runId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
+        runId: pinnedRunId, ownerGeneration: attempt.ownerGeneration, reason: `cp_stop_window:${snapshotId}` };
       const outcome = await this.externalStop.stop(context);
       if (!confirmedExternalStop(context, outcome) || outcome.state !== 'stopped') {
         await this.store.logEvent({ taskId, kind: 'error', source: 'gateway', generation: target.taskGeneration,
@@ -555,7 +556,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
         state === 'succeeded' ? 'success' : state)) return unresolved;
       if (!await matches()) return unresolved;
       const observed: NativeStopEvidence = { taskId, profileId: target.profileId,
-        attemptId: attempt.attemptId, runId: attempt.runId, ownerGeneration: attempt.ownerGeneration,
+        attemptId: attempt.attemptId, runId: pinnedRunId, ownerGeneration: attempt.ownerGeneration,
         state, exitObserved: outcome.result.exitObserved,
         ...(outcome.result.exitReason === 'preflight_refused' ? { preAdmissionRefusal: true as const } : {}) };
       if (!await this.store.recordCpStopEvidence(target, snapshotId, generation, observed)) return unresolved;
