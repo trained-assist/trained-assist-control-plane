@@ -106,6 +106,9 @@ export interface NativeStopEvidence {
   ownerGeneration: number;
   state: 'succeeded' | 'failed' | 'cancelled';
   exitObserved: boolean;
+  /** Authenticated Runner terminal status is sufficient to prove the process is no longer active.
+   * Result publication/exit-code capture are separate facts and may arrive later or be unavailable. */
+  runnerTerminalStatusObserved?: true;
   /** Authenticated Runner proof that France refused launch before issuing a receipt. */
   preAdmissionRefusal?: true;
   /** Authenticated Runner fence proves this generation was cancelled before receipt/admission. */

@@ -1545,8 +1545,10 @@ export class TaskStore {
       const run = runs.find((item) => item.id === proof.attemptId);
       const preAdmissionCancellation = proof.runId === null && proof.preAdmissionCancellation === true
         && proof.state === 'cancelled' && proof.exitObserved === false;
+      const runnerTerminalStatus = proof.runId !== null && proof.runnerTerminalStatusObserved === true
+        && proof.exitObserved === false;
       if (proof.taskId !== taskId || proof.profileId !== task.profile_id
-        || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation)
+        || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation || runnerTerminalStatus)
         || !['succeeded', 'failed', 'cancelled'].includes(proof.state)
         || !run || run.session_id !== proof.runId || run.generation !== proof.ownerGeneration
         || run.finished_at === null || !['success', 'failed', 'cancelled'].includes(run.status)) {
@@ -1555,6 +1557,7 @@ export class TaskStore {
       unique.set(proof.attemptId, {
         taskId, profileId: task.profile_id, attemptId: run.id, runId: proof.runId,
         ownerGeneration: run.generation, state: proof.state, exitObserved: proof.exitObserved,
+        ...(runnerTerminalStatus ? { runnerTerminalStatusObserved: true } : {}),
         ...(proof.preAdmissionRefusal === true ? { preAdmissionRefusal: true } : {}),
         ...(preAdmissionCancellation ? { preAdmissionCancellation: true } : {}),
       });
@@ -2744,10 +2747,15 @@ export class TaskStore {
     const attempt = target.attempts.find(value => value.attemptId === proof.attemptId);
     const preAdmissionCancellation = proof.runId === null && proof.preAdmissionCancellation === true
       && proof.state === 'cancelled' && proof.exitObserved === false;
+    const runnerTerminalStatus = proof.runId !== null && proof.runnerTerminalStatusObserved === true
+      && proof.exitObserved === false;
     if (!attempt || proof.taskId !== target.userTaskId || proof.profileId !== target.profileId
       || proof.ownerGeneration !== attempt.ownerGeneration
-      || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation)
+      || !(proof.exitObserved === true || (proof.exitObserved === false && proof.preAdmissionRefusal === true && proof.state === 'failed') || preAdmissionCancellation || runnerTerminalStatus)
       || !['succeeded', 'failed', 'cancelled'].includes(proof.state)) return false;
+    const execution = await this.getRun(proof.attemptId);
+    if (!execution || execution.generation !== proof.ownerGeneration || execution.session_id !== proof.runId
+      || execution.finished_at === null || !['success', 'failed', 'cancelled'].includes(execution.status)) return false;
     const pinnedRunId = await this.pinnedRunnerRunId(target, attempt);
     if (proof.runId !== pinnedRunId || (pinnedRunId === null) !== preAdmissionCancellation) return false;
     const effectiveAttempts = await this.effectiveCpStopAttempts(target);
@@ -2991,7 +2999,8 @@ export class TaskStore {
                    AND (json_type(observed.value, '$.exitObserved') = 'true'
                      OR (json_type(observed.value, '$.exitObserved') = 'false'
                        AND json_type(observed.value, '$.preAdmissionRefusal') = 'true'
-                       AND json_extract(observed.value, '$.state') = 'failed'))
+                       AND json_extract(observed.value, '$.state') = 'failed')
+                     OR json_type(observed.value, '$.runnerTerminalStatusObserved') = 'true')
                    AND json_extract(observed.value, '$.state') IN ('succeeded','failed','cancelled'))))
            AND NOT EXISTS (SELECT 1 FROM events AS submission WHERE submission.user_task_id = task.id
              AND submission.kind = 'progress' AND submission.source = 'executor'
