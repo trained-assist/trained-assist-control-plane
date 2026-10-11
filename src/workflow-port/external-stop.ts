@@ -1,4 +1,5 @@
 import type { RunnerApiAdapter, RunnerResult } from '../runner-adapter/runner-api-adapter';
+import { RunnerConflictError, RunnerNotFoundError, RunnerStaleGenerationError, RunnerUnavailableError } from '../runner-adapter/errors';
 import type { TaskStore } from '../taskstore';
 import type { CpStopTarget, CpStopWindowRow } from '../taskstore';
 import { isRunnerRunId } from '../runner-adapter/run-id';
@@ -15,7 +16,34 @@ export interface ExternalStopContext {
 
 export type ExternalStopOutcome =
   | { state: 'stopped'; result: RunnerResult }
-  | { state: 'pending' | 'rejected' | 'unknown' };
+  | { state: 'pending' | 'rejected' | 'unknown'; diagnosticCode?: ExternalStopDiagnosticCode };
+
+/** Sanitized reason for an unconfirmed stop; never includes provider error text. */
+export type ExternalStopDiagnosticCode =
+  | 'run_id_invalid'
+  | 'cancel_rejected'
+  | 'cancel_ack_unrecognized'
+  | 'status_identity_mismatch'
+  | 'status_connection_lost'
+  | 'status_nonterminal'
+  | 'result_identity_mismatch'
+  | 'result_outcome_mismatch'
+  | 'cancel_runner_unavailable'
+  | 'cancel_runner_not_found'
+  | 'cancel_stale_generation'
+  | 'cancel_runner_conflict'
+  | 'cancel_transport_error'
+  | 'status_runner_unavailable'
+  | 'status_runner_not_found'
+  | 'status_stale_generation'
+  | 'status_runner_conflict'
+  | 'status_transport_error'
+  | 'result_runner_unavailable'
+  | 'result_runner_not_found'
+  | 'result_stale_generation'
+  | 'result_runner_conflict'
+  | 'result_transport_error'
+  | 'external_stop_unclassified';
 
 export interface ExternalStopPort {
   stop(context: ExternalStopContext): Promise<ExternalStopOutcome>;
@@ -41,19 +69,38 @@ export function confirmedExternalStop(context: ExternalStopContext, outcome: Ext
 export function runnerExternalStopPort(adapter: Pick<RunnerApiAdapter, 'cancel' | 'status' | 'result'>): ExternalStopPort {
   return {
     async stop(context) {
-      if (!isRunnerRunId(context.runId)) return { state: 'unknown' };
+      if (!isRunnerRunId(context.runId)) return { state: 'unknown', diagnosticCode: 'run_id_invalid' };
+      let stage: 'cancel' | 'status' | 'result' = 'cancel';
       try {
         const acknowledgement = await adapter.cancel(context.runId, { ownerGeneration: context.ownerGeneration, reason: context.reason });
-        if (['rejected', 'stale_generation', 'not_found'].includes(acknowledgement.status)) return { state: 'rejected' };
-        if (!['stop_pending', 'already_terminal'].includes(acknowledgement.status)) return { state: 'unknown' };
+        if (['rejected', 'stale_generation', 'not_found'].includes(acknowledgement.status)) {
+          return { state: 'rejected', diagnosticCode: 'cancel_rejected' };
+        }
+        if (!['stop_pending', 'already_terminal'].includes(acknowledgement.status)) {
+          return { state: 'unknown', diagnosticCode: 'cancel_ack_unrecognized' };
+        }
+        stage = 'status';
         const status = await adapter.status(context.runId);
         if (status.runId !== context.runId || status.userTaskId !== context.taskId
-          || status.ownerGeneration !== context.ownerGeneration || status.connectionLost) return { state: 'unknown' };
-        if (!['succeeded', 'failed', 'cancelled'].includes(status.state)) return { state: 'pending' };
+          || status.ownerGeneration !== context.ownerGeneration) return { state: 'unknown', diagnosticCode: 'status_identity_mismatch' };
+        if (status.connectionLost) return { state: 'unknown', diagnosticCode: 'status_connection_lost' };
+        if (!['succeeded', 'failed', 'cancelled'].includes(status.state)) return { state: 'pending', diagnosticCode: 'status_nonterminal' };
+        stage = 'result';
         const result = await adapter.result(context.runId);
         const outcome: ExternalStopOutcome = { state: 'stopped', result };
-        return confirmedExternalStop(context, outcome) && result.outcome === status.state ? outcome : { state: 'unknown' };
-      } catch { return { state: 'unknown' }; }
+        if (result.runId !== context.runId || result.userTaskId !== context.taskId || result.profileId !== context.profileId
+          || result.ownerGeneration !== context.ownerGeneration) return { state: 'unknown', diagnosticCode: 'result_identity_mismatch' };
+        return confirmedExternalStop(context, outcome) && result.outcome === status.state
+          ? outcome : { state: 'unknown', diagnosticCode: 'result_outcome_mismatch' };
+      } catch (error) {
+        const stagePrefix = stage;
+        const suffix = error instanceof RunnerUnavailableError ? 'runner_unavailable'
+          : error instanceof RunnerNotFoundError ? 'runner_not_found'
+            : error instanceof RunnerStaleGenerationError ? 'stale_generation'
+              : error instanceof RunnerConflictError ? 'runner_conflict' : 'transport_error';
+        const diagnosticCode = `${stagePrefix}_${suffix}` as ExternalStopDiagnosticCode;
+        return { state: 'unknown', diagnosticCode };
+      }
     },
   };
 }

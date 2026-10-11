@@ -628,7 +628,9 @@ export async function conversationPlan(
     runnerRunId = receipt.runId;
     runnerDeclaredOutputs = receipt.declaredOutputPaths;
     // Попытку уже создал порт (p.runId); привязываем runId Runner'а к ней.
-    if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId);
+    if (p.runId) await store.attachRunnerRun(p.runId, receipt.runId, {
+      ownerGeneration: generation, idempotencyKey: attemptKey,
+    });
     await store.logEvent({
       taskId,
       kind: 'run_started',

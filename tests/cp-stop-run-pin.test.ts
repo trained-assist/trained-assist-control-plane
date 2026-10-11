@@ -60,9 +60,88 @@ describe('serverless Runner run ids', () => {
     expect(await port.stop(context)).toMatchObject({ state: 'stopped' });
     expect(adapter.cancel).toHaveBeenCalledWith(runId, { ownerGeneration: 2, reason: undefined });
   });
+
+  it('classifies cancel transport failures without exposing raw error text', async () => {
+    const runId = `run_${'a'.repeat(64)}_${'b'.repeat(24)}`;
+    const context: ExternalStopContext = { taskId: 'task-serverless-run', profileId: 'profile-serverless-run',
+      attemptId: 'attempt-serverless-run', runId, ownerGeneration: 2 };
+    const adapter = { cancel: vi.fn(async () => { throw new Error('private transport detail'); }),
+      status: vi.fn(), result: vi.fn() };
+    const port = runnerExternalStopPort(adapter as unknown as Pick<import('../src/runner-adapter/runner-api-adapter').RunnerApiAdapter, 'cancel' | 'status' | 'result'>);
+    expect(await port.stop(context)).toEqual({ state: 'unknown', diagnosticCode: 'cancel_transport_error' });
+    expect(adapter.status).not.toHaveBeenCalled();
+  });
+
+  it('records a sanitized diagnostic when a pinned Runner stop cannot be confirmed', async () => {
+    const current = await fixture();
+    current.stop.mockResolvedValue({ state: 'unknown', diagnosticCode: 'status_connection_lost' });
+
+    expect(await current.port.cancel(current.taskId, { stopPin: current.pin })).toMatchObject({
+      stopConfirmed: false, nativeStopState: 'unknown',
+    });
+    const event = (await current.store.history(current.taskId)).find(item => item.kind === 'error');
+    expect(event).toMatchObject({ source: 'gateway', generation: current.target.taskGeneration, execution_id: current.attempt.id });
+    expect(JSON.parse(event!.payload_json)).toEqual({
+      where: 'cancel.pinned_external_stop', reasonCode: 'status_connection_lost',
+    });
+  });
 });
 
 describe('immutable stop execution pins', () => {
+  it('binds a receipt arriving after the stop snapshot only to its original attempt and idempotency key', async () => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('late receipt target resolution failed');
+    const pinned = resolved.targets[0]!;
+    expect(pinned.attempts[0]!.runId).toBeNull();
+    current.target.attempts = pinned.attempts;
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id,
+        idempotencyKey: pinned.attempts[0]!.idempotencyKey } });
+    await current.store.attachRunnerRun(current.attempt.id, current.runId, {
+      ownerGeneration: 1, idempotencyKey: pinned.attempts[0]!.idempotencyKey,
+    });
+    expect(await current.store.pinnedRunnerRunId(pinned, pinned.attempts[0]!)).toBe(current.runId);
+    current.stop.mockResolvedValue({ state: 'unknown', diagnosticCode: 'status_connection_lost' });
+    expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
+      .toMatchObject({ stopConfirmed: false, nativeStopState: 'unknown' });
+    expect(current.stop).toHaveBeenCalledWith(expect.objectContaining({ attemptId: current.attempt.id, runId: current.runId }));
+    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    current.status.mockResolvedValue({ status: 'complete' });
+    expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
+      .toMatchObject({ stopConfirmed: true, status: 'cancelled' });
+  });
+
+  it('refuses a late receipt whose persisted idempotency key conflicts with the stop snapshot', async () => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('late receipt target resolution failed');
+    const pinned = resolved.targets[0]!;
+    current.target.attempts = pinned.attempts;
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id,
+        idempotencyKey: pinned.attempts[0]!.idempotencyKey } });
+    await current.store.attachRunnerRun(current.attempt.id, current.runId, {
+      ownerGeneration: 1, idempotencyKey: pinned.attempts[0]!.idempotencyKey,
+    });
+    await env.DB.prepare(`UPDATE task_events SET payload_json = json_set(payload_json, '$.idempotencyKey', 'foreign-key')
+      WHERE event_id = ?`).bind(`runner-submit-receipt:${current.attempt.id}`).run();
+
+    expect(await current.store.pinnedRunnerRunId(pinned, pinned.attempts[0]!)).toBeNull();
+    expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
+      .toMatchObject({ stopConfirmed: false });
+    expect(current.stop).not.toHaveBeenCalled();
+    expect((await current.store.requireTask(current.taskId)).generation).toBe(1);
+  });
+
   it('repins known terminal evidence into the snapshot before final confirmation', async () => {
     const current = await fixture();
     current.status.mockResolvedValue({ status: 'complete' });
