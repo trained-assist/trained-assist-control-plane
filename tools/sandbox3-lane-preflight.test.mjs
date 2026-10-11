@@ -25,7 +25,7 @@ const ready = () => ({
     plain('PILOT_ACTIVATED_AT', '2026-10-11T00:00:00Z'), plain('PILOT_COHORT_PROFILE_IDS', 'integration-sandbox3-v1'),
     plain('ROUTER_AGENT_ALLOWED', 'true'),
     plain('ROUTER_SELECTOR', 'communication_v1'), plain('ROUTER_SELECTOR_NAMES_ONLY', 'false'),
-    plain('ROUTER_CONTINUATION_ENABLED', 'true'), plain('ROUTER_AGENT_ENGINE', 'eu-vm-agent-run'),
+    plain('ROUTER_CONTINUATION_ENABLED', 'true'), plain('RUNNER_API_ENGINE_SELECTION', 'agent_api'),
   ],
   cpSecretNames: ['COMMUNICATION_TOKEN'],
   tgBindings: [
@@ -84,6 +84,15 @@ test('sandbox3 blocks the legacy router and missing communication credentials', 
   const report = evaluateSandbox3Lane(input);
   assert.equal(report.checks.communicationV1Routing, 'BLOCKED');
   assert.equal(report.outcome, 'BLOCKED');
+});
+
+test('sandbox3 blocks physical engine pinning in CP and requires Agent API mode', () => {
+  const input = ready();
+  input.cpBindings = input.cpBindings.filter(item => item.name !== 'RUNNER_API_ENGINE_SELECTION');
+  input.cpBindings.push(plain('ROUTER_AGENT_ENGINE', 'eu-vm-agent-run'));
+  const report = evaluateSandbox3Lane(input);
+  assert.equal(report.checks.communicationV1Routing, 'BLOCKED');
+  assert.equal(report.checks.agentApiBindings, 'BLOCKED');
 });
 
 test('live Runner bindings reject a mismatched delegated principal or tenant', () => {
