@@ -3,6 +3,7 @@
 const ACCOUNT_ID = 'd740a05e9442c1d0feacae2dfc673e93';
 const CP_WORKER = 'trained-assist-cp-sandbox3';
 const TG_WORKER = 'trained-assist-tg-sandbox3';
+const BUFFER_WORKER = 'trained-assist-ingress-buffer-sandbox';
 const CP_URL = `https://${CP_WORKER}.skillset-apply.workers.dev`;
 const D1_ID = '1e1b8108-9186-43e2-8e50-436598233165';
 const WORKFLOW = 'ta-cp-sandbox3-task-workflow';
@@ -19,8 +20,8 @@ const stateIds = bindings => bindings
   .map(item => item.id ?? item.namespace_id)
   .filter(Boolean);
 
-export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBindings, otherGatewayBindings, counts, principalRows, cpHealth,
-  expectedCpSha = null }) {
+export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBindings, tgSecretNames = [], tgHealth,
+  bufferBindings = [], bufferSecretNames = [], otherGatewayBindings, counts, principalRows, cpHealth, expectedCpSha = null }) {
   const otherState = new Set(otherGatewayBindings.flatMap(stateIds));
   const tgState = stateIds(tgBindings);
   const intakePrincipals = principalRows.filter(row => row.principal_id === 'integration-sandbox3-v1');
@@ -31,7 +32,17 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
   const runnerService = binding(cpBindings, 'RUNNER_API_SERVICE');
   const directServiceBindings = cpBindings.filter(item => item.type === 'service'
     && !(item.name === 'RUNNER_API_SERVICE' && item.service === 'trained-assist-runner-api-sandbox3')
-    && !(item.name === 'COMMUNICATION_SERVICE' && item.service === 'trained-assist-communication-v1-sandbox'));
+    && !(item.name === 'COMMUNICATION_SERVICE' && item.service === 'trained-assist-communication-v1-sandbox')
+    && !(item.name === 'INGRESS_BUFFER' && item.service === BUFFER_WORKER));
+  const mediaIntakeConfigured = binding(cpBindings, 'INGRESS_BUFFER')?.type === 'service'
+    && binding(cpBindings, 'INGRESS_BUFFER')?.service === BUFFER_WORKER
+    && cpSecretNames.includes('INGRESS_BUFFER_TOKEN')
+    && binding(tgBindings, 'INGRESS_BUFFER')?.type === 'service'
+    && binding(tgBindings, 'INGRESS_BUFFER')?.service === BUFFER_WORKER
+    && tgSecretNames.includes('INGRESS_BUFFER_TOKEN')
+    && bufferBindings.some(item => item.name === 'INGRESS_MEDIA_BUCKET' && item.type === 'r2_bucket')
+    && bufferSecretNames.includes('INGRESS_BUFFER_TOKEN_SANDBOX3')
+    && tgHealth?.capabilities?.mediaIntake === 'configured';
   const reusable = ['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
     .every(name => Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000)
     && counts.nonterminalTasks <= counts.tasks && counts.foreignProfileTasks <= counts.tasks
@@ -89,6 +100,7 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
     cpBuildSha: /^[a-f0-9]{40}$/.test(cpHealth?.buildSha ?? '') ? cpHealth.buildSha : null,
     expectedCpSha,
     checks,
+    capabilities: { mediaIntake: mediaIntakeConfigured ? 'CONFIGURED' : 'NOT_CONFIGURED' },
     stateCounts: Object.fromEntries(['tasks', 'executions', 'nonterminalTasks', 'foreignProfileTasks', 'nonterminalExecutions']
       .map(name => [name, Number.isSafeInteger(counts[name]) && counts[name] >= 0 && counts[name] <= 1_000_000 ? counts[name] : null])),
     runnerAdmissionJournal: 'NOT_VERIFIED',
@@ -142,16 +154,20 @@ async function main() {
       scopes: (() => { try { return JSON.parse(row.scopes); } catch { return []; } })(),
     }));
   };
-  const [cpBindings, cpSecretNames, tgBindings, ...otherGatewayBindings] = await Promise.all([
-    workerBindings(CP_WORKER), workerSecretNames(CP_WORKER), workerBindings(TG_WORKER), ...OTHER_GATEWAYS.map(workerBindings),
+  const [cpBindings, cpSecretNames, tgBindings, tgSecretNames, bufferBindings, bufferSecretNames, ...otherGatewayBindings] = await Promise.all([
+    workerBindings(CP_WORKER), workerSecretNames(CP_WORKER), workerBindings(TG_WORKER), workerSecretNames(TG_WORKER),
+    workerBindings(BUFFER_WORKER), workerSecretNames(BUFFER_WORKER), ...OTHER_GATEWAYS.map(workerBindings),
   ]);
-  const [counts, principalRows, healthResponse, runnerApiReady] = await Promise.all([
+  const [counts, principalRows, healthResponse, runnerApiReady, tgHealthResponse] = await Promise.all([
     queryCounts(), queryPrincipals(),
     fetch(`${CP_URL}/healthz`, { signal: AbortSignal.timeout(15_000) }),
     verifyRunnerApiBoundary(),
+    fetch(`https://${TG_WORKER}.skillset-apply.workers.dev/health`, { signal: AbortSignal.timeout(15_000) }),
   ]);
   const cpHealth = healthResponse.ok ? await healthResponse.json().catch(() => ({})) : {};
-  const report = evaluateSandbox3Lane({ cpBindings, cpSecretNames, tgBindings, otherGatewayBindings,
+  const tgHealth = tgHealthResponse.ok ? await tgHealthResponse.json().catch(() => ({})) : {};
+  const report = evaluateSandbox3Lane({ cpBindings, cpSecretNames, tgBindings, tgSecretNames, tgHealth,
+    bufferBindings, bufferSecretNames, otherGatewayBindings,
     counts, principalRows, cpHealth,
     expectedCpSha: process.env.EXPECTED_CP_SHA ?? null });
   report.checks.runnerApiBoundary = runnerApiReady ? 'PASS' : 'BLOCKED';
