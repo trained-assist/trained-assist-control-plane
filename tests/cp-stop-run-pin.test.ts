@@ -142,6 +142,31 @@ describe('immutable stop execution pins', () => {
     expect((await current.store.requireTask(current.taskId)).generation).toBe(1);
   });
 
+  it('reconciles a pre-fix stop snapshot from its exact historical run_started receipt', async () => {
+    const current = await fixture();
+    await env.DB.prepare('UPDATE executions SET session_id = NULL WHERE id = ?').bind(current.attempt.id).run();
+    const resolved = await current.store.resolveCpStopTargets({ profileId: current.profileId,
+      conversationId: current.conversationId, admissionRequestIds: [current.requestId] });
+    if (!resolved.ok) throw new Error('legacy receipt target resolution failed');
+    const pinned = resolved.targets[0]!;
+    current.target.attempts = pinned.attempts;
+    await env.DB.prepare('UPDATE cp_stop_windows SET targets_json = ? WHERE snapshot_id = ?')
+      .bind(JSON.stringify(resolved.targets), current.snapshotId).run();
+    const idempotencyKey = pinned.attempts[0]!.idempotencyKey;
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'progress', source: 'executor',
+      payload: { event: 'runner_submit_started', attemptId: current.attempt.id, idempotencyKey } });
+    await current.store.attachRunnerRun(current.attempt.id, current.runId);
+    await current.store.logEvent({ taskId: current.taskId, generation: 1, kind: 'run_started', source: 'executor',
+      payload: { runId: current.runId, idempotencyKey, attempt: 1 } });
+
+    expect(await current.store.pinnedRunnerRunId(pinned, pinned.attempts[0]!)).toBe(current.runId);
+    current.stop.mockImplementation(async context => ({ state: 'stopped', result: result(context) }));
+    current.status.mockResolvedValue({ status: 'complete' });
+    expect(await current.port.cancel(current.taskId, { stopPin: { target: pinned, snapshotId: current.snapshotId } }))
+      .toMatchObject({ stopConfirmed: true, status: 'cancelled' });
+    expect(current.stop).toHaveBeenCalledWith(expect.objectContaining({ attemptId: current.attempt.id, runId: current.runId }));
+  });
+
   it('repins known terminal evidence into the snapshot before final confirmation', async () => {
     const current = await fixture();
     current.status.mockResolvedValue({ status: 'complete' });
