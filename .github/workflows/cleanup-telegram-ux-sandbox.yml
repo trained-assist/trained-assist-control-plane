@@ -1,0 +1,76 @@
+name: Clean Telegram UX sandbox and task-owned Runner state
+run-name: Telegram UX sandbox cleanup ${{ inputs.request_id || github.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Unique caller correlation ID
+        required: false
+        type: string
+        default: ''
+      runner_task_ids:
+        description: Optional comma-separated Runner task IDs from a verified sandbox test artifact
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-plane-telegram-ux-sandbox-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Clean explicitly identified sandbox Runner tasks
+        if: inputs.runner_task_ids != ''
+        env:
+          RUNNER_TASK_IDS: ${{ inputs.runner_task_ids }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: node tools/telegram-ux-runner-task-cleanup.mjs | tee telegram-ux-runner-task-cleanup.log
+
+      - name: Clean task-owned Runner objects and the canonical CP test profile
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: node tools/telegram-ux-state-cleanup.mjs --apply | tee telegram-ux-state-cleanup.log
+
+      - name: Require empty canonical CP test profile
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+        run: node tools/telegram-ux-state-cleanup.mjs --check-empty | tee telegram-ux-state-empty.json
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('telegram-ux-runner-task-cleanup-evidence.json', 'telegram-ux-state-cleanup-evidence.json', 'telegram-ux-state-empty.json') != ''
+        with:
+          name: telegram-ux-sandbox-cleanup-${{ github.run_id }}
+          path: |
+            telegram-ux-runner-task-cleanup-evidence.json
+            telegram-ux-state-cleanup-evidence.json
+            telegram-ux-state-empty.json
+          if-no-files-found: ignore
+          retention-days: 30
