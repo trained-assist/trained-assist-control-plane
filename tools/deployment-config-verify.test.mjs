@@ -62,7 +62,7 @@ test('sandbox-3 target uses isolated state and enables only its isolated Telegra
     assert.equal(sandbox3.vars.PILOT_ACTIVATED_AT, '2026-10-11T00:00:00Z');
     assert.equal(sandbox3.vars.PILOT_COHORT_PROFILE_IDS, 'integration-sandbox3-v1');
     assert.equal(sandbox3.vars.ROUTER_SELECTOR, 'communication_v1');
-    assert.equal(sandbox3.vars.ROUTER_SELECTOR_NAMES_ONLY, 'true');
+    assert.equal(sandbox3.vars.ROUTER_SELECTOR_NAMES_ONLY, 'false');
     assert.equal(sandbox3.vars.ROUTER_CONTINUATION_ENABLED, 'true');
     assert.equal(sandbox3.vars.ROUTER_AGENT_ENGINE, 'eu-vm-agent-run');
     assert.equal(sandbox3.vars.ROUTER_AGENT_ALLOWED, 'true');

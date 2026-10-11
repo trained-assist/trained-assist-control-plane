@@ -24,7 +24,7 @@ const ready = () => ({
     plain('PREVIEW_ONLY', 'false'), plain('PILOT_ENABLED', 'true'),
     plain('PILOT_ACTIVATED_AT', '2026-10-11T00:00:00Z'), plain('PILOT_COHORT_PROFILE_IDS', 'integration-sandbox3-v1'),
     plain('ROUTER_AGENT_ALLOWED', 'true'),
-    plain('ROUTER_SELECTOR', 'communication_v1'), plain('ROUTER_SELECTOR_NAMES_ONLY', 'true'),
+    plain('ROUTER_SELECTOR', 'communication_v1'), plain('ROUTER_SELECTOR_NAMES_ONLY', 'false'),
     plain('ROUTER_CONTINUATION_ENABLED', 'true'), plain('ROUTER_AGENT_ENGINE', 'eu-vm-agent-run'),
   ],
   cpSecretNames: ['COMMUNICATION_TOKEN'],

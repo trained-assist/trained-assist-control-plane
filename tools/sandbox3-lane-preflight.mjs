@@ -50,7 +50,7 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
       && value(cpBindings, 'COMMUNICATION_API_URL') === 'https://trained-assist-communication-v1-sandbox.skillset-apply.workers.dev'
       && value(cpBindings, 'COMMUNICATION_TIMEOUT_MS') === '60000'
       && value(cpBindings, 'ROUTER_SELECTOR') === 'communication_v1'
-      && value(cpBindings, 'ROUTER_SELECTOR_NAMES_ONLY') === 'true'
+      && value(cpBindings, 'ROUTER_SELECTOR_NAMES_ONLY') === 'false'
       && value(cpBindings, 'ROUTER_CONTINUATION_ENABLED') === 'true'
       && value(cpBindings, 'ROUTER_AGENT_ENGINE') === 'eu-vm-agent-run'
       && cpSecretNames.includes('COMMUNICATION_TOKEN') ? 'PASS' : 'BLOCKED',
