@@ -782,46 +782,14 @@ export class CfWorkflowPort implements WorkflowPortApi {
 
     const proofs = new Map((await this.nativeStopEvidence(taskId)).map(proof => [proof.attemptId, proof]));
     for (const run of runs) {
-      let runnerRunId = run.session_id;
-      if (!run.session_id) {
-        if (!await this.store.runnerSubmitMayHaveStarted(taskId, run.id)) {
-          if (run.finished_at === null) return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
-          continue;
-        }
-      }
       if (proofs.has(run.id)) continue;
-      if (!this.externalStop) return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' };
-      const context = { taskId, profileId: task.profile_id, attemptId: run.id, runId: runnerRunId,
-        ownerGeneration: run.generation, ...(!runnerRunId ? { idempotencyKey: await stableAttemptKey(taskId, run.generation) } : {}), reason };
-      let outcome: ExternalStopOutcome;
-      try { outcome = await this.externalStop.stop(context); }
-      catch { return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'unknown' }; }
-      if (outcome.state === 'pending') return { stopConfirmed: false, nativeStops: [...proofs.values()], nativeStopState: 'pending' };
-      if (outcome.state === 'cancelled_before_admission' && confirmedExternalStop(context, outcome)) {
-        const proof: NativeStopEvidence = { taskId, profileId: task.profile_id, attemptId: run.id,
-          runId: null, ownerGeneration: run.generation, state: 'cancelled', exitObserved: false, preAdmissionCancellation: true };
-        if (run.finished_at === null) await this.store.finishRun(run.id, 'cancelled', { errorText: reason ?? 'cancelled_before_runner_admission' });
-        await this.store.recordNativeStopEvidence(taskId, [proof]);
-        proofs.set(run.id, proof);
-        continue;
-      }
-      if (outcome.state !== 'stopped' || !confirmedExternalStop(context, outcome)) {
+      const reconciliation = await this.reconcileNativeStop(taskId, task.profile_id, run, reason);
+      if (reconciliation.kind === 'already_finished_before_admission') continue;
+      if (reconciliation.kind === 'unresolved') {
         return { stopConfirmed: false, nativeStops: [...proofs.values()],
-          nativeStopState: outcome.state === 'rejected' ? 'rejected' : 'unknown' };
+          nativeStopState: reconciliation.nativeStopState };
       }
-      if (!runnerRunId) {
-        const observed = nativeStopEvidence(taskId, context.profileId, run.id, outcome);
-        await this.store.attachRunnerRun(run.id, observed.runId!,
-          { ownerGeneration: run.generation, idempotencyKey: context.idempotencyKey! });
-        runnerRunId = observed.runId;
-      }
-      const proof = nativeStopEvidence(taskId, task.profile_id, run.id, outcome);
-      if (run.finished_at === null) {
-        const runOutcome = proof.state === 'succeeded' ? 'success' : proof.state;
-        await this.store.finishRun(run.id, runOutcome, { errorText: reason ?? 'terminal_runner_reconciled' });
-      }
-      await this.store.recordNativeStopEvidence(taskId, [proof]);
-      proofs.set(run.id, proof);
+      proofs.set(run.id, reconciliation.proof);
     }
     const freshRuns = await this.store.listRuns(taskId);
     let complete = true;
@@ -832,6 +800,45 @@ export class CfWorkflowPort implements WorkflowPortApi {
     }
     return { stopConfirmed: complete, nativeStops: [...proofs.values()],
       ...(complete ? {} : { nativeStopState: 'unknown' as const }) };
+  }
+
+  private async reconcileNativeStop(taskId: string, profileId: string, run: RunAttemptRow, reason?: string): Promise<
+    | { kind: 'confirmed'; proof: NativeStopEvidence }
+    | { kind: 'already_finished_before_admission' }
+    | { kind: 'unresolved'; nativeStopState: NonNullable<CancelResult['nativeStopState']> }
+  > {
+    if (!run.session_id && !await this.store.runnerSubmitMayHaveStarted(taskId, run.id)) {
+      return run.finished_at === null
+        ? { kind: 'unresolved', nativeStopState: 'unknown' }
+        : { kind: 'already_finished_before_admission' };
+    }
+    if (!this.externalStop) return { kind: 'unresolved', nativeStopState: 'unknown' };
+    const context = { taskId, profileId, attemptId: run.id, runId: run.session_id,
+      ownerGeneration: run.generation, ...(!run.session_id ? { idempotencyKey: await stableAttemptKey(taskId, run.generation) } : {}), reason };
+    let outcome: ExternalStopOutcome;
+    try { outcome = await this.externalStop.stop(context); }
+    catch { return { kind: 'unresolved', nativeStopState: 'unknown' }; }
+    if (outcome.state === 'pending') return { kind: 'unresolved', nativeStopState: 'pending' };
+    if (outcome.state === 'cancelled_before_admission' && confirmedExternalStop(context, outcome)) {
+      const proof: NativeStopEvidence = { taskId, profileId, attemptId: run.id,
+        runId: null, ownerGeneration: run.generation, state: 'cancelled', exitObserved: false, preAdmissionCancellation: true };
+      if (run.finished_at === null) await this.store.finishRun(run.id, 'cancelled', { errorText: reason ?? 'cancelled_before_runner_admission' });
+      await this.store.recordNativeStopEvidence(taskId, [proof]);
+      return { kind: 'confirmed', proof };
+    }
+    if (outcome.state !== 'stopped' || !confirmedExternalStop(context, outcome)) {
+      return { kind: 'unresolved', nativeStopState: outcome.state === 'rejected' ? 'rejected' : 'unknown' };
+    }
+    const proof = nativeStopEvidence(taskId, profileId, run.id, outcome);
+    if (!run.session_id) await this.store.attachRunnerRun(run.id, proof.runId!, {
+      ownerGeneration: run.generation, idempotencyKey: context.idempotencyKey!,
+    });
+    if (run.finished_at === null) {
+      const runOutcome = proof.state === 'succeeded' ? 'success' : proof.state;
+      await this.store.finishRun(run.id, runOutcome, { errorText: reason ?? 'terminal_runner_reconciled' });
+    }
+    await this.store.recordNativeStopEvidence(taskId, [proof]);
+    return { kind: 'confirmed', proof };
   }
 
   /**
