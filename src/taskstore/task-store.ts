@@ -1392,6 +1392,45 @@ export class TaskStore {
     return res.results;
   }
 
+  /** A Workflow instance is an immutable handle for one task generation. */
+  async workflowInstanceId(taskId: string, generation: number): Promise<string | null> {
+    const eventId = `workflow-instance:${taskId}:${generation}`;
+    const row = await this.db.prepare(`SELECT payload_json FROM task_events WHERE event_id = ? AND user_task_id = ? AND generation = ?`)
+      .bind(eventId, taskId, generation).first<{ payload_json: string }>();
+    if (!row) return null;
+    try {
+      const payload = JSON.parse(row.payload_json) as { event?: unknown; instanceId?: unknown };
+      return payload.event === 'workflow.instance_created' && typeof payload.instanceId === 'string'
+        ? payload.instanceId : null;
+    } catch { return null; }
+  }
+
+  async latestWorkflowInstance(taskId: string, throughGeneration: number): Promise<{ generation: number; instanceId: string } | null> {
+    const row = await this.db.prepare(`SELECT generation, payload_json FROM task_events
+      WHERE user_task_id = ? AND kind = 'progress' AND source = 'gateway' AND generation <= ?
+        AND json_extract(payload_json, '$.event') = 'workflow.instance_created'
+      ORDER BY generation DESC LIMIT 1`)
+      .bind(taskId, throughGeneration).first<{ generation: number; payload_json: string }>();
+    if (!row) return null;
+    try {
+      const payload = JSON.parse(row.payload_json) as { instanceId?: unknown };
+      return typeof payload.instanceId === 'string' ? { generation: row.generation, instanceId: payload.instanceId } : null;
+    } catch { return null; }
+  }
+
+  async recordWorkflowInstance(taskId: string, generation: number, instanceId: string): Promise<void> {
+    if (!Number.isSafeInteger(generation) || generation < 1 || !instanceId || instanceId.length > 100) {
+      throw new TaskStoreError('invalid Workflow instance identity', taskId);
+    }
+    const eventId = `workflow-instance:${taskId}:${generation}`;
+    await this.db.prepare(`INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+      VALUES(?, ?, 'progress', ?, 'gateway', ?, ?)`)
+      .bind(eventId, taskId, generation, JSON.stringify({ event: 'workflow.instance_created', instanceId }), Date.now()).run();
+    if (await this.workflowInstanceId(taskId, generation) !== instanceId) {
+      throw new TaskStoreError('Workflow instance identity conflict', taskId);
+    }
+  }
+
   /** Persist only the minimal, identity-checked native exit proof. */
   async recordNativeStopEvidence(taskId: string, proofs: NativeStopEvidence[]): Promise<void> {
     const task = await this.requireTask(taskId);

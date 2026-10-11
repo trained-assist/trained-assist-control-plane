@@ -153,7 +153,7 @@ describe('verified credential completion', () => {
     const response = await request(requirement.hostPrincipalId);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ delivered: true });
-    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+    expect(workflow.create).toHaveBeenCalledWith({ id: expect.stringMatching(/^ta-wf-[a-f0-9]{64}-g1$/), params: expect.objectContaining({
       runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 900, runnerPollSec: 1, awaitingInputId,
     }) });
     expect(JSON.stringify(workflow.create.mock.calls)).not.toMatch(/UNTRUSTED_PROVIDER_(INSTRUCTIONS|SHEET|SECRET)/);
@@ -176,7 +176,7 @@ describe('verified credential completion', () => {
     } else {
       await worker.scheduled({} as ScheduledEvent, bindings, { waitUntil: () => {} } as unknown as ExecutionContext);
     }
-    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+    expect(workflow.create).toHaveBeenCalledWith({ id: expect.stringMatching(/^ta-wf-[a-f0-9]{64}-g1$/), params: expect.objectContaining({
       runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 600, runnerPollSec: 1, awaitingInputId,
     }) });
   });
@@ -221,7 +221,7 @@ describe('verified credential completion', () => {
     const execution = { runnerEngine: 'dynamic-ip-azure-agent-run', runnerTimeoutSec: 900, runnerPollSec: 3 };
     const port = new CfWorkflowPort(workflow as unknown as Workflow, store, execution);
     expect(await port.completeCredential(event)).toMatchObject({ delivered: true });
-    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+    expect(workflow.create).toHaveBeenCalledWith({ id: expect.stringMatching(/^ta-wf-[a-f0-9]{64}-g1$/), params: expect.objectContaining({
       ...execution, taskId, generation: event.generation, awaitingInputId,
     }) });
     expect(await port.completeCredential(event)).toMatchObject({ duplicate: true, delivered: true });
@@ -234,7 +234,7 @@ describe('verified credential completion', () => {
     const port = new CfWorkflowPort(workflow as unknown as Workflow, store);
     const task = await store.requireTask(taskId);
     await dispatchAcceptedAgent(store, port, task, { continuation: { goal: task.goal } } as RouteResult, 'dynamic-ip-azure-agent-run');
-    expect(workflow.create).toHaveBeenCalledWith({ id: taskId, params: expect.objectContaining({
+    expect(workflow.create).toHaveBeenCalledWith({ id: expect.stringMatching(/^ta-wf-[a-f0-9]{64}-g1$/), params: expect.objectContaining({
       awaitingInputId, runnerEngine: 'dynamic-ip-azure-agent-run',
     }) });
     expect((await store.getAwaiting(awaitingInputId))?.status).toBe('open');
