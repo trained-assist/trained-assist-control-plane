@@ -51,7 +51,7 @@ test('apply clears Runner state before deleting terminal CP records and verifies
   assert.ok(runnerIndex >= 0 && runnerIndex < deleteIndex);
   assert.deepEqual(report, {
     lane: 'telegram-ux-v1', database: 'ta-integration-telegram-ux-v1-taskstore', mode: 'apply', empty: true,
-    terminalTasksFound: 1, unstartedIntentProbesCleared: 0, runnerTasksCleaned: 1, pendingBatchesFound: 0, cpRowsDeleted: 1, counts: zeroInventory,
+    terminalTasksFound: 1, unstartedCommunicationProbesCleared: 0, runnerTasksCleaned: 1, pendingBatchesFound: 0, cpRowsDeleted: 1, counts: zeroInventory,
   });
   const cleanup = calls[runnerIndex];
   assert.equal(cleanup.init.headers['x-agent-profile-id'], 'integration-telegram-ux-v1');
@@ -66,23 +66,28 @@ test('apply refuses nonterminal tasks before touching Runner or D1 state', async
   assert.equal(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM')), false);
 });
 
-test('apply clears an unstarted synthetic agent-intent probe without requiring Runner credentials', async () => {
-  const task = { id: 'task-probe', status: 'active',
-    request_id: 'live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:agent-intent', execution_count: 0 };
-  const { fetchImpl, calls } = mockFetch({ taskRows: [task] });
-  const report = await cleanupTelegramUxState({ env: { CF_API_TOKEN: 'cf-test-token',
-    CLOUDFLARE_ACCOUNT_ID: 'd740a05e9442c1d0feacae2dfc673e93' }, mode: 'apply', fetchImpl });
-  assert.equal(report.unstartedIntentProbesCleared, 1);
-  assert.equal(report.runnerTasksCleaned, 0);
-  assert.equal(calls.some(call => call.kind === 'runner'), false);
-  assert.ok(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM durable_tasks')));
+test('apply clears only exact unstarted communication smoke probes without Runner credentials', async () => {
+  for (const scenario of ['health', 'capabilities', 'agent-intent']) {
+    const task = { id: `task-${scenario}`, status: 'active',
+      request_id: `live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:${scenario}`, execution_count: 0 };
+    const { fetchImpl, calls } = mockFetch({ taskRows: [task] });
+    const report = await cleanupTelegramUxState({ env: { CF_API_TOKEN: 'cf-test-token',
+      CLOUDFLARE_ACCOUNT_ID: 'd740a05e9442c1d0feacae2dfc673e93' }, mode: 'apply', fetchImpl });
+    assert.equal(report.unstartedCommunicationProbesCleared, 1);
+    assert.equal(report.runnerTasksCleaned, 0);
+    assert.equal(calls.some(call => call.kind === 'runner'), false);
+    assert.ok(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM durable_tasks')));
+  }
 });
 
-test('apply refuses synthetic agent-intent probe if an execution exists', async () => {
-  const task = { id: 'task-probe', status: 'active',
-    request_id: 'live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:agent-intent', execution_count: 1 };
-  const { fetchImpl, calls } = mockFetch({ taskRows: [task] });
-  await assert.rejects(cleanupTelegramUxState({ env: baseEnv, mode: 'apply', fetchImpl }), /nonterminal_test_tasks_present/);
-  assert.equal(calls.some(call => call.kind === 'runner'), false);
-  assert.equal(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM')), false);
+test('apply refuses synthetic communication probe if an execution exists or marker is not exact', async () => {
+  for (const task of [
+    { id: 'task-probe', status: 'active', request_id: 'live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:agent-intent', execution_count: 1 },
+    { id: 'task-probe', status: 'active', request_id: 'live-v1-00d8d4a5-e408-4a24-8cb7-6852e50b3a76:unknown', execution_count: 0 },
+  ]) {
+    const { fetchImpl, calls } = mockFetch({ taskRows: [task] });
+    await assert.rejects(cleanupTelegramUxState({ env: baseEnv, mode: 'apply', fetchImpl }), /nonterminal_test_tasks_present/);
+    assert.equal(calls.some(call => call.kind === 'runner'), false);
+    assert.equal(calls.some(call => call.kind === 'd1' && call.sql.startsWith('DELETE FROM')), false);
+  }
 });

@@ -123,7 +123,9 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
         phase = 'route_transport';
         evidence.phase = phase;
         checkpoint();
-        const route = await request('/route', { taskId: receipt.userTaskId, continue: name !== 'agent-intent' });
+        // This smoke verifies classification and the returned user-facing
+        // result only. Never let a misclassified prompt dispatch a Runner.
+        const route = await request('/route', { taskId: receipt.userTaskId, continue: false });
         phase = 'route_not_quick_answer';
         if (name === 'agent-intent') {
           assert.equal(route.route, 'agent');
@@ -144,7 +146,7 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
         evidence.decisionId = route.decisionId;
         checkpoint();
         phase = 'route_replay_transport';
-        const replay = await request('/route', { taskId: receipt.userTaskId, continue: name !== 'agent-intent' });
+        const replay = await request('/route', { taskId: receipt.userTaskId, continue: false });
         phase = 'route_replay_invalid';
         assert.ok(identity(replay.decisionId));
         assert.equal(replay.decisionId, route.decisionId);

@@ -91,6 +91,7 @@ test('preserves quick-answer and agent-intent evidence without starting an engin
   }
   const intentEvidence = result.report.scenarios.find(value => value.name === 'agent-intent');
   const intentTaskId = intentEvidence.userTaskId;
+  assert.ok(fixtureData.state.calls.filter(call => call.path === '/route').every(call => call.body.continue === false));
   assert.deepEqual(fixtureData.state.calls.filter(call => call.path === '/route' && call.body.taskId === intentTaskId)
     .map(call => call.body.continue), [false, false]);
   assert.equal(JSON.parse(readFileSync(fixtureData.reportPath, 'utf8')).scenarios.at(-1).workOrderMatchesInput, true);
@@ -149,6 +150,7 @@ test('fallback agent failure retains accepted task before route and stops withou
   const stored = JSON.parse(readFileSync(fixtureData.reportPath, 'utf8'));
   assert.equal(stored.scenarios[0].userTaskId, 'fixture-health');
   assert.deepEqual(fixtureData.state.calls.map(call => call.path), ['/intake', '/intake', '/route']);
+  assert.equal(fixtureData.state.calls.find(call => call.path === '/route').body.continue, false);
 });
 
 test('route transport ACK loss retains accepted identity with only a fixed phase code', async context => {

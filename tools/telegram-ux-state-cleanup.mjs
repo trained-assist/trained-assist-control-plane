@@ -81,11 +81,11 @@ export async function cleanupTelegramUxState({ env = process.env, mode = 'check-
     return { lane: 'telegram-ux-v1', database: DATABASE_NAME, mode, empty: true, counts: before };
   }
   const terminal = task => ['done', 'failed', 'cancelled'].includes(task.status);
-  const safeUnstartedIntentProbe = task => !terminal(task)
+  const safeUnstartedCommunicationProbe = task => !terminal(task)
     && task.execution_count === 0
-    && /^live-v1-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}:agent-intent$/.test(task.request_id ?? '');
-  const strandedProbes = tasks.filter(safeUnstartedIntentProbe);
-  if (tasks.some(task => !terminal(task) && !safeUnstartedIntentProbe(task))) throw new Error('nonterminal_test_tasks_present');
+    && /^live-v1-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}:(?:health|capabilities|agent-intent)$/.test(task.request_id ?? '');
+  const strandedProbes = tasks.filter(safeUnstartedCommunicationProbe);
+  if (tasks.some(task => !terminal(task) && !safeUnstartedCommunicationProbe(task))) throw new Error('nonterminal_test_tasks_present');
 
   const runnerKey = env.RUNNER_API_KEY_AGENT_API?.trim() ?? '';
   const delegationSecret = env.RUNNER_PROFILE_DELEGATION_SECRET?.trim() ?? '';
@@ -137,7 +137,7 @@ export async function cleanupTelegramUxState({ env = process.env, mode = 'check-
   const after = await inventory();
   if (Object.values(after).some(count => count !== 0)) throw new Error('sandbox_buffers_not_empty_after_cleanup');
   return { lane: 'telegram-ux-v1', database: DATABASE_NAME, mode, empty: true,
-    terminalTasksFound: tasks.filter(terminal).length, unstartedIntentProbesCleared: strandedProbes.length,
+    terminalTasksFound: tasks.filter(terminal).length, unstartedCommunicationProbesCleared: strandedProbes.length,
     runnerTasksCleaned, pendingBatchesFound: batches.length, cpRowsDeleted, counts: after };
 }
 
