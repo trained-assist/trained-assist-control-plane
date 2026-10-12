@@ -77,12 +77,13 @@ GHA gateway/workflow, or execution-worker endpoint. Sandbox3 enables only the
 sandbox-only and must not be reused for production tenants.
 
 The sandbox3 profile may export only host-declared output paths under `outputs/`.
-The current isolated probe declares `outputs/agent-note.md` in
-`RUN_SPEC_PROFILE_OVERRIDES`; callers and task prompts cannot add output paths.
-The override is rejected outside `DEPLOYMENT_ENV=sandbox3`, and profiles without
-an explicit override continue to submit no outputs. Add another fixed path only
-when its scenario has an explicit sandbox acceptance and cleanup check. This
-does not enable Playwright or change Runner placement.
+Its default `RUN_SPEC_PROFILE_OVERRIDES` declares an empty output list, so
+ordinary tasks such as inbound file-intake do not inherit an unrelated export
+requirement. Callers and task prompts cannot add output paths. Any artifact
+scenario must use a separately scoped, host-controlled declaration and pass its
+own acceptance and cleanup checks. The override is rejected outside
+`DEPLOYMENT_ENV=sandbox3`; this does not enable Playwright or change Runner
+placement.
 
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for

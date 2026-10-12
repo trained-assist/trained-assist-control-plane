@@ -136,7 +136,7 @@ export function resolveProfileRuntime(
 }
 
 function validDeclaredOutputs(value: unknown): value is OutputSpec[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 8) return false;
+  if (!Array.isArray(value) || value.length > 8) return false;
   const seen = new Set<string>();
   return value.every((output) => {
     if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
