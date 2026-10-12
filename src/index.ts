@@ -1268,50 +1268,42 @@ async function serveArtifact(env: Env, store: TaskStore, taskId: string, ref: st
   // Runner'а ищем по его runId, а не по нашему.
   const attempt = row.run_id ? await store.getRun(row.run_id) : null;
   const runnerRunId = attempt?.session_id ?? null;
-  const candidates: string[] = [];
-  if (runnerRunId) {
-    try {
-      for (const manifest of await adapter.artifacts(runnerRunId)) {
-        if ((manifest.ref === ref || manifest.artifactId === ref) && manifest.artifactId) candidates.push(manifest.artifactId);
-      }
-    } catch {
-      // Манифесты недоступны — пробуем ссылку как artifactId.
+  if (!runnerRunId) return json({ error: 'artifact unavailable', reason: 'runner run identity is missing' }, 502);
+  try {
+    const manifest = (await adapter.artifacts(runnerRunId)).find((artifact) => artifact.ref === ref);
+    if (!manifest?.path) return json({ error: 'artifact unavailable', reason: 'runner output path is missing from its manifest' }, 502);
+    const { body, sha256, mime } = await adapter.artifactBytesByPath(runnerRunId, manifest.path);
+    if (body.length !== manifest.size || sha256 !== manifest.sha256
+      || mime.split(';', 1)[0]!.trim().toLowerCase() !== manifest.mime.trim().toLowerCase()) {
+      return json({ error: 'artifact unavailable', reason: 'downloaded output does not match the runner manifest' }, 502);
     }
+    const owner = await store.getTask(taskId);
+    logStructured({
+      event: 'artifact.served',
+      profileId: owner?.profile_id ?? null,
+      userTaskId: taskId,
+      runId: runnerRunId,
+      reason: 'read_only_proxy',
+      sizeBytes: body.length,
+      sha256,
+    });
+    const filename = manifest.name.replace(/[^A-Za-z0-9._-]/g, '_') || 'artifact';
+    const encodedFilename = encodeURIComponent(manifest.name).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': mime || manifest.mime || 'application/octet-stream',
+        'content-length': String(body.length),
+        'x-artifact-sha256': sha256,
+        'content-disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`,
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  } catch (error) {
+    const statusCode = error instanceof RunnerConflictError ? error.statusCode : undefined;
+    return json({ error: 'artifact unavailable', reason: statusCode ? `runner_http_${statusCode}` : 'runner artifact lookup failed' }, 502);
   }
-  if (!candidates.includes(ref)) candidates.push(ref);
-
-  let lastError = 'artifact not found';
-  for (const artifactId of candidates) {
-    try {
-      const { body, artifact } = await adapter.artifactBytes(artifactId);
-      const owner = await store.getTask(taskId);
-      logStructured({
-        event: 'artifact.served',
-        profileId: owner?.profile_id ?? null,
-        userTaskId: taskId,
-        runId: artifact.runId,
-        reason: 'read_only_proxy',
-        artifactId: artifact.artifactId,
-        sizeBytes: artifact.size,
-        sha256: artifact.sha256,
-      });
-      return new Response(body, {
-        status: 200,
-        headers: {
-          'content-type': artifact.mime || 'application/octet-stream',
-          'content-length': String(body.length),
-          'x-artifact-sha256': artifact.sha256,
-          'x-artifact-id': artifact.artifactId,
-          'content-disposition': `attachment; filename="${artifact.name}"`,
-          'cache-control': 'private, no-store',
-          'x-content-type-options': 'nosniff',
-        },
-      });
-    } catch (e) {
-      lastError = String((e as Error)?.message ?? e);
-    }
-  }
-  return json({ error: 'artifact unavailable', reason: lastError }, 502);
 }
 
 /**
