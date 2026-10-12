@@ -25,6 +25,7 @@
     "PILOT_ENABLED": "true",
     "PILOT_ACTIVATED_AT": "2026-10-12T00:00:00.000Z",
     "ROUTER_AGENT_ALLOWED": "true",
+    "ROUTER_CONTINUATION_ENABLED": "true",
     "RUNNER_API_URL": "https://trained-assist-runner-api-production.skillset-apply.workers.dev",
     "RUNNER_API_ENGINE_SELECTION": "agent_api",
     "RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID": "cp-production-runner",

@@ -32,6 +32,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.equal(production.vars.PILOT_COHORT_PROFILE_IDS, undefined);
     assert.equal(production.vars.PILOT_LEGACY_PROFILE_IDS, undefined);
     assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'true');
+    assert.equal(production.vars.ROUTER_CONTINUATION_ENABLED, 'true');
     assert.equal(production.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(production.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-production.skillset-apply.workers.dev');
     assert.equal(production.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'cp-production-runner');
