@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateSandbox3Lane, sandbox3FailureReason, SANDBOX3_RUNNER_URL } from './sandbox3-lane-preflight.mjs';
+import { evaluateSandbox3Lane, retryReadUntil, sandbox3FailureReason, SANDBOX3_RUNNER_URL } from './sandbox3-lane-preflight.mjs';
 
 const plain = (name, text) => ({ name, type: 'plain_text', text });
 const state = (name, id, type = 'kv_namespace') => ({ name, type, id });
@@ -50,6 +50,27 @@ test('configured resources still report that Runner journal and real E2E are unv
   assert.equal(report.capabilities.mediaIntake, 'NOT_CONFIGURED');
   assert.equal(report.runnerAdmissionJournal, 'NOT_VERIFIED');
   assert.equal(report.realTelegramE2E, 'NOT_RUN');
+});
+
+test('TG worker settings are reread until post-deploy metadata becomes ready', async () => {
+  let reads = 0;
+  const sleeps = [];
+  const result = await retryReadUntil(async () => ({ ready: ++reads === 3 }), value => value.ready, {
+    maxAttempts: 6, intervalMs: 2_000, sleep: async milliseconds => sleeps.push(milliseconds),
+  });
+  assert.deepEqual(result, { value: { ready: true }, attempts: 3, ready: true });
+  assert.deepEqual(sleeps, [2_000, 2_000]);
+});
+
+test('TG worker settings remain blocked after bounded read retries', async () => {
+  let reads = 0;
+  const sleeps = [];
+  const result = await retryReadUntil(async () => ({ attempt: ++reads }), () => false, {
+    maxAttempts: 3, intervalMs: 1_000, sleep: async milliseconds => sleeps.push(milliseconds),
+  });
+  assert.deepEqual(result, { value: { attempt: 3 }, attempts: 3, ready: false });
+  assert.equal(reads, 3);
+  assert.deepEqual(sleeps, [1_000, 1_000]);
 });
 
 test('passive ingress buffer is an allowed CP capability and reports media readiness separately', () => {

@@ -115,6 +115,17 @@ export function evaluateSandbox3Lane({ cpBindings, cpSecretNames = [], tgBinding
   };
 }
 
+export async function retryReadUntil(read, isReady, { maxAttempts = 6, intervalMs = 2_000,
+  sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)) } = {}) {
+  let value;
+  for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
+    value = await read();
+    if (isReady(value)) return { value, attempts, ready: true };
+    if (attempts < maxAttempts) await sleep(intervalMs);
+  }
+  return { value, attempts: maxAttempts, ready: false };
+}
+
 async function main() {
   const token = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN;
   if (!token || process.env.CLOUDFLARE_ACCOUNT_ID !== ACCOUNT_ID) {
@@ -160,8 +171,8 @@ async function main() {
       scopes: (() => { try { return JSON.parse(row.scopes); } catch { return []; } })(),
     }));
   };
-  const [cpBindings, cpSecretNames, tgBindings, tgSecretNames, bufferBindings, bufferSecretNames, ...otherGatewayBindings] = await Promise.all([
-    workerBindings(CP_WORKER), workerSecretNames(CP_WORKER), workerBindings(TG_WORKER), workerSecretNames(TG_WORKER),
+  const [cpBindings, cpSecretNames, bufferBindings, bufferSecretNames, ...otherGatewayBindings] = await Promise.all([
+    workerBindings(CP_WORKER), workerSecretNames(CP_WORKER),
     workerBindings(BUFFER_WORKER), workerSecretNames(BUFFER_WORKER), ...OTHER_GATEWAYS.map(workerBindings),
   ]);
   const [counts, principalRows, healthResponse, runnerApiReady, tgHealthResponse] = await Promise.all([
@@ -172,10 +183,24 @@ async function main() {
   ]);
   const cpHealth = healthResponse.ok ? await healthResponse.json().catch(() => ({})) : {};
   const tgHealth = tgHealthResponse.ok ? await tgHealthResponse.json().catch(() => ({})) : {};
+  // Wrangler deploy can return before the account-level settings endpoint
+  // exposes the new TG bindings. Poll only this read-only metadata, briefly,
+  // and keep the final preflight fail-closed if it never converges.
+  const tgRead = await retryReadUntil(async () => {
+    const [bindings, secretNames] = await Promise.all([workerBindings(TG_WORKER), workerSecretNames(TG_WORKER)]);
+    const candidate = evaluateSandbox3Lane({ cpBindings, cpSecretNames, tgBindings: bindings, tgSecretNames: secretNames,
+      tgHealth, bufferBindings, bufferSecretNames, otherGatewayBindings, counts, principalRows, cpHealth,
+      expectedCpSha: process.env.EXPECTED_CP_SHA ?? null });
+    return { bindings, secretNames, checks: candidate.checks };
+  }, candidate => ['tgStateIsolated', 'tgRoute', 'tgPrincipalSignature']
+    .every(name => candidate.checks[name] === 'PASS'));
+  const tgBindings = tgRead.value.bindings;
+  const tgSecretNames = tgRead.value.secretNames;
   const report = evaluateSandbox3Lane({ cpBindings, cpSecretNames, tgBindings, tgSecretNames, tgHealth,
     bufferBindings, bufferSecretNames, otherGatewayBindings,
     counts, principalRows, cpHealth,
     expectedCpSha: process.env.EXPECTED_CP_SHA ?? null });
+  report.tgConfigurationReadAttempts = tgRead.attempts;
   report.checks.runnerApiBoundary = runnerApiReady ? 'PASS' : 'BLOCKED';
   if (!runnerApiReady) report.outcome = 'BLOCKED';
   console.log(JSON.stringify(report, null, 2));
