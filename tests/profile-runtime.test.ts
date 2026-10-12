@@ -93,25 +93,31 @@ describe('trusted profile runtime', () => {
     const policy = resolveProfileRuntime(configured, SANDBOX3_PROFILE).policy;
     expect(policy.outputs).toEqual([output]);
     const built = buildRunSpec({ userTaskId: 'ut-output-test', profileId: SANDBOX3_PROFILE, conversationId: null,
-      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'create a note', refs: [], instructions: null,
+      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Export a note as a task artifact', refs: [], instructions: null,
       attemptRunId: null, timeoutMs: 1000 }, policy);
     expect(built.spec.outputs).toEqual([output]);
     expect(resolveProfileRuntime(configured, 'another-profile').policy.outputs).toEqual([]);
   });
 
-  it('keeps the sandbox3 default free of artifact requirements for inbound file tasks', () => {
+  it('does not impose artifact requirements on ordinary or inbound file tasks', () => {
     const configured = { ...bindings, DEPLOYMENT_ENV: 'sandbox3',
       RUNNER_PROFILE_DELEGATION_SECRET: 'delegation-test-secret',
       RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
       RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'sandbox3-agent-api-principal',
       RUNNER_PROFILE_DELEGATION_TENANT_ID: 'sandbox3-acceptance-a-20261008',
       RUNNER_API_ENGINE_SELECTION: 'agent_api',
-      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [SANDBOX3_PROFILE]: { policy: 'generic_text_v1', outputs: [] } }) };
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [SANDBOX3_PROFILE]: { policy: 'generic_text_v1', outputs: [
+        { path: 'outputs/agent-note.md', name: 'agent-note.md', mime: 'text/markdown' },
+      ] } }) };
     const policy = resolveProfileRuntime(configured, SANDBOX3_PROFILE).policy;
-    const built = buildRunSpec({ userTaskId: 'ut-file-intake-test', profileId: SANDBOX3_PROFILE, conversationId: null,
-      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Read the attached file', refs: [], instructions: null,
+    const ordinary = buildRunSpec({ userTaskId: 'ut-ordinary-test', profileId: SANDBOX3_PROFILE, conversationId: null,
+      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Give me a concise answer', refs: [], instructions: null,
       attemptRunId: null, timeoutMs: 1000 }, policy);
-    expect(built.spec.outputs).toBeUndefined();
+    const fileIntake = buildRunSpec({ userTaskId: 'ut-file-intake-test', profileId: SANDBOX3_PROFILE, conversationId: null,
+      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Read the attached file', refs: [{ ref: 'sandbox-upload:fixture' }], instructions: null,
+      attemptRunId: null, timeoutMs: 1000 }, policy);
+    expect(ordinary.spec.outputs).toBeUndefined();
+    expect(fileIntake.spec.outputs).toBeUndefined();
   });
 
   it('rejects sandbox outputs outside the sandbox deployment or outside outputs/', () => {
