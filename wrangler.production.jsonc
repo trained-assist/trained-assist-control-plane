@@ -20,7 +20,7 @@
   }],
   "vars": {
     "DEPLOYMENT_ENV": "production",
-    "PREVIEW_ONLY": "true",
+    "PREVIEW_ONLY": "false",
     "PILOT_ENABLED": "false",
     "ROUTER_AGENT_ALLOWED": "false"
   }
