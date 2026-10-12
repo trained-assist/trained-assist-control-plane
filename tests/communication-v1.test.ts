@@ -243,6 +243,9 @@ describe('Task Store and Output ownership', () => {
     ]));
     expect(result.agentInstructions).toContain(priorFact);
     expect(result.agentInstructions).toContain(prior.userTaskId);
+    expect(result.agentInstructions).toContain(`Пользователь (задача ${prior.userTaskId}):\nЗапомни кодовую фразу ${priorFact}`);
+    expect(result.agentInstructions).toContain(`Ассистент (задача ${prior.userTaskId}):\nСохранил ${priorFact}`);
+    expect(result.agentInstructions).not.toContain('\\"inputItems\\"');
   });
 
   it('preserves full conversation inputs/results and excludes foreign profiles', async () => {
@@ -265,6 +268,7 @@ describe('Task Store and Output ownership', () => {
     const result = await routeRequest(input, { communicationV1: { select: communicationSelector({ url: 'https://communication.example.test', token: 'test-credential', fetcher }), health: healthy } });
     expect(result.decision.route).toBe('agent');
     expect(result.agentInstructions).toContain('DO_NOT_LOSE_THIS_OBLIGATION');
+    expect(result.agentInstructions).toContain('Дополнительные результаты: {"spreadsheet":"sheet-ref"}');
     expect(fetcher).not.toHaveBeenCalled();
   });
 
