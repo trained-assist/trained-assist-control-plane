@@ -239,18 +239,42 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
           RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+          COMMUNICATION_PRODUCTION_TOKEN: ${{ secrets.COMMUNICATION_PRODUCTION_TOKEN }}
           PRODUCTION_E2E_PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
         run: |
           set -euo pipefail
           test -n "$RUNNER_API_KEY_AGENT_API"
           test -n "$RUNNER_PROFILE_DELEGATION_SECRET"
+          test -n "$COMMUNICATION_PRODUCTION_TOKEN"
           test -n "$PRODUCTION_E2E_PRINCIPAL_SECRET"
           node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
           process.stdout.write(JSON.stringify({
             RUNNER_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
             RUNNER_API_KEY_AGENT_API: process.env.RUNNER_API_KEY_AGENT_API,
+            COMMUNICATION_TOKEN: process.env.COMMUNICATION_PRODUCTION_TOKEN,
             PRINCIPAL_SECRET_PRODUCTION_E2E: process.env.PRODUCTION_E2E_PRINCIPAL_SECRET,
           }));
+          NODE
+      - name: Verify production Communication resolver credential and tool
+        env:
+          COMMUNICATION_PRODUCTION_TOKEN: ${{ secrets.COMMUNICATION_PRODUCTION_TOKEN }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const response = await fetch('https://trained-assist-communication-skills.skillset-apply.workers.dev/mcp', {
+            method: 'POST',
+            headers: { authorization: `Bearer ${process.env.COMMUNICATION_PRODUCTION_TOKEN}`,
+              'content-type': 'application/json', accept: 'application/json', 'mcp-protocol-version': '2024-11-05' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'production-communication-preflight', method: 'tools/list' }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!response.ok) throw new Error(`communication_worker_http_${response.status}`);
+          const rpc = await response.json();
+          const tools = rpc?.result?.tools;
+          if (!Array.isArray(tools) || !tools.some(tool => tool.name === 'resolve_user_intent')) {
+            throw new Error('communication_resolver_tool_unavailable');
+          }
+          console.log('Production Communication resolver auth and tool listing verified; no model call made.');
           NODE
       - name: Deploy production
         env:

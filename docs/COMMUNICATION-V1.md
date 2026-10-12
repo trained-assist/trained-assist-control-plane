@@ -35,6 +35,8 @@ The selected result is persisted in the existing task journal with a unique even
 
 ## Validation
 
+Production CP uses this selector through the `trained-assist-communication-skills` Worker service binding and its canonical `workers.dev` URL. Its caller credential is separately scoped as `COMMUNICATION_PRODUCTION_TOKEN` in the protected Communication and CP production GitHub stores; the CP deploy maps it to its runtime `COMMUNICATION_TOKEN`. This leaves the existing Communication and sandbox3 credentials intact. The production release preflights the authenticated `resolve_user_intent` tool listing without making a model call, then deploys CP with `ROUTER_SELECTOR=communication_v1` and a bounded 20-second selector deadline.
+
 The optional `CommunicationV1Deps.namesOnly` contract sends only `{id}` options and omits the duplicated capability descriptions. It requires a compatible communication resolver; the shared Communication Worker validates and requires a substantive description for every decision option, so production and sandbox3 must keep this flag disabled. This bounded vertical still advertises only its registered health/capabilities handlers and agent fallback: it is not discovery or dispatch of the full profile's native MCP catalogue. Native method discovery, permission-filtered bindings and selected-instruction dispatch must be proven separately before claiming that broader scenario.
 
 ```bash
