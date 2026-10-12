@@ -84,18 +84,31 @@ describe('trusted profile runtime', () => {
 
   it('allows only host-declared outputs for the sandbox3 profile in the sandbox3 deployment', () => {
     const output = { path: 'outputs/agent-note.md', name: 'agent-note.md', mime: 'text/markdown' };
+    const browserOutputs = [
+      { path: 'outputs/browser-check.md', name: 'browser-check.md', mime: 'text/markdown' },
+      { path: 'outputs/browser-proof.png', name: 'browser-proof.png', mime: 'image/png' },
+    ];
     const configured = { ...bindings, DEPLOYMENT_ENV: 'sandbox3',
       RUNNER_PROFILE_DELEGATION_SECRET: 'delegation-test-secret',
       RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
       RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'sandbox3-agent-api-principal',
       RUNNER_PROFILE_DELEGATION_TENANT_ID: 'sandbox3-acceptance-a-20261008', RUNNER_API_ENGINE_SELECTION: 'agent_api',
-      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [SANDBOX3_PROFILE]: { policy: 'generic_text_v1', outputs: [output] } }) };
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [SANDBOX3_PROFILE]: { policy: 'generic_text_v1', outputs: [output, ...browserOutputs] } }) };
     const policy = resolveProfileRuntime(configured, SANDBOX3_PROFILE).policy;
-    expect(policy.outputs).toEqual([output]);
+    expect(policy.outputs).toEqual([output, ...browserOutputs]);
     const built = buildRunSpec({ userTaskId: 'ut-output-test', profileId: SANDBOX3_PROFILE, conversationId: null,
-      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Export a note as a task artifact', refs: [], instructions: null,
+      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Export agent-note.md as a task artifact', refs: [], instructions: null,
       attemptRunId: null, timeoutMs: 1000 }, policy);
     expect(built.spec.outputs).toEqual([output]);
+    const playwright = buildRunSpec({ userTaskId: 'ut-playwright-output-test', profileId: SANDBOX3_PROFILE, conversationId: null,
+      ownerGeneration: 1, engineName: 'runner-selected',
+      prompt: 'Use Playwright and export both browser-check.md and browser-proof.png as task artifacts', refs: [], instructions: null,
+      attemptRunId: null, timeoutMs: 1000 }, policy);
+    expect(playwright.spec.outputs).toEqual(browserOutputs);
+    const unknownName = buildRunSpec({ userTaskId: 'ut-unlisted-output-test', profileId: SANDBOX3_PROFILE, conversationId: null,
+      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'Export secret.txt as a task artifact', refs: [], instructions: null,
+      attemptRunId: null, timeoutMs: 1000 }, policy);
+    expect(unknownName.spec.outputs).toBeUndefined();
     expect(resolveProfileRuntime(configured, 'another-profile').policy.outputs).toEqual([]);
   });
 
