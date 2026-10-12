@@ -38,8 +38,9 @@ for production requires reviewing and changing that pin in a CP change. An
 authenticated capability probe verifies API-key and profile delegation
 admission; it does not by itself prove user-facing Telegram routing.
 
-`PREVIEW_ONLY=false`, `PILOT_ENABLED=true`, and `ROUTER_AGENT_ALLOWED=true` let
-production accept and route tasks for every profile. This exposes integration
+`PREVIEW_ONLY=false`, `PILOT_ENABLED=true`, `ROUTER_AGENT_ALLOWED=true`, and
+`ROUTER_CONTINUATION_ENABLED=true` let production accept, route, and dispatch
+agent tasks for every admitted profile. This exposes integration
 errors in the live production endpoint. Runner production now allows only
 `trained-assist/ai-agent-runner` and `LLM_LADDER_TOKEN`, with France as the
 default engine and mock disabled. A real run still requires the production API
