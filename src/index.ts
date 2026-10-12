@@ -178,6 +178,7 @@ export interface Env {
   PRINCIPAL_SECRET_INTEGRATION_V1?: string;
   /** Dedicated HMAC credential for the test-only Telegram UX sandbox smoke principal. */
   PRINCIPAL_SECRET_CODEX_SMOKE?: string;
+  PRINCIPAL_SECRET_PRODUCTION_E2E?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на

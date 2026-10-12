@@ -49,3 +49,16 @@ production environment: `EU_VM_WORKER_URL` is a variable, and the matching
 `EU_VM_WORKER_TOKEN`, Runner API key, delegation secret, and stable launch
 encryption key are secrets. The Ladder token remains a repository secret. Keep
 the launch encryption key with its ciphertext across recovery.
+
+
+## Production E2E admission profile
+
+The production release workflow maintains one isolated admission principal,
+`production-e2e-telegram-v1`, for end-to-end verification using a dedicated
+HMAC secret in the protected production environment. Its profile has no access
+to any existing user's task records. A Telegram test ingress can target this
+profile and the production CP/Runner path without changing France-default
+placement or production users' profile mappings. Keep this principal separate
+from the normal production Telegram principal; remove it and its task records
+when the production E2E lane is retired. A successful authenticated capability
+probe is not a substitute for a user-visible Telegram request and reply.
