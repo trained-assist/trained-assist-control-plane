@@ -55,6 +55,8 @@ test('production release deploys the pinned Runner API and checks its revision b
     assert.match(workflow, /Pair Control Plane with production Runner API/);
     assert.match(workflow, /production Runner authenticated capability probe failed/);
     assert.match(workflow, /RUNNER_API_KEYS_PRODUCTION/);
+    assert.match(workflow, /EU_VM_WORKER_URL: \$\{\{ vars\.EU_VM_WORKER_URL \}\}/);
+    assert.match(workflow, /EU_VM_WORKER_TOKEN: \$\{\{ secrets\.EU_VM_WORKER_TOKEN \}\}/);
 });
 
 test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {

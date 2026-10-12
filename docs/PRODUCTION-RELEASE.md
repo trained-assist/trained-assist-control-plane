@@ -30,5 +30,7 @@ errors in the live production endpoint. Runner production now allows only
 default engine and mock disabled. A real run still requires the production API
 principal, paired CP key/profile delegation, and France worker credentials. The
 standard production release provisions these from the CP repository's protected
-production environment and repository secrets. Keep the launch encryption key
-with its ciphertext across recovery.
+production environment: `EU_VM_WORKER_URL` is a variable, and the matching
+`EU_VM_WORKER_TOKEN`, Runner API key, delegation secret, and stable launch
+encryption key are secrets. The Ladder token remains a repository secret. Keep
+the launch encryption key with its ciphertext across recovery.

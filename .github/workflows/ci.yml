@@ -136,7 +136,7 @@ jobs:
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
           RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
           RUN_LAUNCH_ENCRYPTION_KEY: ${{ secrets.RUN_LAUNCH_ENCRYPTION_KEY }}
-          EU_VM_WORKER_URL: ${{ secrets.EU_VM_WORKER_URL }}
+          EU_VM_WORKER_URL: ${{ vars.EU_VM_WORKER_URL }}
           EU_VM_WORKER_TOKEN: ${{ secrets.EU_VM_WORKER_TOKEN }}
           LLM_LADDER_TOKEN: ${{ secrets.LLM_LADDER_TOKEN }}
         run: |
