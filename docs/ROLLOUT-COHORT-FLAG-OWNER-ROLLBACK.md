@@ -1,47 +1,34 @@
-# Rollout: конкретный cohort, routing flag, owner и rollback
+# Production routing, owner и rollback
 
-Предложение владельцу к переключению ограниченной когорты пользователей на новый
-control plane. Ничего не переключает само — это значения и процедура, которые нужно
-одобрить до production cutover.
+Production CP сейчас направляет новые задачи всех профилей в новый control plane.
+Это соответствует решению владельца убрать preview/pilot/router gates, чтобы видеть
+ошибки на рабочем production endpoint. Runner API и workspace admission настраиваются
+отдельно и не становятся готовыми от переключения этих CP flags.
 
 Собрано после приёмки own-API dogfood (api client): сквозной прогон CP → VM Runner →
 настоящий OpenCode через llm-ladder, snapshot ref, два одновременных OpenCode на
 разных слотах, cleanup, чтение после переподключения без второго рана.
 
-## 1. Routing flag — текущие и предлагаемые значения
+## 1. Production values
 
-Механизм уже реализован (`src/pilot/`, [M1-PILOT-ROLLBACK-RUNBOOK.md](M1-PILOT-ROLLBACK-RUNBOOK.md)).
-Развёрнутая песочница сейчас: `PILOT_ENABLED=true`, `PILOT_COHORT_PROFILE_IDS=profile-cp23`.
+Механизм реализован в `src/pilot/`; production values находятся в
+`wrangler.production.jsonc`.
 
-| Переменная | Песочница сейчас | Предлагается для production cutover |
+| Переменная | Production |
 |---|---|---|
-| `PILOT_ENABLED` | `true` | `true` — переключатель одним изменением |
-| `PILOT_ACTIVATED_AT` | `2026-10-04T00:00:00Z` | **время фактического cutover**, не заранее |
-| `PILOT_COHORT_PROFILE_IDS` | `profile-cp23` | перечень когорты из §2 |
-| `PILOT_LEGACY_PROFILE_IDS` | не задан | явный список исключённых профилей |
+| `PREVIEW_ONLY` | `false` |
+| `PILOT_ENABLED` | `true` |
+| `PILOT_ACTIVATED_AT` | `2026-10-12T00:00:00.000Z` |
+| `PILOT_COHORT_PROFILE_IDS` | unset — all profiles |
+| `PILOT_LEGACY_PROFILE_IDS` | unset |
+| `ROUTER_AGENT_ALLOWED` | `true` |
 
-Порядок правил маршрутизации не меняется: выключен → legacy; профиль в legacy-списке →
-legacy; cohort задан и профиля нет в списке → legacy; задача создана до
-`PILOT_ACTIVATED_AT` → legacy; иначе → `new-plane`.
+Маршрутизатор выбирает `new-plane` для новой задачи после `PILOT_ACTIVATED_AT`,
+если профиль не добавлен в `PILOT_LEGACY_PROFILE_IDS`. До времени активации ранее
+принятые задачи остаются на legacy owner. Пустой или отсутствующий cohort не
+ограничивает список профилей.
 
-## 2. Cohort
-
-Когорта — только новые задачи. Существующие задачи остаются у legacy owner и не
-переезжают: правило №4 (`created before PILOT_ACTIVATED_AT → legacy`) это обеспечивает
-по построению, а не отдельной процедурой миграции.
-
-Предлагается начинать с **одного synthetic/внутреннего профиля**, а не с живых
-пользователей:
-
-| Профиль | Роль | Обоснование |
-|---|---|---|
-| `profile-cp23` (synthetic) | доказательство механики на всех шагах | уже прогнан сквозь CP → Runner → OpenCode, snapshot ref и concurrent |
-| `profile-<владелец>` (один живой) | первый настоящий пользователь | один execution/delivery owner = владелец, второй наблюдатель |
-
-Расширение на остальных — отдельное решение после того, как первый живой профиль
-отработал без инцидента. Массовый перенос в этом шаге не производится.
-
-## 3. Один execution/delivery owner
+## 2. Один execution/delivery owner
 
 Требование: у каждой задачи ровно один владелец исполнения и ровно один владелец
 доставки. Пилот делает это конструктивно — задача либо уходит в новый plane, либо
@@ -57,7 +44,7 @@ legacy; cohort задан и профиля нет в списке → legacy; �
 автоматического второго Run не происходит: повтор с тем же ключом попытки возвращает
 тот же Run.
 
-## 4. Процедура rollback
+## 3. Процедура rollback
 
 Откат — одно изменение: `PILOT_ENABLED=false` (или снятие переменной) и рестарт
 control plane. Runner при этом **не трогается** и продолжает обслуживать уже
@@ -75,13 +62,11 @@ control plane. Runner при этом **не трогается** и продо�
 
 Откат **не** откатывает данные: он только перестаёт направлять новые задачи.
 
-## 5. Что нужно от владельца перед переключением
+## 4. Current downstream boundary
 
-1. Утвердить состав когорты (§2): один synthetic + один живой профиль, или сразу шире.
-2. Назначить время `PILOT_ACTIVATED_AT` — фактическое, в момент cutover.
-3. Подтвердить, что первый живой профиль — это вы (единственный execution/delivery owner).
-4. Согласовать наблюдение: что считать поводом для отката (допустим любой инцидент с
-   double-run, потерей задачи или доставкой).
-
-Production не переключается автоматически: смена `PILOT_ENABLED` и
-`PILOT_ACTIVATED_AT` — отдельное действие владельца.
+The CP flags above are enabled. Production Runner API health and source revision are
+verified by the CP release workflow. The Runner API still needs a production key
+registry, paired CP API/delegation credentials, France worker credentials, a stable
+launch-encryption key, and the intended repository allowlist before it can admit a
+user run. Until that pairing is provisioned, CP can expose the Runner configuration
+error directly; it must not route around Runner API to a VM or GHA worker.
