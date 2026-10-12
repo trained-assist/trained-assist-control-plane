@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      RUNNER_PRODUCTION_SOURCE_SHA: 3d3fff5e7651641fa38de8aa137fe64d5ca20d1f
+      RUNNER_PRODUCTION_SOURCE_SHA: f14c95eb21717eb67cab35699e2dbb7c1441e0dd
       RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
@@ -115,7 +115,7 @@ jobs:
           ref: ${{ env.RUNNER_PRODUCTION_SOURCE_SHA }}
           path: runner-production-source
           persist-credentials: false
-      - name: Check and deploy the isolated production Runner API
+      - name: Check the isolated production Runner API
         working-directory: runner-production-source
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -128,11 +128,44 @@ jobs:
           npm run worker:dry-run:production
           npx wrangler whoami 2>&1 | tee /tmp/runner-whoami.txt
           grep -F "$CLOUDFLARE_ACCOUNT_ID" /tmp/runner-whoami.txt
+      - name: Provision paired production Runner credentials
+        working-directory: runner-production-source
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+          RUN_LAUNCH_ENCRYPTION_KEY: ${{ secrets.RUN_LAUNCH_ENCRYPTION_KEY }}
+          EU_VM_WORKER_URL: ${{ secrets.EU_VM_WORKER_URL }}
+          EU_VM_WORKER_TOKEN: ${{ secrets.EU_VM_WORKER_TOKEN }}
+          LLM_LADDER_TOKEN: ${{ secrets.LLM_LADDER_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in RUNNER_API_KEY_AGENT_API RUNNER_PROFILE_DELEGATION_SECRET RUN_LAUNCH_ENCRYPTION_KEY EU_VM_WORKER_URL EU_VM_WORKER_TOKEN LLM_LADDER_TOKEN; do
+            test -n "${!name}" || { echo "required production Runner credential is missing: $name" >&2; exit 1; }
+          done
+          node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
+          import { createHash } from 'node:crypto';
+          const required = ['RUNNER_API_KEY_AGENT_API', 'RUNNER_PROFILE_DELEGATION_SECRET', 'RUN_LAUNCH_ENCRYPTION_KEY', 'EU_VM_WORKER_URL', 'EU_VM_WORKER_TOKEN', 'LLM_LADDER_TOKEN'];
+          for (const name of required) if (!process.env[name]) throw new Error(`missing production Runner credential: ${name}`);
+          const keyHash = createHash('sha256').update(process.env.RUNNER_API_KEY_AGENT_API).digest('hex');
+          const principal = { keyHash, principalId: 'cp-production-runner', profileId: 'trained-assist-production', tenantId: 'trained-assist-production', repository: 'trained-assist/ai-agent-runner', scopes: ['runs:read', 'runs:write'], engines: ['eu-vm-agent-run'] };
+          process.stdout.write(JSON.stringify({
+            RUNNER_API_KEYS_PRODUCTION: JSON.stringify([principal]),
+            AGENT_API_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
+            RUN_LAUNCH_ENCRYPTION_KEY: process.env.RUN_LAUNCH_ENCRYPTION_KEY,
+            VM_WORKER_URL: process.env.EU_VM_WORKER_URL,
+            VM_WORKER_TOKEN: process.env.EU_VM_WORKER_TOKEN,
+            LLM_LADDER_TOKEN: process.env.LLM_LADDER_TOKEN,
+          }));
+          NODE
           npx wrangler deploy --config wrangler.production.jsonc --var BUILD_SHA:"$RUNNER_PRODUCTION_SOURCE_SHA"
       - name: Verify production Runner health and exact source revision
         env:
           RUNNER_SHA: ${{ env.RUNNER_PRODUCTION_SOURCE_SHA }}
           RUNNER_URL: ${{ env.RUNNER_PRODUCTION_URL }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
         run: |
           set -euo pipefail
           version_http='000'
@@ -163,11 +196,51 @@ jobs:
           if (version.buildSha !== process.argv[4]) throw new Error('production_runner_sha_mismatch');
           console.log(JSON.stringify({ runnerHealth: 'ok', runnerBuildSha: version.buildSha }));
           NODE
+          node --input-type=module <<'NODE'
+          import { createHmac } from 'node:crypto';
+          const profileId = 'trained-assist-production';
+          const tenantId = 'trained-assist-production';
+          const principalId = 'cp-production-runner';
+          const expiresAt = String(Date.now() + 60_000);
+          const message = `${principalId}\0${tenantId}\0${profileId}\0${expiresAt}`;
+          const signature = createHmac('sha256', process.env.RUNNER_PROFILE_DELEGATION_SECRET).update(message).digest('hex');
+          const response = await fetch(`${process.env.RUNNER_URL}/v1/capabilities`, {
+            headers: {
+              authorization: `Bearer ${process.env.RUNNER_API_KEY_AGENT_API}`,
+              'x-agent-profile-id': profileId,
+              'x-agent-profile-tenant': tenantId,
+              'x-agent-profile-exp': expiresAt,
+              'x-agent-profile-sig': signature,
+            },
+          });
+          if (!response.ok) throw new Error(`production Runner authenticated capability probe failed: HTTP ${response.status}`);
+          const body = await response.json();
+          if (body.placement !== 'cloudflare-worker' || !body.executionRegions?.includes('eu-vm-agent-run')) {
+            throw new Error('production Runner capability response mismatch');
+          }
+          console.log('Production Runner API key and delegated profile authenticated successfully.');
+          NODE
       - name: Apply production migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
         run: npx wrangler d1 migrations apply ta-cp-production-taskstore --remote --config wrangler.production.jsonc
+      - name: Pair Control Plane with production Runner API
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$RUNNER_API_KEY_AGENT_API"
+          test -n "$RUNNER_PROFILE_DELEGATION_SECRET"
+          node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
+          process.stdout.write(JSON.stringify({
+            RUNNER_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
+            RUNNER_API_KEY_AGENT_API: process.env.RUNNER_API_KEY_AGENT_API,
+          }));
+          NODE
       - name: Deploy production
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

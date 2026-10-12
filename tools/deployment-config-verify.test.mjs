@@ -18,10 +18,11 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.equal(staging.workflows[0].name, 'ta-cp-staging-task-workflow');
     assert.equal(production.workflows[0].name, 'ta-cp-production-task-workflow');
 
-    for (const target of [staging, production]) {
-      assert.deepEqual(target.services ?? [], []);
-      assert.deepEqual(target.r2_buckets ?? [], []);
-    }
+    assert.deepEqual(staging.services ?? [], []);
+    assert.deepEqual(production.services, [
+      { binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-production' },
+    ]);
+    for (const target of [staging, production]) assert.deepEqual(target.r2_buckets ?? [], []);
     assert.equal(staging.vars.PREVIEW_ONLY, 'true');
     assert.equal(staging.vars.PILOT_ENABLED, 'false');
     assert.equal(staging.vars.ROUTER_AGENT_ALLOWED, 'false');
@@ -31,21 +32,29 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.equal(production.vars.PILOT_COHORT_PROFILE_IDS, undefined);
     assert.equal(production.vars.PILOT_LEGACY_PROFILE_IDS, undefined);
     assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'true');
+    assert.equal(production.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
+    assert.equal(production.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-production.skillset-apply.workers.dev');
+    assert.equal(production.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'cp-production-runner');
+    assert.equal(production.vars.RUNNER_PROFILE_DELEGATION_TENANT_ID, 'trained-assist-production');
 });
 
 test('production release deploys the pinned Runner API and checks its revision before CP', () => {
     const workflow = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
     const runnerSha = workflow.match(/RUNNER_PRODUCTION_SOURCE_SHA: ([0-9a-f]{40})/)?.[1];
-    assert.equal(runnerSha, '3d3fff5e7651641fa38de8aa137fe64d5ca20d1f');
+    assert.equal(runnerSha, 'f14c95eb21717eb67cab35699e2dbb7c1441e0dd');
     assert.match(workflow, /repository: trained-assist\/ai-agent-runner/);
     assert.match(workflow, /--config wrangler\.production\.jsonc --var BUILD_SHA:"\$RUNNER_PRODUCTION_SOURCE_SHA"/);
     assert.match(workflow, /for attempt in \$\(seq 1 30\)/);
     assert.match(workflow, /sleep 0\.5/);
-    const runnerDeploy = workflow.indexOf('Check and deploy the isolated production Runner API');
+    const runnerDeploy = workflow.indexOf('Provision paired production Runner credentials');
     const runnerHealth = workflow.indexOf('Verify production Runner health and exact source revision');
     const cpMigration = workflow.indexOf('Apply production migrations');
     const cpDeploy = workflow.indexOf('Deploy production');
     assert.ok(runnerDeploy >= 0 && runnerDeploy < runnerHealth && runnerHealth < cpMigration && cpMigration < cpDeploy);
+    assert.match(workflow, /Provision paired production Runner credentials/);
+    assert.match(workflow, /Pair Control Plane with production Runner API/);
+    assert.match(workflow, /production Runner authenticated capability probe failed/);
+    assert.match(workflow, /RUNNER_API_KEYS_PRODUCTION/);
 });
 
 test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {
