@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const config = (path) => JSON.parse(readFileSync(new URL(path, `file://${process.cwd()}/`), 'utf8'));
 
-test('staging stays isolated while production runs its scheduler with admissions closed', () => {
+test('staging stays isolated while production scheduler and CP admissions are enabled', () => {
     const staging = config('wrangler.staging.jsonc');
     const production = config('wrangler.production.jsonc');
 
@@ -26,8 +26,9 @@ test('staging stays isolated while production runs its scheduler with admissions
     assert.equal(staging.vars.PILOT_ENABLED, 'false');
     assert.equal(staging.vars.ROUTER_AGENT_ALLOWED, 'false');
     assert.equal(production.vars.PREVIEW_ONLY, 'false');
-    assert.equal(production.vars.PILOT_ENABLED, 'false');
-    assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'false');
+    assert.equal(production.vars.PILOT_ENABLED, 'true');
+    assert.equal(production.vars.PILOT_ACTIVATED_AT, '2026-10-12T00:00:00.000Z');
+    assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'true');
 });
 
 test('production release deploys the pinned Runner API and checks its revision before CP', () => {

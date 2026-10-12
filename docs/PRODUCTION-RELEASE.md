@@ -19,10 +19,10 @@ for production requires reviewing and changing that pin in a CP change. A
 successful Worker health check proves deployment and placement only; it does not
 prove that user admission is configured.
 
-`PREVIEW_ONLY=false` lets production scheduler and readiness code run. User run
-admission remains closed while `PILOT_ENABLED=false`,
-`ROUTER_AGENT_ALLOWED=false`, and the Runner production repository allowlist is
-empty. Opening admission requires a separate validated CP principal/profile
-mapping, paired Runner key and delegation secret, France worker credentials,
-and stable launch encryption key. Keep the launch encryption key with its
-ciphertext across recovery.
+`PREVIEW_ONLY=false`, `PILOT_ENABLED=true`, and `ROUTER_AGENT_ALLOWED=true` let
+production accept and route tasks for every profile. This exposes integration
+errors in the live production endpoint. Runner production's repository
+allowlist is still empty and CP production does not yet have its paired Runner
+API key/profile delegation bindings, so a real run can still fail explicitly at
+that boundary. Configure those credentials next; keep the launch encryption key
+with its ciphertext across recovery.

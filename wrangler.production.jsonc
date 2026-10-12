@@ -21,7 +21,8 @@
   "vars": {
     "DEPLOYMENT_ENV": "production",
     "PREVIEW_ONLY": "false",
-    "PILOT_ENABLED": "false",
-    "ROUTER_AGENT_ALLOWED": "false"
+    "PILOT_ENABLED": "true",
+    "PILOT_ACTIVATED_AT": "2026-10-12T00:00:00.000Z",
+    "ROUTER_AGENT_ALLOWED": "true"
   }
 }
