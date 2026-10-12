@@ -18,6 +18,21 @@ submits runs to Runner API; CP does not call France VM or a GHA worker directly.
 The GHA engine remains a Runner API capability and does not change France as the
 default policy.
 
+## Legacy France credential handoff
+
+The current CP release workflow temporarily reads `EU_VM_WORKER_URL` and
+`EU_VM_WORKER_TOKEN` from the protected CP production environment so it can
+provision the France worker credentials into the Runner API. This is a legacy
+bootstrap handoff: the France worker credentials belong to Runner API's
+execution configuration, and CP release ownership of them crosses the service
+boundary. The CP Worker does not receive either value as a runtime binding and
+does not call the France worker directly; CP runtime submits runs only through
+the Runner API service binding.
+
+Keep this handoff documented as legacy until Runner API release/deployment
+owns provisioning its own worker credentials. Do not interpret the current
+workflow as the target ownership model.
+
 The pinned Runner SHA lives in `.github/workflows/ci.yml`. Updating Runner source
 for production requires reviewing and changing that pin in a CP change. An
 authenticated capability probe verifies API-key and profile delegation
