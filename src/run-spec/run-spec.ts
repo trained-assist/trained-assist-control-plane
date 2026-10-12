@@ -538,7 +538,8 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
       runId,
       ownerGeneration: input.ownerGeneration,
     } } : {}),
-    ...(policy.outputs.length ? { outputs: policy.outputs } : {}),
+    ...(policy.outputs.length && (input.profileId !== 'integration-sandbox3-v1'
+      || /\bexport\b.{0,120}\b(?:task\s+)?artifact\b/i.test(inlinePrompt)) ? { outputs: policy.outputs } : {}),
     ...(policy.mcp ? { mcp: policy.mcp } : {}),
     ...(policy.repository ? { repository: policy.repository } : {}),
     ...(policy.resultDestinationRef ? { result: { destinationRef: policy.resultDestinationRef } } : {}),
