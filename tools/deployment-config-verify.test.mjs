@@ -20,6 +20,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
 
     assert.deepEqual(staging.services ?? [], []);
     assert.deepEqual(production.services, [
+      { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-skills' },
       { binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-production' },
     ]);
     for (const target of [staging, production]) assert.deepEqual(target.r2_buckets ?? [], []);
@@ -33,6 +34,11 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.equal(production.vars.PILOT_LEGACY_PROFILE_IDS, undefined);
     assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'true');
     assert.equal(production.vars.ROUTER_CONTINUATION_ENABLED, 'true');
+    assert.equal(production.vars.ROUTER_SELECTOR, 'communication_v1');
+    assert.equal(production.vars.ROUTER_SELECTOR_NAMES_ONLY, 'false');
+    assert.equal(production.vars.COMMUNICATION_API_URL, 'https://trained-assist-communication-skills.skillset-apply.workers.dev');
+    assert.equal(production.vars.COMMUNICATION_TIMEOUT_MS, '20000');
+    assert.equal(production.vars.COMMUNICATION_WRITER_TIMEOUT_MS, '20000');
     assert.equal(production.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(production.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-production.skillset-apply.workers.dev');
     assert.equal(production.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'cp-production-runner');
@@ -49,15 +55,19 @@ test('production release deploys the pinned Runner API and checks its revision b
     assert.match(workflow, /sleep 0\.5/);
     const runnerDeploy = workflow.indexOf('Provision paired production Runner credentials');
     const runnerHealth = workflow.indexOf('Verify production Runner health and exact source revision');
+    const communicationPreflight = workflow.indexOf('Verify production Communication resolver credential and tool');
     const cpMigration = workflow.indexOf('Apply production migrations');
     const cpDeploy = workflow.indexOf('Deploy production');
     assert.ok(runnerDeploy >= 0 && runnerDeploy < runnerHealth && runnerHealth < cpMigration && cpMigration < cpDeploy);
+    assert.ok(communicationPreflight >= 0 && communicationPreflight < cpDeploy);
     assert.match(workflow, /Provision paired production Runner credentials/);
     assert.match(workflow, /Pair Control Plane with production Runner API/);
     assert.match(workflow, /production Runner authenticated capability probe failed/);
     assert.match(workflow, /RUNNER_API_KEYS_PRODUCTION/);
     assert.match(workflow, /EU_VM_WORKER_URL: \$\{\{ vars\.EU_VM_WORKER_URL \}\}/);
     assert.match(workflow, /EU_VM_WORKER_TOKEN: \$\{\{ secrets\.EU_VM_WORKER_TOKEN \}\}/);
+    assert.match(workflow, /COMMUNICATION_PRODUCTION_TOKEN: \$\{\{ secrets\.COMMUNICATION_PRODUCTION_TOKEN \}\}/);
+    assert.match(workflow, /COMMUNICATION_TOKEN: process\.env\.COMMUNICATION_PRODUCTION_TOKEN/);
 });
 
 test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {
