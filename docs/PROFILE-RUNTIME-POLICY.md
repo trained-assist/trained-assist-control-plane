@@ -76,6 +76,14 @@ GHA gateway/workflow, or execution-worker endpoint. Sandbox3 enables only the
 `integration-sandbox3-v1` pilot cohort; API and delegation credentials are
 sandbox-only and must not be reused for production tenants.
 
+The sandbox3 profile may export only host-declared output paths under `outputs/`.
+The current isolated probe declares `outputs/agent-note.md` in
+`RUN_SPEC_PROFILE_OVERRIDES`; callers and task prompts cannot add output paths.
+The override is rejected outside `DEPLOYMENT_ENV=sandbox3`, and profiles without
+an explicit override continue to submit no outputs. Add another fixed path only
+when its scenario has an explicit sandbox acceptance and cleanup check. This
+does not enable Playwright or change Runner placement.
+
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for
 `integration-telegram-ux-v1`; all other principals keep the shared verifier
