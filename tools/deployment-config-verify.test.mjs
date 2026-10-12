@@ -37,6 +37,8 @@ test('production release deploys the pinned Runner API and checks its revision b
     assert.equal(runnerSha, '3d3fff5e7651641fa38de8aa137fe64d5ca20d1f');
     assert.match(workflow, /repository: trained-assist\/ai-agent-runner/);
     assert.match(workflow, /--config wrangler\.production\.jsonc --var BUILD_SHA:"\$RUNNER_PRODUCTION_SOURCE_SHA"/);
+    assert.match(workflow, /for attempt in \$\(seq 1 30\)/);
+    assert.match(workflow, /sleep 0\.5/);
     const runnerDeploy = workflow.indexOf('Check and deploy the isolated production Runner API');
     const runnerHealth = workflow.indexOf('Verify production Runner health and exact source revision');
     const cpMigration = workflow.indexOf('Apply production migrations');
