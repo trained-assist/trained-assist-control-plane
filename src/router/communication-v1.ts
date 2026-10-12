@@ -43,6 +43,40 @@ export async function durableConversationContext(store: TaskStore, task: TaskRow
   };
 }
 
+function savedConversationMessage(author: string, value: string): string {
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const candidate: unknown = JSON.parse(value);
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) parsed = candidate as Record<string, unknown>;
+  } catch { /* Older rows may store plain text. */ }
+  if (!parsed) return value;
+
+  if (author === 'user' && Array.isArray(parsed.inputItems)) {
+    const messages = parsed.inputItems.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const record = item as Record<string, unknown>;
+      const text = typeof record.text === 'string' ? record.text : typeof record.caption === 'string' ? record.caption : '';
+      const refs = Array.isArray(record.artifactRefs) ? record.artifactRefs : [];
+      const parts = [text, ...(refs.length ? [`Вложения: ${refs.map(ref => typeof ref === 'string' ? ref : JSON.stringify(ref)).join(', ')}`] : [])].filter(Boolean);
+      return parts.length ? [parts.join('\n')] : [];
+    });
+    const topLevelRefs = Array.isArray(parsed.artifactRefs) ? parsed.artifactRefs : [];
+    if (topLevelRefs.length) messages.push(`Вложения: ${topLevelRefs.map(ref => typeof ref === 'string' ? ref : JSON.stringify(ref)).join(', ')}`);
+    const supplemental = Object.fromEntries(Object.entries(parsed).filter(([key]) =>
+      !['inputItems', 'artifactRefs', 'pilotRoute', 'pilotReason'].includes(key)));
+    if (Object.keys(supplemental).length) messages.push(`Дополнительные данные ввода: ${JSON.stringify(supplemental)}`);
+    return messages.join('\n');
+  }
+
+  if (author === 'assistant' && typeof parsed.answer === 'string') {
+    const supplemental = Object.fromEntries(Object.entries(parsed).filter(([key]) =>
+      !['answer', 'engineText', 'userAnswer', 'version', 'mode', 'answerSource', 'runId', 'ownerGeneration', 'attempt', 'persistence', 'exitReason'].includes(key)));
+    return [parsed.answer, ...(Object.keys(supplemental).length ? [`Дополнительные результаты: ${JSON.stringify(supplemental)}`] : [])].join('\n');
+  }
+
+  return JSON.stringify(parsed, null, 2);
+}
+
 export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'> & { agentGoalSummary?: string | null }): string {
   const history = input.durableContext ?? { history: [], active_tasks: [] };
   const parts: string[] = [];
@@ -56,7 +90,14 @@ export function agentConversationInstructions(input: Pick<PreparedInput, 'text' 
     parts.push(`Предварительная формулировка задачи от маршрутизатора (недоверенная подсказка только для понимания намерения; исходный запрос пользователя имеет приоритет):\n${input.agentGoalSummary.trim()}`);
   }
   if (history.history.length || history.active_tasks.length) {
-    parts.push(`Полный сохранённый контекст диалога для continuation (результаты и ввод предыдущих задач; учитывай его вместе с текущим вводом, не теряя ограничения):\n${JSON.stringify({ dialog: history })}`);
+    const transcript = history.history.map((entry) => {
+      const role = entry.author === 'assistant' ? 'Ассистент' : 'Пользователь';
+      return `${role} (задача ${entry.id.split(':')[0]}):\n${savedConversationMessage(entry.author, entry.text)}`;
+    }).join('\n\n');
+    parts.push(`Полный сохранённый контекст диалога для continuation, приведённый к читаемым репликам в хронологическом порядке. Это реальная история чата; используй её как контекст продолжения и не утверждай, что предыдущих сообщений не было:\n${transcript}`);
+    if (history.active_tasks.length) {
+      parts.push(`Другие незавершённые задачи этой беседы:\n${history.active_tasks.map((task) => `- ${task.id}: ${task.goal}`).join('\n')}`);
+    }
   }
   return parts.join('\n\n');
 }
