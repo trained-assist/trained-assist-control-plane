@@ -77,12 +77,12 @@ GHA gateway/workflow, or execution-worker endpoint. Sandbox3 enables only the
 sandbox-only and must not be reused for production tenants.
 
 The sandbox3 profile may export only host-declared output paths under `outputs/`.
-The host adds its fixed `outputs/agent-note.md` declaration to a RunSpec only
-when the task explicitly asks to export a task artifact. Ordinary questions and
+Its fixed allowlist is `agent-note.md`, `browser-check.md`, and
+`browser-proof.png`. The host adds only the named allowlisted paths to a RunSpec
+when the task explicitly asks to export task artifacts. Ordinary questions and
 inbound file-intake do not inherit an unrelated output requirement. Callers and
 task prompts cannot add or choose output paths. The override is rejected
-outside `DEPLOYMENT_ENV=sandbox3`; this does not enable Playwright or change
-Runner placement.
+outside `DEPLOYMENT_ENV=sandbox3`; this does not change Runner placement.
 
 The isolated test principal may use the optional Worker secret
 `PRINCIPAL_SECRET_TELEGRAM_UX`. It overrides `PRINCIPAL_SECRET` only for

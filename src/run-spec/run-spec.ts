@@ -333,6 +333,17 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const REPOSITORY_FULL_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
 const PROMPT_CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+
+function outputsForRun(profileId: string, prompt: string, declared: OutputSpec[]): OutputSpec[] {
+  if (profileId !== 'integration-sandbox3-v1') return declared;
+  if (!/\bexport\b.{0,160}\b(?:task\s+)?artifacts?\b/i.test(prompt)) return [];
+  const lowerPrompt = prompt.toLowerCase();
+  const requested = declared.filter(output => {
+    const name = (output.name || output.path.split('/').pop() || '').toLowerCase();
+    return name.length > 0 && lowerPrompt.includes(name);
+  });
+  return requested.length ? requested : declared.length === 1 ? declared : [];
+}
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
 const MAX_MCP_URL_CHARS = 2000;
 const MAX_MCP_BINDING_REF_CHARS = 300;
@@ -506,6 +517,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     if (input.inputManifest.manifestRef !== `cp-input-manifest:${input.userTaskId}`) fail('inputManifest.manifestRef', 'expected the task-scoped Control Plane manifest ref');
     if (!/^[0-9a-f]{64}$/.test(input.inputManifest.manifestVersion)) fail('inputManifest.manifestVersion', 'expected lowercase sha256');
   }
+  const declaredOutputs = outputsForRun(input.profileId, inlinePrompt, policy.outputs);
 
   const spec: RunSpec = {
     contractVersion: RUN_SPEC_CONTRACT_VERSION,
@@ -538,8 +550,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
       runId,
       ownerGeneration: input.ownerGeneration,
     } } : {}),
-    ...(policy.outputs.length && (input.profileId !== 'integration-sandbox3-v1'
-      || /\bexport\b.{0,120}\b(?:task\s+)?artifact\b/i.test(inlinePrompt)) ? { outputs: policy.outputs } : {}),
+    ...(declaredOutputs.length ? { outputs: declaredOutputs } : {}),
     ...(policy.mcp ? { mcp: policy.mcp } : {}),
     ...(policy.repository ? { repository: policy.repository } : {}),
     ...(policy.resultDestinationRef ? { result: { destinationRef: policy.resultDestinationRef } } : {}),
