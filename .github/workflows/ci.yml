@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      RUNNER_PRODUCTION_SOURCE_SHA: fae0ba25e2d4784c3899e9b1dd8f7defd444c25c
+      RUNNER_PRODUCTION_SOURCE_SHA: f14c95eb21717eb67cab35699e2dbb7c1441e0dd
       RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
@@ -144,19 +144,21 @@ jobs:
           for name in RUNNER_API_KEY_AGENT_API RUNNER_PROFILE_DELEGATION_SECRET RUN_LAUNCH_ENCRYPTION_KEY EU_VM_WORKER_URL EU_VM_WORKER_TOKEN LLM_LADDER_TOKEN; do
             test -n "${!name}" || { echo "required production Runner credential is missing: $name" >&2; exit 1; }
           done
-          registry="$(RUNNER_API_KEY_AGENT_API="$RUNNER_API_KEY_AGENT_API" node --input-type=module -e '
-            import { createHash } from "node:crypto";
-            const key = process.env.RUNNER_API_KEY_AGENT_API;
-            const keyHash = createHash("sha256").update(key).digest("hex");
-            process.stdout.write(JSON.stringify([{ keyHash, principalId: "cp-production-runner", profileId: "trained-assist-production", tenantId: "trained-assist-production", repository: "trained-assist/ai-agent-runner", scopes: ["runs:read", "runs:write"], engines: ["eu-vm-agent-run"] }]));
-          ')"
-          printf '%s' "$registry" | npx wrangler secret put RUNNER_API_KEYS --config wrangler.production.jsonc >/dev/null
-          unset registry
-          printf '%s' "$RUNNER_PROFILE_DELEGATION_SECRET" | npx wrangler secret put AGENT_API_PROFILE_DELEGATION_SECRET --config wrangler.production.jsonc >/dev/null
-          printf '%s' "$RUN_LAUNCH_ENCRYPTION_KEY" | npx wrangler secret put RUN_LAUNCH_ENCRYPTION_KEY --config wrangler.production.jsonc >/dev/null
-          printf '%s' "$EU_VM_WORKER_URL" | npx wrangler secret put VM_WORKER_URL --config wrangler.production.jsonc >/dev/null
-          printf '%s' "$EU_VM_WORKER_TOKEN" | npx wrangler secret put VM_WORKER_TOKEN --config wrangler.production.jsonc >/dev/null
-          printf '%s' "$LLM_LADDER_TOKEN" | npx wrangler secret put LLM_LADDER_TOKEN --config wrangler.production.jsonc >/dev/null
+          node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
+          import { createHash } from 'node:crypto';
+          const required = ['RUNNER_API_KEY_AGENT_API', 'RUNNER_PROFILE_DELEGATION_SECRET', 'RUN_LAUNCH_ENCRYPTION_KEY', 'EU_VM_WORKER_URL', 'EU_VM_WORKER_TOKEN', 'LLM_LADDER_TOKEN'];
+          for (const name of required) if (!process.env[name]) throw new Error(`missing production Runner credential: ${name}`);
+          const keyHash = createHash('sha256').update(process.env.RUNNER_API_KEY_AGENT_API).digest('hex');
+          const principal = { keyHash, principalId: 'cp-production-runner', profileId: 'trained-assist-production', tenantId: 'trained-assist-production', repository: 'trained-assist/ai-agent-runner', scopes: ['runs:read', 'runs:write'], engines: ['eu-vm-agent-run'] };
+          process.stdout.write(JSON.stringify({
+            RUNNER_API_KEYS_PRODUCTION: JSON.stringify([principal]),
+            AGENT_API_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
+            RUN_LAUNCH_ENCRYPTION_KEY: process.env.RUN_LAUNCH_ENCRYPTION_KEY,
+            VM_WORKER_URL: process.env.EU_VM_WORKER_URL,
+            VM_WORKER_TOKEN: process.env.EU_VM_WORKER_TOKEN,
+            LLM_LADDER_TOKEN: process.env.LLM_LADDER_TOKEN,
+          }));
+          NODE
           npx wrangler deploy --config wrangler.production.jsonc --var BUILD_SHA:"$RUNNER_PRODUCTION_SOURCE_SHA"
       - name: Verify production Runner health and exact source revision
         env:
@@ -233,8 +235,12 @@ jobs:
           set -euo pipefail
           test -n "$RUNNER_API_KEY_AGENT_API"
           test -n "$RUNNER_PROFILE_DELEGATION_SECRET"
-          printf '%s' "$RUNNER_PROFILE_DELEGATION_SECRET" | npx wrangler secret put RUNNER_PROFILE_DELEGATION_SECRET --config wrangler.production.jsonc >/dev/null
-          printf '%s' "$RUNNER_API_KEY_AGENT_API" | npx wrangler secret put RUNNER_API_KEY_AGENT_API --config wrangler.production.jsonc >/dev/null
+          node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
+          process.stdout.write(JSON.stringify({
+            RUNNER_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
+            RUNNER_API_KEY_AGENT_API: process.env.RUNNER_API_KEY_AGENT_API,
+          }));
+          NODE
       - name: Deploy production
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

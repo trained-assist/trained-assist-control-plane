@@ -3,8 +3,9 @@
 The Control Plane repository owns the production release sequence. After staging
 checks pass, its protected `main` workflow checks out the pinned source revision
 of `trained-assist/ai-agent-runner`, runs the Runner tests and production dry-run,
-provisions paired Runner/CP credentials, deploys the standalone Cloudflare Runner
-API, and verifies `/healthz`, the exact `/version` SHA, and an authenticated
+provisions paired Runner/CP credentials in one secret update per Worker, deploys
+the standalone Cloudflare Runner API, and verifies `/healthz`, the exact
+`/version` SHA, and an authenticated
 delegated `/v1/capabilities` probe. The version check retries transient route
 publication for up to 75 seconds. Only then does it apply CP production D1
 migrations, pair CP to Runner API, and deploy CP. The CP production environment's
@@ -18,7 +19,7 @@ The GHA engine remains a Runner API capability and does not change France as the
 default policy.
 
 The pinned Runner SHA lives in `.github/workflows/ci.yml`. Updating Runner source
-for production requires reviewing and changing that pin in a CP change. A
+for production requires reviewing and changing that pin in a CP change. An
 authenticated capability probe verifies API-key and profile delegation
 admission; it does not by itself prove user-facing Telegram routing.
 
