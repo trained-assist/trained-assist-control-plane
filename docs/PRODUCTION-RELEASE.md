@@ -4,9 +4,10 @@ The Control Plane repository owns the production release sequence. After staging
 checks pass, its protected `main` workflow checks out the pinned source revision
 of `trained-assist/ai-agent-runner`, runs the Runner tests and production dry-run,
 deploys the standalone Cloudflare Runner API, and verifies `/healthz` plus the
-exact `/version` SHA. Only then does it apply CP production D1 migrations and
-deploy CP. The CP production environment's Cloudflare credential is used by the
-job; a second copy of that credential is not required in the Runner repository.
+exact `/version` SHA. The version check retries transient route publication for
+up to 75 seconds. Only then does it apply CP production D1 migrations and deploy
+CP. The CP production environment's Cloudflare credential is used by the job; a
+second copy of that credential is not required in the Runner repository.
 
 The Runner API is a separate serverless Worker with its own production Durable
 Object namespace. Its production engine defaults to the France VM worker. CP

@@ -135,8 +135,24 @@ jobs:
           RUNNER_URL: ${{ env.RUNNER_PRODUCTION_URL }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 10 "$RUNNER_URL/healthz" > "$RUNNER_TEMP/runner-health.json"
-          curl --fail --silent --show-error --max-time 10 "$RUNNER_URL/version" > "$RUNNER_TEMP/runner-version.json"
+          version_http='000'
+          for attempt in $(seq 1 30); do
+            version_http="$(curl --silent --output "$RUNNER_TEMP/runner-version.json" --write-out '%{http_code}' --max-time 2 "$RUNNER_URL/version" 2>/dev/null || true)"
+            if [[ "$version_http" == '200' ]] && node --input-type=module - "$RUNNER_TEMP/runner-version.json" "$RUNNER_SHA" >/dev/null 2>&1 <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          if (version.buildSha !== process.argv[3]) process.exit(1);
+          NODE
+            then
+              break
+            fi
+            sleep 0.5
+          done
+          if [[ "$version_http" != '200' ]]; then
+            echo "production Runner version endpoint did not become ready (last HTTP $version_http)" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 5 "$RUNNER_URL/healthz" > "$RUNNER_TEMP/runner-health.json"
           node --input-type=module - "$RUNNER_TEMP/runner-health.json" "$RUNNER_TEMP/runner-version.json" "$RUNNER_SHA" <<'NODE'
           import { readFileSync } from 'node:fs';
           const health = JSON.parse(readFileSync(process.argv[2], 'utf8'));
