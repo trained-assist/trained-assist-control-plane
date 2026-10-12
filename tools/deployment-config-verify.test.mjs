@@ -28,6 +28,8 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.equal(production.vars.PREVIEW_ONLY, 'false');
     assert.equal(production.vars.PILOT_ENABLED, 'true');
     assert.equal(production.vars.PILOT_ACTIVATED_AT, '2026-10-12T00:00:00.000Z');
+    assert.equal(production.vars.PILOT_COHORT_PROFILE_IDS, undefined);
+    assert.equal(production.vars.PILOT_LEGACY_PROFILE_IDS, undefined);
     assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'true');
 });
 
