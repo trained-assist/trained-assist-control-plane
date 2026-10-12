@@ -22,8 +22,8 @@ prove that user admission is configured.
 
 `PREVIEW_ONLY=false`, `PILOT_ENABLED=true`, and `ROUTER_AGENT_ALLOWED=true` let
 production accept and route tasks for every profile. This exposes integration
-errors in the live production endpoint. Runner production's repository
-allowlist is still empty and CP production does not yet have its paired Runner
-API key/profile delegation bindings, so a real run can still fail explicitly at
-that boundary. Configure those credentials next; keep the launch encryption key
-with its ciphertext across recovery.
+errors in the live production endpoint. Runner production now allows only
+`trained-assist/ai-agent-runner` and `LLM_LADDER_TOKEN`, with France as the
+default engine and mock disabled. A real run still requires the production API
+principal, paired CP key/profile delegation, and France worker credentials.
+Keep the launch encryption key with its ciphertext across recovery.
