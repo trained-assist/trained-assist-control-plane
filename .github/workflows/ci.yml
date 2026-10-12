@@ -84,6 +84,9 @@ jobs:
     needs: deploy-staging
     runs-on: ubuntu-latest
     environment: production
+    env:
+      RUNNER_PRODUCTION_SOURCE_SHA: 3d3fff5e7651641fa38de8aa137fe64d5ca20d1f
+      RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
     steps:
@@ -105,6 +108,45 @@ jobs:
           test "$CLOUDFLARE_ACCOUNT_ID" = "d740a05e9442c1d0feacae2dfc673e93"
           npx wrangler whoami 2>&1 | tee /tmp/whoami.txt
           grep -F "d740a05e9442c1d0feacae2dfc673e93" /tmp/whoami.txt
+      - name: Check out the pinned Runner API release source
+        uses: actions/checkout@v4
+        with:
+          repository: trained-assist/ai-agent-runner
+          ref: ${{ env.RUNNER_PRODUCTION_SOURCE_SHA }}
+          path: runner-production-source
+          persist-credentials: false
+      - name: Check and deploy the isolated production Runner API
+        working-directory: runner-production-source
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run typecheck
+          npm test
+          npm run worker:dry-run:production
+          npx wrangler whoami 2>&1 | tee /tmp/runner-whoami.txt
+          grep -F "$CLOUDFLARE_ACCOUNT_ID" /tmp/runner-whoami.txt
+          npx wrangler deploy --config wrangler.production.jsonc --var BUILD_SHA:"$RUNNER_PRODUCTION_SOURCE_SHA"
+      - name: Verify production Runner health and exact source revision
+        env:
+          RUNNER_SHA: ${{ env.RUNNER_PRODUCTION_SOURCE_SHA }}
+          RUNNER_URL: ${{ env.RUNNER_PRODUCTION_URL }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 10 "$RUNNER_URL/healthz" > "$RUNNER_TEMP/runner-health.json"
+          curl --fail --silent --show-error --max-time 10 "$RUNNER_URL/version" > "$RUNNER_TEMP/runner-version.json"
+          node --input-type=module - "$RUNNER_TEMP/runner-health.json" "$RUNNER_TEMP/runner-version.json" "$RUNNER_SHA" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const health = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const version = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+          if (health.status !== 'ok' || health.placement !== 'cloudflare-worker') {
+            throw new Error('production_runner_health_mismatch');
+          }
+          if (version.buildSha !== process.argv[4]) throw new Error('production_runner_sha_mismatch');
+          console.log(JSON.stringify({ runnerHealth: 'ok', runnerBuildSha: version.buildSha }));
+          NODE
       - name: Apply production migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const config = (path) => JSON.parse(readFileSync(new URL(path, `file://${process.cwd()}/`), 'utf8'));
 
-test('isolated staging and production targets stay distinct and execution-disabled', () => {
+test('staging stays isolated while production scheduler and CP admissions are enabled', () => {
     const staging = config('wrangler.staging.jsonc');
     const production = config('wrangler.production.jsonc');
 
@@ -21,10 +21,27 @@ test('isolated staging and production targets stay distinct and execution-disabl
     for (const target of [staging, production]) {
       assert.deepEqual(target.services ?? [], []);
       assert.deepEqual(target.r2_buckets ?? [], []);
-      assert.equal(target.vars.PREVIEW_ONLY, 'true');
-      assert.equal(target.vars.PILOT_ENABLED, 'false');
-      assert.equal(target.vars.ROUTER_AGENT_ALLOWED, 'false');
     }
+    assert.equal(staging.vars.PREVIEW_ONLY, 'true');
+    assert.equal(staging.vars.PILOT_ENABLED, 'false');
+    assert.equal(staging.vars.ROUTER_AGENT_ALLOWED, 'false');
+    assert.equal(production.vars.PREVIEW_ONLY, 'false');
+    assert.equal(production.vars.PILOT_ENABLED, 'true');
+    assert.equal(production.vars.PILOT_ACTIVATED_AT, '2026-10-12T00:00:00.000Z');
+    assert.equal(production.vars.ROUTER_AGENT_ALLOWED, 'true');
+});
+
+test('production release deploys the pinned Runner API and checks its revision before CP', () => {
+    const workflow = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
+    const runnerSha = workflow.match(/RUNNER_PRODUCTION_SOURCE_SHA: ([0-9a-f]{40})/)?.[1];
+    assert.equal(runnerSha, '3d3fff5e7651641fa38de8aa137fe64d5ca20d1f');
+    assert.match(workflow, /repository: trained-assist\/ai-agent-runner/);
+    assert.match(workflow, /--config wrangler\.production\.jsonc --var BUILD_SHA:"\$RUNNER_PRODUCTION_SOURCE_SHA"/);
+    const runnerDeploy = workflow.indexOf('Check and deploy the isolated production Runner API');
+    const runnerHealth = workflow.indexOf('Verify production Runner health and exact source revision');
+    const cpMigration = workflow.indexOf('Apply production migrations');
+    const cpDeploy = workflow.indexOf('Deploy production');
+    assert.ok(runnerDeploy >= 0 && runnerDeploy < runnerHealth && runnerHealth < cpMigration && cpMigration < cpDeploy);
 });
 
 test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {
