@@ -1,8 +1,9 @@
 import { runnerAdapterOf, type RunnerApiAdapter } from '../runner-adapter';
-import { RunSpecMappingError, runSpecPolicyOf, type RunSpecPolicy } from './run-spec';
+import { RunSpecMappingError, runSpecPolicyOf, type OutputSpec, type RunSpecPolicy } from './run-spec';
 import { registryFixtureMcpSpec } from '../router/registry-test-mcp';
 
 export const TELEGRAM_UX_PROFILE = 'integration-telegram-ux-v1';
+export const SANDBOX3_PROFILE = 'integration-sandbox3-v1';
 
 export class ProfileRuntimeConfigurationError extends RunSpecMappingError {
   constructor() {
@@ -11,6 +12,7 @@ export class ProfileRuntimeConfigurationError extends RunSpecMappingError {
 }
 
 export interface ProfileRuntimeBindings {
+  DEPLOYMENT_ENV?: string;
   RUNNER_API_URL?: string;
   RUNNER_API_KEY?: string;
   RUNNER_API_KEY_TELEGRAM_UX?: string;
@@ -65,13 +67,18 @@ export function resolveProfileRuntime(
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail();
     overrides = parsed as Record<string, unknown>;
     for (const [profileId, raw] of Object.entries(overrides)) {
-      if (profileId !== TELEGRAM_UX_PROFILE || !raw || typeof raw !== 'object' || Array.isArray(raw)) return fail();
+      if (![TELEGRAM_UX_PROFILE, SANDBOX3_PROFILE].includes(profileId) || !raw || typeof raw !== 'object' || Array.isArray(raw)) return fail();
       const entry = raw as Record<string, unknown>;
       const keys = Object.keys(entry).sort().join(',');
-      if (!['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding'].includes(keys)
-        || entry.policy !== 'generic_text_v1') return fail();
+      const sandboxOutputPolicy = profileId === SANDBOX3_PROFILE;
+      const allowedKeys = sandboxOutputPolicy
+        ? ['outputs,policy']
+        : ['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding'];
+      if (!allowedKeys.includes(keys) || entry.policy !== 'generic_text_v1') return fail();
+      if (sandboxOutputPolicy && env.DEPLOYMENT_ENV !== 'sandbox3') return fail();
       if (entry.runnerKeyBinding !== undefined && entry.runnerKeyBinding !== 'RUNNER_API_KEY_TELEGRAM_UX') return fail();
       if (entry.hostMcpBinding !== undefined && entry.hostMcpBinding !== 'registry-mcp-test-160-read') return fail();
+      if (sandboxOutputPolicy && !validDeclaredOutputs(entry.outputs)) return fail();
     }
   }
   const policy = runSpecPolicyOf(env);
@@ -95,11 +102,13 @@ export function resolveProfileRuntime(
       RUNNER_PROFILE_DELEGATION_TENANT_ID: env.RUNNER_PROFILE_DELEGATION_TENANT_ID, RUNNER_PROFILE_DELEGATED_ID: durableProfileId,
       RUNNER_API_FETCH: resolved.fetch });
     if (!adapter) return fail();
-    if (durableProfileId === TELEGRAM_UX_PROFILE) {
+    if (durableProfileId === TELEGRAM_UX_PROFILE || durableProfileId === SANDBOX3_PROFILE) {
       const profileOverride = overrides[durableProfileId] as Record<string, unknown> | undefined;
       const hostMcpEnabled = profileOverride?.hostMcpBinding === 'registry-mcp-test-160-read';
       if (hostMcpEnabled && !env.MCP_TEST_AUTH_TOKEN?.trim()) return fail();
-      return { policy: { ...policy, repository: null, outputs: [], inputRefs: [],
+      const sandboxOutputs = durableProfileId === SANDBOX3_PROFILE
+        ? (profileOverride as { outputs: OutputSpec[] } | undefined)?.outputs ?? [] : [];
+      return { policy: { ...policy, repository: null, outputs: sandboxOutputs, inputRefs: [],
         mcp: hostMcpEnabled ? registryFixtureMcpSpec() : null,
         envAllowlist: policy.envAllowlist.filter(name => name === 'LLM_LADDER_TOKEN') }, adapter, runnerApiUrl: runnerUrl ?? null };
     }
@@ -124,4 +133,23 @@ export function resolveProfileRuntime(
       RUNNER_API_ENGINE_SELECTION: env.RUNNER_API_ENGINE_SELECTION, RUNNER_API_FETCH: resolved.fetch }),
     runnerApiUrl: runnerUrl,
   };
+}
+
+function validDeclaredOutputs(value: unknown): value is OutputSpec[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) return false;
+  const seen = new Set<string>();
+  return value.every((output) => {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
+    const item = output as Record<string, unknown>;
+    const keys = Object.keys(item).sort().join(',');
+    if (!['path', 'mime,path', 'name,path', 'mime,name,path'].includes(keys)) return false;
+    if (typeof item.path !== 'string' || item.path.length < 1 || item.path.length > 240
+      || !item.path.startsWith('outputs/') || item.path.startsWith('/')
+      || item.path.split('/').some(part => !part || part === '.' || part === '..')
+      || !/^[A-Za-z0-9._/-]+$/.test(item.path) || seen.has(item.path)) return false;
+    if (item.name !== undefined && (typeof item.name !== 'string' || item.name.length < 1 || item.name.length > 200)) return false;
+    if (item.mime !== undefined && (typeof item.mime !== 'string' || item.mime.length < 1 || item.mime.length > 100)) return false;
+    seen.add(item.path);
+    return true;
+  });
 }

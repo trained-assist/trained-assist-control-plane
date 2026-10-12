@@ -5,7 +5,7 @@ import { TaskStore } from '../src/taskstore';
 import { TaskWorkflow } from '../src/index';
 import type { PlanParams } from '../src/workflow-port/conversation-plan';
 import { buildRunSpec, runSpecPolicyOf } from '../src/run-spec/run-spec';
-import { ProfileRuntimeConfigurationError, resolveProfileRuntime, TELEGRAM_UX_PROFILE } from '../src/run-spec/profile-runtime';
+import { ProfileRuntimeConfigurationError, resolveProfileRuntime, SANDBOX3_PROFILE, TELEGRAM_UX_PROFILE } from '../src/run-spec/profile-runtime';
 import { requirePermission } from '../src/intake/authorization';
 import { registryFixtureMcpSpec } from '../src/router/registry-test-mcp';
 import { TELEGRAM_UX_SANDBOX } from '../src/deployment/telegram-ux-sandbox';
@@ -80,6 +80,40 @@ describe('trusted profile runtime', () => {
     const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(
       `sandbox3-agent-api-principal\0sandbox3-acceptance-a-20261008\0integration-sandbox3-v1\0${exp}`));
     expect(captured[0]!.headers.get('x-agent-profile-sig')).toBe([...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, '0')).join(''));
+  });
+
+  it('allows only host-declared outputs for the sandbox3 profile in the sandbox3 deployment', () => {
+    const output = { path: 'outputs/agent-note.md', name: 'agent-note.md', mime: 'text/markdown' };
+    const configured = { ...bindings, DEPLOYMENT_ENV: 'sandbox3',
+      RUNNER_PROFILE_DELEGATION_SECRET: 'delegation-test-secret',
+      RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
+      RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'sandbox3-agent-api-principal',
+      RUNNER_PROFILE_DELEGATION_TENANT_ID: 'sandbox3-acceptance-a-20261008', RUNNER_API_ENGINE_SELECTION: 'agent_api',
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [SANDBOX3_PROFILE]: { policy: 'generic_text_v1', outputs: [output] } }) };
+    const policy = resolveProfileRuntime(configured, SANDBOX3_PROFILE).policy;
+    expect(policy.outputs).toEqual([output]);
+    const built = buildRunSpec({ userTaskId: 'ut-output-test', profileId: SANDBOX3_PROFILE, conversationId: null,
+      ownerGeneration: 1, engineName: 'runner-selected', prompt: 'create a note', refs: [], instructions: null,
+      attemptRunId: null, timeoutMs: 1000 }, policy);
+    expect(built.spec.outputs).toEqual([output]);
+    expect(resolveProfileRuntime(configured, 'another-profile').policy.outputs).toEqual([]);
+  });
+
+  it('rejects sandbox outputs outside the sandbox deployment or outside outputs/', () => {
+    const base = { ...bindings, RUNNER_PROFILE_DELEGATION_SECRET: 'delegation-test-secret',
+      RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
+      RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'sandbox3-agent-api-principal',
+      RUNNER_PROFILE_DELEGATION_TENANT_ID: 'sandbox3-acceptance-a-20261008', RUNNER_API_ENGINE_SELECTION: 'agent_api' };
+    const override = (outputs: unknown) => JSON.stringify({ [SANDBOX3_PROFILE]: { policy: 'generic_text_v1', outputs } });
+    expect(() => resolveProfileRuntime({ ...base, DEPLOYMENT_ENV: 'production',
+      RUN_SPEC_PROFILE_OVERRIDES: override([{ path: 'outputs/note.md' }]) }, SANDBOX3_PROFILE))
+      .toThrow(ProfileRuntimeConfigurationError);
+    expect(() => resolveProfileRuntime({ ...base, DEPLOYMENT_ENV: 'sandbox3',
+      RUN_SPEC_PROFILE_OVERRIDES: override([{ path: '../note.md' }]) }, SANDBOX3_PROFILE))
+      .toThrow(ProfileRuntimeConfigurationError);
+    expect(() => resolveProfileRuntime({ ...base, DEPLOYMENT_ENV: 'sandbox3',
+      RUN_SPEC_PROFILE_OVERRIDES: override([{ path: 'private/note.md' }]) }, SANDBOX3_PROFILE))
+      .toThrow(ProfileRuntimeConfigurationError);
   });
 
   it('fails closed when Agent API selection has missing or partial delegation credentials', () => {
