@@ -113,6 +113,7 @@ export interface RunnerArtifact {
 
 export interface RunnerArtifactSummary {
   ref: string;
+  path?: string;
   artifactId?: string;
   name: string;
   mime: string;
@@ -289,6 +290,50 @@ export class RunnerApiAdapter {
     const body = new Uint8Array(await res.arrayBuffer());
     const artifact = await this.artifactMeta(artifactId);
     return { body, artifact };
+  }
+
+  /** Read a completed, manifest-declared output by its run-scoped path. */
+  async artifactBytesByPath(runId: string, sourcePath: string): Promise<{ body: Uint8Array; sha256: string; mime: string }> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(runId)) throw new RunnerConflictError('artifact download has an invalid run id');
+    if (!sourcePath || sourcePath.length > 512 || /[\x00-\x1f\x7f]/.test(sourcePath)) throw new RunnerConflictError('artifact download has an invalid output path');
+    const query = new URLSearchParams({ path: sourcePath });
+    const res = await this.doFetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/artifacts?${query.toString()}`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${this.apiKey}` },
+    });
+    if (!res.ok) throw new RunnerConflictError(`artifact path download: HTTP_${res.status}`, { statusCode: res.status });
+    const contentLength = res.headers.get('content-length');
+    const size = contentLength && /^\d+$/.test(contentLength) ? Number(contentLength) : null;
+    if (size === null || !Number.isSafeInteger(size) || size > 20 * 1024 * 1024) throw new RunnerConflictError('artifact path download has invalid content length');
+    const sha256 = res.headers.get('x-content-sha256');
+    if (!sha256 || !/^[a-f0-9]{64}$/.test(sha256)) throw new RunnerConflictError('artifact path download has invalid digest metadata');
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    if (res.body) {
+      const reader = res.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > size || total > 20 * 1024 * 1024) {
+            await reader.cancel();
+            throw new RunnerConflictError('artifact path download exceeds its declared size limit');
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    if (total !== size) throw new RunnerConflictError('artifact path download size differs from its metadata');
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    const digest = await crypto.subtle.digest('SHA-256', body);
+    const actualSha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    if (actualSha256 !== sha256) throw new RunnerConflictError('artifact path download bytes differ from its digest');
+    return { body, sha256, mime: res.headers.get('content-type') ?? 'application/octet-stream' };
   }
 
   async cancel(runId: string, opts: { ownerGeneration?: number; reason?: string } = {}): Promise<{ status: string; reason?: string; state?: string }> {
