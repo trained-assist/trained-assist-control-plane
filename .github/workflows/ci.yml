@@ -233,6 +233,14 @@ jobs:
           set -euo pipefail
           npx wrangler d1 execute ta-cp-production-taskstore --remote --config wrangler.production.jsonc --command "INSERT INTO admission_principals (principal_id, profile_id, scopes, enabled, created_at, updated_at) VALUES ('production-e2e-telegram-v1', 'production-e2e-telegram-v1', '[\"tasks:intake\",\"tasks:read\",\"tasks:signal\",\"tasks:control\"]', 1, strftime('%s','now')*1000, strftime('%s','now')*1000) ON CONFLICT(principal_id) DO UPDATE SET profile_id=excluded.profile_id, scopes=excluded.scopes, enabled=1, updated_at=excluded.updated_at"
           npx wrangler d1 execute ta-cp-production-taskstore --remote --config wrangler.production.jsonc --command "SELECT principal_id, profile_id, scopes, enabled FROM admission_principals WHERE principal_id='production-e2e-telegram-v1'"
+      - name: Provision production gateway principal
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute ta-cp-production-taskstore --remote --config wrangler.production.jsonc --command "INSERT INTO admission_principals (principal_id, profile_id, scopes, enabled, created_at, updated_at) VALUES ('gateway', 'trained-assist-production', '[\"tasks:intake\",\"tasks:read\",\"tasks:signal\",\"tasks:control\"]', 1, strftime('%s','now')*1000, strftime('%s','now')*1000) ON CONFLICT(principal_id) DO UPDATE SET profile_id=excluded.profile_id, scopes=excluded.scopes, enabled=1, updated_at=excluded.updated_at"
+          npx wrangler d1 execute ta-cp-production-taskstore --remote --config wrangler.production.jsonc --command "SELECT principal_id, profile_id, scopes, enabled FROM admission_principals WHERE principal_id='gateway'"
       - name: Pair Control Plane with production Runner API
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -241,18 +249,21 @@ jobs:
           RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
           COMMUNICATION_PRODUCTION_TOKEN: ${{ secrets.COMMUNICATION_PRODUCTION_TOKEN }}
           PRODUCTION_E2E_PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
+          PRINCIPAL_SECRET: ${{ secrets.PRINCIPAL_SECRET }}
         run: |
           set -euo pipefail
           test -n "$RUNNER_API_KEY_AGENT_API"
           test -n "$RUNNER_PROFILE_DELEGATION_SECRET"
           test -n "$COMMUNICATION_PRODUCTION_TOKEN"
           test -n "$PRODUCTION_E2E_PRINCIPAL_SECRET"
+          test -n "$PRINCIPAL_SECRET"
           node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
           process.stdout.write(JSON.stringify({
             RUNNER_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
             RUNNER_API_KEY_AGENT_API: process.env.RUNNER_API_KEY_AGENT_API,
             COMMUNICATION_TOKEN: process.env.COMMUNICATION_PRODUCTION_TOKEN,
             PRINCIPAL_SECRET_PRODUCTION_E2E: process.env.PRODUCTION_E2E_PRINCIPAL_SECRET,
+            PRINCIPAL_SECRET: process.env.PRINCIPAL_SECRET,
           }));
           NODE
       - name: Verify production Communication resolver credential and tool
