@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      RUNNER_PRODUCTION_SOURCE_SHA: f14c95eb21717eb67cab35699e2dbb7c1441e0dd
+      RUNNER_PRODUCTION_SOURCE_SHA: cdc0ed2841102aa5526d6603de6b4633e8a73511
       RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
