@@ -1,0 +1,106 @@
+name: Inspect one existing production test-account task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Exact existing userTaskId; this workflow never starts a task
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-task-report-read
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read and sanitize one existing task's lifecycle
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHmac } from 'node:crypto';
+
+          const taskId = process.env.TASK_ID?.trim() ?? '';
+          const secret = process.env.PRINCIPAL_SECRET?.trim() ?? '';
+          const principal = 'production-e2e-telegram-v1';
+          const base = 'https://trained-assist-cp-production.skillset-apply.workers.dev';
+          if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(taskId)) throw new Error('invalid_task_id');
+          if (secret.length < 32) throw new Error('production_e2e_principal_secret_missing');
+          const headers = {
+            'x-principal': principal,
+            'x-principal-sig': createHmac('sha256', secret).update(principal).digest('hex'),
+          };
+          const get = async (path) => {
+            const response = await fetch(new URL(path, base), { headers, signal: AbortSignal.timeout(10_000) });
+            const body = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(`task_report_http_${response.status}`);
+            return body;
+          };
+
+          const receipt = await get(`/receipt?taskId=${encodeURIComponent(taskId)}`);
+          const events = [];
+          let after;
+          for (let pageIndex = 0; pageIndex < 5; pageIndex += 1) {
+            const query = new URLSearchParams({ taskId, limit: '100' });
+            if (after !== undefined) query.set('after', String(after));
+            const page = await get(`/report/history?${query}`);
+            for (const event of page.events ?? []) {
+              const payload = event.payload ?? {};
+              events.push({
+                kind: event.kind,
+                sequence: event.sequence,
+                occurredAt: event.occurredAt,
+                event: typeof payload.event === 'string' ? payload.event : null,
+                runId: typeof payload.runId === 'string' ? payload.runId : null,
+                attemptId: typeof payload.attemptId === 'string' ? payload.attemptId : null,
+                status: typeof payload.status === 'string' ? payload.status : null,
+                reason: typeof payload.reason === 'string' ? payload.reason : null,
+                code: typeof payload.code === 'string' ? payload.code : null,
+                step: typeof payload.step === 'string' ? payload.step : null,
+              });
+            }
+            const next = page.cursor;
+            if (!page.hasMore) break;
+            if (!Number.isSafeInteger(next) || next <= (after ?? 0)) throw new Error('task_history_cursor_did_not_advance');
+            after = next;
+            if (pageIndex === 4) throw new Error('task_history_page_limit_exceeded');
+          }
+
+          const snapshot = await get(`/report?taskId=${encodeURIComponent(taskId)}`);
+          console.log(JSON.stringify({
+            taskId,
+            receipt: {
+              durable: receipt.durable === true,
+              status: receipt.status ?? null,
+              createdAt: receipt.createdAt ?? null,
+              requestId: receipt.requestId ?? null,
+            },
+            task: {
+              status: snapshot.snapshot?.status ?? null,
+              stage: snapshot.snapshot?.stage ?? null,
+              generation: snapshot.snapshot?.generation ?? null,
+              deliveryState: snapshot.snapshot?.deliveryState ?? null,
+              updatedAt: snapshot.snapshot?.updatedAt ?? null,
+            },
+            latestEventSequence: snapshot.latestEventSequence ?? null,
+            eventCount: snapshot.eventCount ?? null,
+            events,
+            sideEffects: 'read_only; no task, LLM, or Runner request was created',
+          }));
+          NODE
