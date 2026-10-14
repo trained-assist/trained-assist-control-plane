@@ -3,7 +3,7 @@ import { env } from './env';
 import { TaskStore, FencedError } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port';
 import { communicationSelector, communicationWriter, SelectorError, DEFAULT_COMMUNICATION_TIMEOUT_MS, DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS } from '../src/router/communication-client';
-import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth, type SystemHealthReport } from '../src/router/communication-v1';
+import { agentConversationInstructions, communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth, type SystemHealthReport } from '../src/router/communication-v1';
 import { deriveAuthorization } from '../src/router/authorization';
 import { routeRequest } from '../src/router/service';
 import type { RouteResult } from '../src/router/service';
@@ -269,7 +269,21 @@ describe('Task Store and Output ownership', () => {
     expect(result.decision.route).toBe('agent');
     expect(result.agentInstructions).toContain('DO_NOT_LOSE_THIS_OBLIGATION');
     expect(result.agentInstructions).toContain('Дополнительные результаты: {"spreadsheet":"sheet-ref"}');
+    expect(result.agentInstructions!.length).toBeLessThanOrEqual(8_500);
+    expect(result.agentInstructions).toContain('середина сообщения сокращена');
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('keeps Runner instructions below their independent limit for long saved conversations', async () => {
+    const text = 'Продолжи по последней реплике';
+    const history = Array.from({ length: 20 }, (_, index) => ({
+      id: `task-${index}:input`, author: index % 2 ? 'assistant' : 'user', text: `turn-${index} ${'x'.repeat(1_400)}`,
+    }));
+    const result = agentConversationInstructions({ text, durableContext: { history, active_tasks: [] } });
+    expect(result.length).toBeLessThanOrEqual(8_500);
+    expect(result).toContain('turn-19');
+    expect(result).toContain('более ранних реплик опущено');
+    expect(result).not.toContain('turn-0');
   });
 
   it('concurrent competing selections share one durable winner and one terminal result', async () => {

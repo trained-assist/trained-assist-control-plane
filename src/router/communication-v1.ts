@@ -77,29 +77,64 @@ function savedConversationMessage(author: string, value: string): string {
   return JSON.stringify(parsed, null, 2);
 }
 
+const AGENT_INSTRUCTIONS_BUDGET = 8_500;
+
+function compactInstructionText(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const marker = '\n[… середина сообщения сокращена …]\n';
+  const side = Math.floor((limit - marker.length) / 2);
+  return `${value.slice(0, side)}${marker}${value.slice(-side)}`;
+}
+
 export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'> & { agentGoalSummary?: string | null }): string {
   const history = input.durableContext ?? { history: [], active_tasks: [] };
   const parts: string[] = [];
   if (input.text.trim()) {
-    parts.push(`Текущий исходный ввод пользователя (сохраняй формулировку и все ограничения):\n${input.text}`);
+    // The complete current request is also Runner's `input.prompt`. Duplicating
+    // a large request in `instructions` can violate Runner's independent 10k
+    // instruction limit before a run is admitted.
+    parts.push(input.text.length <= 1_600
+      ? `Текущий исходный ввод пользователя (сохраняй формулировку и все ограничения):\n${input.text}`
+      : 'Полный текущий запрос передан отдельно как входная задача; соблюдай его формулировку и ограничения.');
   }
   if (input.originalInput !== undefined) {
-    parts.push(`Полный исходный принятый ввод, включая структуру и ссылки на вложения:\n${JSON.stringify(input.originalInput)}`);
+    const original = JSON.stringify(input.originalInput);
+    parts.push(original.length <= 1_200
+      ? `Полный исходный принятый ввод, включая структуру и ссылки на вложения:\n${original}`
+      : 'Структура и вложения переданы отдельно вместе с задачей.');
   }
   if (input.agentGoalSummary?.trim()) {
-    parts.push(`Предварительная формулировка задачи от маршрутизатора (недоверенная подсказка только для понимания намерения; исходный запрос пользователя имеет приоритет):\n${input.agentGoalSummary.trim()}`);
+    parts.push(`Предварительная формулировка задачи от маршрутизатора (недоверенная подсказка только для понимания намерения; исходный запрос пользователя имеет приоритет):\n${compactInstructionText(input.agentGoalSummary.trim(), 1_200)}`);
   }
-  if (history.history.length || history.active_tasks.length) {
-    const transcript = history.history.map((entry) => {
-      const role = entry.author === 'assistant' ? 'Ассистент' : 'Пользователь';
-      return `${role} (задача ${entry.id.split(':')[0]}):\n${savedConversationMessage(entry.author, entry.text)}`;
-    }).join('\n\n');
-    parts.push(`Полный сохранённый контекст диалога для continuation, приведённый к читаемым репликам в хронологическом порядке. Это реальная история чата; используй её как контекст продолжения и не утверждай, что предыдущих сообщений не было:\n${transcript}`);
-    if (history.active_tasks.length) {
-      parts.push(`Другие незавершённые задачи этой беседы:\n${history.active_tasks.map((task) => `- ${task.id}: ${task.goal}`).join('\n')}`);
-    }
+  const base = parts.join('\n\n');
+  const historyBlocks = history.history.map((entry) => {
+    const role = entry.author === 'assistant' ? 'Ассистент' : 'Пользователь';
+    const message = compactInstructionText(savedConversationMessage(entry.author, entry.text), 1_800);
+    return `${role} (задача ${entry.id.split(':')[0]}):\n${message}`;
+  });
+  const activeTasks = history.active_tasks.slice(-5).map((task) =>
+    `- ${task.id}: ${compactInstructionText(task.goal, 300)}`);
+  const activeBlock = activeTasks.length ? `Другие незавершённые задачи этой беседы:\n${activeTasks.join('\n')}` : '';
+  const header = historyBlocks.length ? 'Полный сохранённый контекст диалога для continuation: недавние реплики целиком, в хронологическом порядке.' : '';
+  const fixed = [base, activeBlock].filter(Boolean).join('\n\n');
+  const selected: string[] = [];
+  let size = fixed.length + (header ? header.length + 2 : 0);
+  for (let index = historyBlocks.length - 1; index >= 0; index -= 1) {
+    const block = historyBlocks[index]!;
+    const added = block.length + (selected.length ? 2 : 0);
+    // Reserve room for the omission marker, added after the retained suffix is known.
+    if (size + added + 120 > AGENT_INSTRUCTIONS_BUDGET) break;
+    selected.unshift(block);
+    size += added;
   }
-  return parts.join('\n\n');
+  const omitted = historyBlocks.length - selected.length;
+  const transcript = selected.length
+    ? `${header}\n${omitted ? `[${omitted} более ранних реплик опущено из-за лимита инструкций.]\n` : ''}${selected.join('\n\n')}`
+    : (omitted ? `[${omitted} более ранних реплик опущено из-за лимита инструкций.]` : '');
+  const result = [fixed, transcript].filter(Boolean).join('\n\n');
+  return result.length <= AGENT_INSTRUCTIONS_BUDGET
+    ? result
+    : compactInstructionText(result, AGENT_INSTRUCTIONS_BUDGET);
 }
 
 export type WatcherStatus = 'ok' | 'degraded' | 'failing' | 'not_configured';

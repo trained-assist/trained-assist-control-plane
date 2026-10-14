@@ -528,25 +528,45 @@ export async function conversationPlan(
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
-    const runSpec = buildRunSpec(
-      {
-        userTaskId: taskId,
-        profileId: taskProfileId,
-        conversationId: current?.conversation_id ?? null,
-        ownerGeneration: generation,
-        engineName: p.runnerEngine ?? 'opencode',
-        prompt: p.goal ?? current?.goal ?? '',
-        refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
-        inputManifest: inputManifest ? {
-          manifestRef: inputManifest.manifestRef,
-          manifestVersion: inputManifest.manifestVersion,
-        } : null,
-        instructions: p.instructions ?? null,
-        attemptRunId: p.runId ?? null,
-        timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
-      },
-      runSpecPolicy,
-    );
+    let runSpec: ReturnType<typeof buildRunSpec>;
+    try {
+      runSpec = buildRunSpec(
+        {
+          userTaskId: taskId,
+          profileId: taskProfileId,
+          conversationId: current?.conversation_id ?? null,
+          ownerGeneration: generation,
+          engineName: p.runnerEngine ?? 'opencode',
+          prompt: p.goal ?? current?.goal ?? '',
+          refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
+          inputManifest: inputManifest ? {
+            manifestRef: inputManifest.manifestRef,
+            manifestVersion: inputManifest.manifestVersion,
+          } : null,
+          instructions: p.instructions ?? null,
+          attemptRunId: p.runId ?? null,
+          timeoutMs: (p.runnerTimeoutSec ?? 120) * 1000,
+        },
+        runSpecPolicy,
+      );
+    } catch (error) {
+      if (!(error instanceof RunSpecMappingError)) throw error;
+      // Mapping is deterministic and happens before runner_submit_started, so
+      // there can be no external execution to reconcile. Persist a terminal
+      // failure instead of leaving the Workflow errored and task active forever.
+      if (p.runId) {
+        await store.finishRun(p.runId, 'failed', { errorClass: 'runner_request_invalid', errorText: error.field });
+      }
+      await store.logEvent({ taskId, generation, source: 'executor', kind: 'error', executionId: p.runId ?? null,
+        payload: { class: 'runner_request_invalid', field: error.field, runnerSubmitStarted: false } });
+      const task = await store.requireTask(taskId);
+      if (!isTerminalStatus(task.status)) {
+        await store.commit(taskId, generation, { status: 'failed', stage: 'finished',
+          executionId: p.runId ?? null, step: 'run_spec', result: { ok: false, reason: 'runner_request_invalid' },
+          payload: { errorClass: 'runner_request_invalid', field: error.field } });
+      }
+      return { ok: false, reason: 'runner_request_invalid' };
+    }
     // Durable witness before the external side effect. If cancellation sees this
     // marker without an attached Runner runId, submission outcome is ambiguous.
     await store.logEvent({
