@@ -10,12 +10,12 @@ const SHA = 'a'.repeat(40);
 const SECRET = 'production-smoke-fixture-secret-with-enough-entropy';
 const envFor = directory => ({
   CONTROL_PLANE_EXPECTED_BUILD_SHA: SHA,
-  PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: SECRET,
+  PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: `  ${SECRET}\n`,
   GITHUB_RUN_ID: '12345',
   GITHUB_RUN_ATTEMPT: '1',
   INTEGRATION_REPORT_FILE: join(directory, 'report.json'),
 });
-const jsonResponse = body => Response.json(body);
+const jsonResponse = (body, init) => Response.json(body, init);
 
 test('production smoke admits, routes and confirms a completed CP-to-Runner task', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'cp-production-agent-smoke-'));
@@ -59,6 +59,20 @@ test('production smoke refuses a mismatched deployment before admitting a task',
     assert.equal(report.outcome, 'failed');
     assert.match(report.reason, /does not match/);
     assert.equal(intakeCalled, false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('production smoke reports signature rejection without exposing principal credentials', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cp-production-agent-smoke-'));
+  const fetchImpl = async url => {
+    if (new URL(url).pathname === '/healthz') return jsonResponse({ service: 'trained-assist-control-plane', status: 'healthy', buildSha: SHA });
+    return jsonResponse({ name: 'PrincipalUnauthorizedError', error: 'unauthorized principal: (missing)' }, { status: 401 });
+  };
+  try {
+    const report = await runProductionAgentSmoke(envFor(directory), fetchImpl);
+    assert.equal(report.outcome, 'failed');
+    assert.match(report.reason, /principal_signature_rejected/);
+    assert.doesNotMatch(JSON.stringify(report), new RegExp(SECRET));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
