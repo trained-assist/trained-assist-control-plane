@@ -76,21 +76,37 @@ test('production release deploys the pinned Runner API and checks its revision b
 test('production agent smoke is channel-neutral, isolated and cannot deploy', () => {
     const workflow = readFileSync(new URL('.github/workflows/production-agent-smoke.yml', `file://${process.cwd()}/`), 'utf8');
     const smoke = readFileSync(new URL('tools/production-agent-smoke.mjs', `file://${process.cwd()}/`), 'utf8');
+    const sharedSmoke = readFileSync(new URL('tools/control-plane-agent-smoke.mjs', `file://${process.cwd()}/`), 'utf8');
     const release = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
     assert.match(workflow, /workflow_dispatch:/);
     assert.match(workflow, /environment: production/);
     assert.match(workflow, /contents: read/);
     assert.doesNotMatch(workflow, /CF_API_TOKEN|wrangler deploy|recovery_deploy/);
     assert.match(workflow, /PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: \$\{\{ secrets\.PRODUCTION_E2E_PRINCIPAL_SECRET \}\}/);
-    assert.match(smoke, /const PRINCIPAL = 'production-agent-smoke-v1'/);
-    assert.match(smoke, /const PROFILE = 'production-agent-smoke-v1'/);
-    assert.match(smoke, /health\.buildSha, expectedBuildSha/);
-    assert.match(smoke, /continue: true/);
-    assert.match(smoke, /run\.status === 'success'.*run\.session_id/);
+    assert.match(smoke, /principal: 'production-agent-smoke-v1'/);
+    assert.match(smoke, /profile: 'production-agent-smoke-v1'/);
+    assert.match(sharedSmoke, /health\.buildSha !== expectedBuildSha/);
+    assert.match(sharedSmoke, /continue: true/);
+    assert.match(sharedSmoke, /run\.status === 'success'.*run\.session_id/);
+    assert.match(sharedSmoke, /captureWorkerTail/);
     assert.doesNotMatch(smoke, /telegram|Telegram/i);
     assert.match(release, /production-agent-smoke-v1/);
     assert.match(release, /DELETE FROM admission_principals WHERE principal_id='production-e2e-telegram-v1'/);
     assert.doesNotMatch(release, /VALUES \('production-e2e-telegram-v1', 'production-e2e-telegram-v1'/);
+});
+
+test('sandbox agent smoke exercises CP-to-Runner path without deployment or Telegram delivery', () => {
+    const workflow = readFileSync(new URL('.github/workflows/sandbox-agent-smoke.yml', `file://${process.cwd()}/`), 'utf8');
+    const smoke = readFileSync(new URL('tools/sandbox-agent-smoke.mjs', `file://${process.cwd()}/`), 'utf8');
+    assert.match(workflow, /workflow_dispatch:/);
+    assert.match(workflow, /environment: sandbox/);
+    assert.match(workflow, /contents: read/);
+    assert.match(workflow, /CP_TELEGRAM_UX_PRINCIPAL_SECRET: \$\{\{ secrets\.CP_TELEGRAM_UX_PRINCIPAL_SECRET \}\}/);
+    assert.match(workflow, /Require clean dedicated sandbox lane/);
+    assert.match(workflow, /Clear the completed sandbox test lane/);
+    assert.doesNotMatch(workflow, /wrangler deploy|PRODUCTION_AGENT_SMOKE|TELEGRAM_BOT_TOKEN/);
+    assert.match(smoke, /profile: 'integration-telegram-ux-v1'/);
+    assert.match(smoke, /integration-telegram-ux-v1/);
 });
 
 test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {

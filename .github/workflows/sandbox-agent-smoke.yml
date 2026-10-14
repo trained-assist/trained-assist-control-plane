@@ -1,0 +1,65 @@
+name: Verify sandbox Control Plane agent launch
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_build_sha:
+        description: Exact deployed sandbox Control Plane build SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-agent-smoke
+  cancel-in-progress: false
+
+jobs:
+  sandbox-agent-smoke:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Require clean dedicated sandbox lane
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: node tools/telegram-ux-state-cleanup.mjs --check-empty
+      - name: Verify deployed CP route and collect Runner event tail
+        env:
+          CONTROL_PLANE_EXPECTED_BUILD_SHA: ${{ inputs.expected_build_sha }}
+          CP_TELEGRAM_UX_PRINCIPAL_SECRET: ${{ secrets.CP_TELEGRAM_UX_PRINCIPAL_SECRET }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          INTEGRATION_REPORT_FILE: sandbox-agent-smoke-report.json
+        run: node tools/sandbox-agent-smoke.mjs
+      - name: Clear the completed sandbox test lane
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d740a05e9442c1d0feacae2dfc673e93
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+        run: node tools/telegram-ux-state-cleanup.mjs --apply
+      - name: Upload sanitized sandbox acceptance evidence
+        if: always() && hashFiles('sandbox-agent-smoke-report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-agent-smoke-${{ github.run_id }}
+          path: sandbox-agent-smoke-report.json
+          if-no-files-found: error
+          retention-days: 30
