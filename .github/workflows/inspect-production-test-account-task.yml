@@ -31,7 +31,7 @@ jobs:
       - name: Read and sanitize one existing task's lifecycle
         env:
           TASK_ID: ${{ inputs.task_id }}
-          PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
+          PRINCIPAL_SECRET: ${{ secrets.PRINCIPAL_SECRET }}
         run: |
           node --input-type=module <<'NODE'
           import { createHmac } from 'node:crypto';
