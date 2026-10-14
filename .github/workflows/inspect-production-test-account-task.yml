@@ -4,14 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Read one task ID or find test-account tasks in a fixed time window
+        description: Inspect, find canary tasks, or safely cancel a task that failed before Runner submission
         required: true
         type: choice
         options:
           - inspect-task
           - find-canary-task
+          - cancel-pre-runner-failure
       task_id:
-        description: Exact existing userTaskId; required only for inspect-task
+        description: Exact existing userTaskId; required for inspect-task and cancel-pre-runner-failure
         required: false
         type: string
       from_ms:
@@ -27,7 +28,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-task-report-read
+  group: production-task-inspection-and-reconciliation
   cancel-in-progress: false
 
 jobs:
@@ -185,4 +186,63 @@ jobs:
             updatedAt: Number.isSafeInteger(row.updated_at) ? row.updated_at : null,
           }));
           console.log(JSON.stringify({ mode: 'read_only_test_account_task_lookup', fromMs: from, toMs: to, rows: safe }));
+          NODE
+      - name: Cancel exact failed task only when durable evidence proves Runner was never submitted
+        if: inputs.mode == 'cancel-pre-runner-failure'
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          PRINCIPAL_SECRET: ${{ secrets.PRINCIPAL_SECRET }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHmac } from 'node:crypto';
+          const taskId = process.env.TASK_ID?.trim() ?? '';
+          const secret = process.env.PRINCIPAL_SECRET?.trim() ?? '';
+          const principal = 'gateway';
+          const base = 'https://trained-assist-cp-production.skillset-apply.workers.dev';
+          if (!/^ut-[A-Za-z0-9_-]{1,80}$/.test(taskId)) throw new Error('invalid_task_id');
+          if (secret.length < 32) throw new Error('production_principal_secret_missing');
+          const headers = {
+            'x-principal': principal,
+            'x-principal-sig': createHmac('sha256', secret).update(principal).digest('hex'),
+          };
+          const request = async (path, body) => {
+            const response = await fetch(new URL(path, base), {
+              method: body === undefined ? 'GET' : 'POST',
+              headers: body === undefined ? headers : { ...headers, 'content-type': 'application/json' },
+              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+              signal: AbortSignal.timeout(10_000),
+            });
+            const value = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(`task_reconcile_http_${response.status}`);
+            return value;
+          };
+          const query = new URLSearchParams({ taskId, limit: '100' });
+          const [report, runtime, history] = await Promise.all([
+            request(`/report?taskId=${encodeURIComponent(taskId)}`),
+            request('/status', { taskId }),
+            request(`/report/history?${query}`),
+          ]);
+          const snapshot = report.snapshot ?? {};
+          const runs = Array.isArray(runtime.runs) ? runtime.runs : [];
+          const runnerSubmitStarted = (history.events ?? []).some((event) => event.payload?.event === 'runner_submit_started');
+          const safePreRunnerFailure = snapshot.status === 'active'
+            && runtime.engine?.status === 'errored'
+            && history.hasMore !== true
+            && runs.length === 1
+            && runs[0].engine === 'cloudflare-workflows'
+            && runs[0].session_id == null
+            && runs[0].finished_at == null
+            && runnerSubmitStarted === false;
+          if (!safePreRunnerFailure) throw new Error('task_not_proven_failed_before_runner_submission');
+          const cancellation = await request('/cancel', { taskId, reason: 'workflow_failed_before_runner_submission' });
+          if (cancellation.cancelled !== true || cancellation.stopConfirmed !== true) {
+            throw new Error('pre_runner_task_cancellation_not_confirmed');
+          }
+          console.log(JSON.stringify({
+            taskId,
+            verifiedPreconditions: { taskWasActive: true, workflowWasErrored: true, runnerSubmitStarted: false,
+              runnerAttemptWasUnboundWorkflowOnly: true },
+            cancellation: { cancelled: true, stopConfirmed: true, status: cancellation.status ?? null },
+            sideEffects: 'Task state only; no Runner run existed, no new task or LLM/Runner request was created',
+          }));
           NODE
