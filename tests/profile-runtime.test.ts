@@ -276,6 +276,7 @@ describe('Workflow durable-profile execution', () => {
   it.each([
     { profileId: TELEGRAM_UX_PROFILE, runnerUrl: 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev', principalId: 'integration-telegram-ux-v1', tenantId: 'telegram-ux-sandbox-20261009' },
     { profileId: 'trained-assist-production', runnerUrl: 'https://trained-assist-runner-api-production.skillset-apply.workers.dev', principalId: 'cp-production-runner', tenantId: 'trained-assist-production' },
+    { profileId: 'production-agent-smoke-v1', runnerUrl: 'https://trained-assist-runner-api-production.skillset-apply.workers.dev', principalId: 'cp-production-runner', tenantId: 'trained-assist-production' },
   ])('launches through the configured Runner API for $profileId and keeps placement API-owned', async target => {
     const { profileId } = target;
     const store = new TaskStore(env.DB);

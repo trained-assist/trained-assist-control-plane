@@ -235,11 +235,11 @@ it('sandbox3 France VM ingress principal has an independent secret and sandbox-o
   }
 });
 
-it('production Telegram E2E principal uses a dedicated production-only secret', async () => {
-  const principal = 'production-e2e-telegram-v1';
+it('production agent smoke principal uses a dedicated production-only secret', async () => {
+  const principal = 'production-agent-smoke-v1';
   const own = 'synthetic-production-e2e-secret';
   const signature = await signPrincipal(principal, own);
-  const configured = { PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_PRODUCTION_E2E: own };
+  const configured = { PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_PRODUCTION_AGENT_SMOKE: own };
   expect(await verifyPrincipal(req(principal, signature), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'production' }))).toBe(principal);
   expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'production' }))).toBeNull();
   for (const deployment of ['sandbox3', 'staging', undefined]) {

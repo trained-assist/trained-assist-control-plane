@@ -68,6 +68,29 @@ test('production release deploys the pinned Runner API and checks its revision b
     assert.match(workflow, /EU_VM_WORKER_TOKEN: \$\{\{ secrets\.EU_VM_WORKER_TOKEN \}\}/);
     assert.match(workflow, /COMMUNICATION_PRODUCTION_TOKEN: \$\{\{ secrets\.COMMUNICATION_PRODUCTION_TOKEN \}\}/);
     assert.match(workflow, /COMMUNICATION_TOKEN: process\.env\.COMMUNICATION_PRODUCTION_TOKEN/);
+    assert.match(workflow, /production-agent-smoke-v1/);
+    assert.match(workflow, /DELETE FROM admission_principals WHERE principal_id='production-e2e-telegram-v1'/);
+    assert.doesNotMatch(workflow, /VALUES \('production-e2e-telegram-v1', 'production-e2e-telegram-v1'/);
+});
+
+test('production agent smoke is channel-neutral, isolated and cannot deploy', () => {
+    const workflow = readFileSync(new URL('.github/workflows/production-agent-smoke.yml', `file://${process.cwd()}/`), 'utf8');
+    const smoke = readFileSync(new URL('tools/production-agent-smoke.mjs', `file://${process.cwd()}/`), 'utf8');
+    const release = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
+    assert.match(workflow, /workflow_dispatch:/);
+    assert.match(workflow, /environment: production/);
+    assert.match(workflow, /contents: read/);
+    assert.doesNotMatch(workflow, /CF_API_TOKEN|wrangler deploy|recovery_deploy/);
+    assert.match(workflow, /PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: \$\{\{ secrets\.PRODUCTION_E2E_PRINCIPAL_SECRET \}\}/);
+    assert.match(smoke, /const PRINCIPAL = 'production-agent-smoke-v1'/);
+    assert.match(smoke, /const PROFILE = 'production-agent-smoke-v1'/);
+    assert.match(smoke, /health\.buildSha, expectedBuildSha/);
+    assert.match(smoke, /continue: true/);
+    assert.match(smoke, /run\.status === 'success'.*run\.session_id/);
+    assert.doesNotMatch(smoke, /telegram|Telegram/i);
+    assert.match(release, /production-agent-smoke-v1/);
+    assert.match(release, /DELETE FROM admission_principals WHERE principal_id='production-e2e-telegram-v1'/);
+    assert.doesNotMatch(release, /VALUES \('production-e2e-telegram-v1', 'production-e2e-telegram-v1'/);
 });
 
 test('sandbox-3 target uses isolated state and enables only its isolated Telegram E2E profile', () => {

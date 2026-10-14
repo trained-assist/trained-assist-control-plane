@@ -52,14 +52,23 @@ encryption key are secrets. The Ladder token remains a repository secret. Keep
 the launch encryption key with its ciphertext across recovery.
 
 
-## Production E2E admission profile
+## Production agent smoke profile
 
-The production release workflow maintains one isolated admission principal,
-`production-e2e-telegram-v1`, for end-to-end verification using a dedicated
-HMAC secret in the protected production environment. Its profile has no access
-to any existing user's task records. A Telegram test ingress can target this
-profile and the production CP/Runner path without changing France-default
-placement or production users' profile mappings. Keep this principal separate
-from the normal production Telegram principal; remove it and its task records
-when the production E2E lane is retired. A successful authenticated capability
-probe is not a substitute for a user-visible Telegram request and reply.
+The production release workflow maintains the isolated admission principal and
+profile `production-agent-smoke-v1` for bounded agent-launch verification. Its
+dedicated HMAC secret is available only to the protected production workflow.
+The profile is independent of any transport or channel and has no access to
+existing users' task records. Smoke runs enter through the production Control
+Panel API, dispatch through its configured Runner API, and retain their task
+records in this isolated profile for audit. Remove the principal and its task
+records when the smoke lane is retired. A capability probe alone does not
+verify agent launch or completion.
+
+To verify the full path after a production release, dispatch
+`Verify production Control Panel agent launch` from `main` with the exact CP
+build SHA. The workflow uses only the dedicated principal secret, checks that
+the live `/healthz` SHA matches before admitting a task, requests one small
+tool-free agent response through `/route`, and requires a successful Runner
+session in the terminal CP status. It retains sanitized evidence and leaves the
+task in the isolated smoke profile for audit. A timeout or intermediate failure
+requests cancellation and fails the workflow.
