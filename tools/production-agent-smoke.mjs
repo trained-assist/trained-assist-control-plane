@@ -12,7 +12,8 @@ function validSha(value) { return typeof value === 'string' && /^[a-f0-9]{40}$/.
 
 export async function runProductionAgentSmoke(environment = process.env, fetchImpl = fetch) {
   const expectedBuildSha = environment.CONTROL_PLANE_EXPECTED_BUILD_SHA;
-  const secret = environment.PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET;
+  const secret = typeof environment.PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET === 'string'
+    ? environment.PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET.trim() : '';
   const reportFile = environment.INTEGRATION_REPORT_FILE;
   const runKey = environment.GITHUB_RUN_ID ?? randomUUID();
   const report = { outcome: 'failed', profile: PROFILE, startedAt: new Date().toISOString(), expectedBuildSha };
@@ -24,7 +25,7 @@ export async function runProductionAgentSmoke(environment = process.env, fetchIm
 
   try {
     assert.ok(validSha(expectedBuildSha), 'expected CP build SHA must be a full Git SHA');
-    assert.ok(typeof secret === 'string' && secret.length >= 32, 'production smoke principal secret is missing');
+    assert.ok(secret.length >= 32, 'production smoke principal secret is missing');
     assert.ok(reportFile, 'INTEGRATION_REPORT_FILE is required');
     const base = new URL(CONTROL_PLANE);
     const signature = createHmac('sha256', secret).update(PRINCIPAL).digest('hex');
@@ -39,7 +40,17 @@ export async function runProductionAgentSmoke(environment = process.env, fetchIm
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (!response.ok) throw new Error(`${path} returned HTTP ${response.status}`);
+      if (!response.ok) {
+        let failure = 'request_rejected';
+        try {
+          const details = await response.clone().json();
+          if (response.status === 401 && details?.name === 'PrincipalUnauthorizedError') {
+            failure = typeof details.error === 'string' && details.error.endsWith('(missing)')
+              ? 'principal_signature_rejected' : 'principal_not_registered';
+          } else if (response.status === 403 && details?.name === 'PrincipalForbiddenError') failure = 'principal_scope_or_profile_mismatch';
+        } catch { /* keep the sanitized generic classification */ }
+        throw new Error(`${path} returned HTTP ${response.status} (${failure})`);
+      }
       const parsed = await response.json();
       assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed), `${path} returned invalid JSON`);
       return parsed;
@@ -106,7 +117,7 @@ export async function runProductionAgentSmoke(environment = process.env, fetchIm
         const response = await fetchImpl(new URL('/cancel', CONTROL_PLANE), {
           method: 'POST', redirect: 'error',
           headers: { 'content-type': 'application/json', 'x-principal': PRINCIPAL,
-            'x-principal-sig': createHmac('sha256', secret ?? '').update(PRINCIPAL).digest('hex') },
+            'x-principal-sig': createHmac('sha256', secret).update(PRINCIPAL).digest('hex') },
           body: JSON.stringify({ taskId, reason: 'production_agent_smoke_deadline_or_failure' }),
           signal: AbortSignal.timeout(20_000),
         });
