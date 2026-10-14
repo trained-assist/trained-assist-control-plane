@@ -273,7 +273,11 @@ describe('Workflow durable-profile execution', () => {
     expect((await store.requireTask(taskId)).generation).toBe(1);
   });
 
-  it.each([TELEGRAM_UX_PROFILE, 'integration-v1'])('preserves native semantics for %s despite spoofed payload profile', async profileId => {
+  it.each([
+    { profileId: TELEGRAM_UX_PROFILE, runnerUrl: 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev', principalId: 'integration-telegram-ux-v1', tenantId: 'telegram-ux-sandbox-20261009' },
+    { profileId: 'trained-assist-production', runnerUrl: 'https://trained-assist-runner-api-production.skillset-apply.workers.dev', principalId: 'cp-production-runner', tenantId: 'trained-assist-production' },
+  ])('launches through the configured Runner API for $profileId and keeps placement API-owned', async target => {
+    const { profileId } = target;
     const store = new TaskStore(env.DB);
     const taskId = `ut-policy-${crypto.randomUUID()}`;
     const goal = 'First message\nSecond message';
@@ -282,8 +286,12 @@ describe('Workflow durable-profile execution', () => {
     const generic = profileId === TELEGRAM_UX_PROFILE;
     const nativeRunId = `run_${crypto.randomUUID()}`;
     const submits: Record<string, unknown>[] = [];
+    const requestUrls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-agent-api-key');
+      expect(new Headers(init?.headers).get('x-agent-profile-id')).toBe(profileId);
+      expect(new Headers(init?.headers).get('x-agent-profile-tenant')).toBe(target.tenantId);
+      requestUrls.push(url);
       const path = new URL(url).pathname;
       if (path === '/v1/runs') {
         const body = JSON.parse(String(init?.body));
@@ -306,9 +314,11 @@ describe('Workflow durable-profile execution', () => {
       goal, runId: run.id, runnerEngine: 'agent_api' };
     const step = { do: async (_name: string, _options: unknown, callback: (context: unknown) => Promise<unknown>) => callback({ attempt: 1 }) };
     const execute = () => TaskWorkflow.prototype.run.call({ env: { ...env, ...bindings,
-      RUNNER_API_ENGINE_SELECTION: 'agent_api', RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
+      RUNNER_API_ENGINE_SELECTION: 'agent_api', RUNNER_API_URL: target.runnerUrl,
+      RUNNER_API_KEY_AGENT_API: 'fixture-agent-api-key',
       RUNNER_PROFILE_DELEGATION_SECRET: 'fixture-delegation-secret',
-      RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: 'fixture-principal', RUNNER_PROFILE_DELEGATION_TENANT_ID: 'fixture-tenant',
+      RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: target.principalId, RUNNER_PROFILE_DELEGATION_TENANT_ID: target.tenantId,
+      RUNNER_API_SERVICE: { fetch: globalThis.fetch },
       RUN_SPEC_MCP: 'null', RUN_SPEC_INPUT_REFS: '[]' } } as unknown as TaskWorkflow,
       { payload } as WorkflowEvent<PlanParams>, step as unknown as WorkflowStep);
     const outcome = await execute();
@@ -321,6 +331,10 @@ describe('Workflow durable-profile execution', () => {
       expect(result.answer).toBe('All messages processed.');
       expect(result.artifacts).toEqual([]);
     } else expect(result.failure.code).toBe('ARTIFACTS_MISSING');
+    expect(submits).toHaveLength(1);
+    expect(requestUrls[0]).toBe(`${target.runnerUrl}/v1/runs`);
+    expect(submits[0]).not.toHaveProperty('engine');
+    expect(submits[0]).not.toHaveProperty('routeMode');
     await execute();
     expect(submits).toHaveLength(1);
     expect(await store.listArtifacts(taskId)).toHaveLength(0);
