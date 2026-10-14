@@ -111,6 +111,12 @@ jobs:
           const snapshot = await get(`/report?taskId=${encodeURIComponent(taskId)}`);
           const runtime = await post('/status', { taskId });
           const engine = runtime.engine && typeof runtime.engine === 'object' ? runtime.engine : {};
+          const engineError = engine.error && typeof engine.error === 'object' ? engine.error : {};
+          const errorMessage = typeof engineError.message === 'string'
+            ? engineError.message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]')
+              .replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]')
+              .replace(/[\r\n\t]+/g, ' ').slice(0, 240)
+            : null;
           const runStatuses = Array.isArray(runtime.runs) ? runtime.runs.map((run) => ({
             status: safeLabel(run.status), generation: Number.isSafeInteger(run.generation) ? run.generation : null,
             engine: safeLabel(run.engine),
@@ -136,6 +142,8 @@ jobs:
             runtime: {
               workflowStatus: safeLabel(engine.status),
               workflowError: engine.error ? true : false,
+              workflowErrorName: safeLabel(engineError.name),
+              workflowErrorMessage: errorMessage,
               runCount: runStatuses.length,
               runs: runStatuses,
             },
