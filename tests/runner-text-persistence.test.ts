@@ -9,6 +9,32 @@ import type { StepCtx } from '../src/workflow-port/step-ctx';
 let sequence = 0;
 
 describe('text-only native persistence contract', () => {
+  it('terminally records deterministic RunSpec validation failures before Runner submission', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = `ut-text-persistence-${++sequence}`;
+    await store.admitTask({ id: taskId, profileId: 'fixture-profile', goal: 'remember this safely' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'cloudflare-workflows' });
+    const submit = vi.fn();
+    const adapter = { submit } as unknown as RunnerApiAdapter;
+    const context: StepCtx = {
+      step: async (_name, callback) => callback({ attempt: 1 }),
+      sleep: async () => {}, waitFor: async () => { throw new Error('Unexpected wait'); },
+    };
+
+    await expect(conversationPlan(context, store, {
+      taskId, profileId: 'fixture-profile', generation: 1, runId: attempt.id,
+      instructions: 'x'.repeat(10_001), runnerEngine: 'agent_api',
+    }, { adapter, runSpecPolicy: defaultRunSpecPolicy() })).resolves.toEqual({ ok: false, reason: 'runner_request_invalid' });
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(await store.requireTask(taskId)).toMatchObject({ status: 'failed', stage: 'finished' });
+    expect(await store.requireRun(attempt.id)).toMatchObject({ status: 'failed', error_class: 'runner_request_invalid' });
+    expect(await store.history(taskId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'error' }),
+      expect.objectContaining({ status_after: 'failed' }),
+    ]));
+  });
+
   it.each([
     { persistence: 'not_required', declared: false, refs: false, ok: true },
     { persistence: 'not_required', declared: true, refs: false, ok: false },
