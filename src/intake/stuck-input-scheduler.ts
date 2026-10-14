@@ -21,7 +21,7 @@
  *   5. Детектор наблюдает и уведомляет; переход состояния и запуск выполняет
  *      существующий авторитетный владелец (Output/Router), не планировщик.
  */
-import type { DeliveryAdapter } from '../workflow-port/delivery-worker';
+import { DeliveryOutcomeUnknownError, type DeliveryAdapter } from '../workflow-port/delivery-worker';
 import { deliverOnce } from '../workflow-port/delivery-worker';
 import type { PendingInputRow, TaskRow, TaskStore } from '../taskstore';
 import { logStructured } from '../logging/structured-log';
@@ -238,6 +238,7 @@ export function gatewayDeliveryAdapter(opts: { baseUrl: string; secret: string |
         body: JSON.stringify({
           deliveryId: delivery.id,
           userTaskId: delivery.user_task_id,
+          taskAcceptedAt: delivery.created_at,
           channel: delivery.channel,
           destinationId: delivery.destination_id,
           audienceId: delivery.audience_id,
@@ -246,8 +247,11 @@ export function gatewayDeliveryAdapter(opts: { baseUrl: string; secret: string |
         }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (!res.ok) throw new Error(`gateway delivery failed: ${res.status}`);
       const body = (await res.json().catch(() => ({}))) as { providerMessageId?: string | null };
+      if ((body as { outcome?: string }).outcome === 'unknown') {
+        throw new DeliveryOutcomeUnknownError(`gateway delivery outcome unknown: ${delivery.id}`);
+      }
+      if (!res.ok) throw new Error(`gateway delivery failed: ${res.status}`);
       // Без providerMessageId доставка не подтверждена: доставка — это факт
       // принятия каналом, а не «ответ 200».
       if (!body.providerMessageId) throw new Error('gateway delivery not confirmed (no providerMessageId)');

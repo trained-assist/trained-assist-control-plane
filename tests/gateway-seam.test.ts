@@ -50,7 +50,7 @@ const expireBackoff = async (store: TaskStore, taskId: string) =>
  *   • channel refuses (ok:false) → 502 WITHOUT providerMessageId
  *   • accepted → 200 { providerMessageId }
  */
-function gatewayStub(opts: { token: string; refuse?: boolean; ok?: boolean } = { token: 'sec' }) {
+function gatewayStub(opts: { token: string; refuse?: boolean; ok?: boolean; unknown?: boolean } = { token: 'sec' }) {
   const seen: { auth: string | undefined; body: any }[] = [];
   let providerId = 7000;
   const handler = vi.fn(async (url: string, init: any) => {
@@ -68,6 +68,7 @@ function gatewayStub(opts: { token: string; refuse?: boolean; ok?: boolean } = {
       return new Response(JSON.stringify({ error: 'channel did not accept' }), { status: 502 });
     }
     if (opts.ok === false) return new Response('{}', { status: 200 });
+    if (opts.unknown) return new Response(JSON.stringify({ outcome: 'unknown', status: 'unknown', deliveryId: body.deliveryId }), { status: 200 });
     return new Response(JSON.stringify({ providerMessageId: `msg-${++providerId}` }), { status: 200 });
   });
   vi.stubGlobal('fetch', handler);
@@ -95,6 +96,7 @@ describe('Стык control plane ↔ gateway: полная цепочка дос
     expect(seen[0]!.body.channel).toBe('telegram');
     expect(seen[0]!.body.destinationId).toBe('-5496844108');
     expect(seen[0]!.body.message.kind).toBe('stuck_input');
+    expect(seen[0]!.body.taskAcceptedAt).toBe((await store.listDeliveries(taskId))[0]!.created_at);
     // Доставка ПОДТВЕРЖДЕНА шлюзом: providerMessageId записан, состояние delivered.
     expect(result.delivered).toBe(1);
     const delivery = (await store.listDeliveries(taskId))[0]!;
@@ -174,5 +176,23 @@ describe('Стык control plane ↔ gateway: полная цепочка дос
 
     expect(result.delivered).toBe(0);
     expect((await store.listDeliveries(taskId))[0]!.status).toBe('pending');
+  });
+
+  it('неизвестный результат шлюза фиксируется как terminal unknown без автоповтора', async () => {
+    const store = setup();
+    const taskId = await admitStuck(store, 'handing_off', '42');
+    await expired();
+    const { handler } = gatewayStub({ token: 'sec', unknown: true });
+    const adapter = gatewayDeliveryAdapter({ baseUrl: 'https://gateway.test', secret: 'sec' });
+
+    await runStuckInputSweep(store, { adapter, retryAfterSec: 0 }, Date.now());
+    expect((await store.listDeliveries(taskId))[0]).toMatchObject({ status: 'unknown', next_attempt_at: null });
+    expect((await store.requireTask(taskId)).delivery_state).toBe('unknown');
+
+    // A repeated scheduler pass must not reset the task projection or call the provider again.
+    await runStuckInputSweep(store, { adapter, retryAfterSec: 0 }, Date.now());
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect((await store.listDeliveries(taskId))[0]!.status).toBe('unknown');
+    expect((await store.requireTask(taskId)).delivery_state).toBe('unknown');
   });
 });
