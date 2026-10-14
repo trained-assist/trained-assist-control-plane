@@ -3,9 +3,16 @@ name: Inspect one existing production test-account task
 on:
   workflow_dispatch:
     inputs:
-      task_id:
-        description: Exact existing userTaskId; this workflow never starts a task
+      mode:
+        description: Read one task ID or find test-account tasks in a fixed time window
         required: true
+        type: choice
+        options:
+          - inspect-task
+          - find-canary-task
+      task_id:
+        description: Exact existing userTaskId; required only for inspect-task
+        required: false
         type: string
 
 permissions:
@@ -17,7 +24,7 @@ concurrency:
 
 jobs:
   inspect:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/debug/production-test-task-query'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     environment: production
@@ -29,6 +36,7 @@ jobs:
         with:
           node-version: '22'
       - name: Read and sanitize one existing task's lifecycle
+        if: inputs.mode == 'inspect-task'
         env:
           TASK_ID: ${{ inputs.task_id }}
           PRINCIPAL_SECRET: ${{ secrets.PRINCIPAL_SECRET }}
@@ -105,3 +113,11 @@ jobs:
             sideEffects: 'read_only; no task, LLM, or Runner request was created',
           }));
           NODE
+      - name: Find exact test-account CP rows from the prior canary window (read only)
+        if: inputs.mode == 'find-canary-task'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute ta-cp-production-taskstore --remote --config wrangler.production.jsonc --json --command "SELECT id, profile_id, conversation_id, status, stage, generation, created_at, updated_at FROM durable_tasks WHERE conversation_id LIKE 'tg-1714048-s%' AND created_at BETWEEN 1791990770000 AND 1791991500000 ORDER BY created_at DESC LIMIT 5"
