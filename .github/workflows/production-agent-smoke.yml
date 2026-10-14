@@ -1,0 +1,47 @@
+name: Verify production Control Panel agent launch
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_build_sha:
+        description: Exact production CP build SHA to accept
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-agent-smoke
+  cancel-in-progress: false
+
+jobs:
+  production-agent-smoke:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify the exact production Control Panel revision and complete one isolated agent run
+        env:
+          CONTROL_PLANE_EXPECTED_BUILD_SHA: ${{ inputs.expected_build_sha }}
+          PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          INTEGRATION_REPORT_FILE: production-agent-smoke-report.json
+        run: node tools/production-agent-smoke.mjs
+      - name: Upload sanitized production acceptance evidence
+        if: always() && hashFiles('production-agent-smoke-report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-agent-smoke-${{ github.run_id }}
+          path: production-agent-smoke-report.json
+          if-no-files-found: error
+          retention-days: 30

@@ -43,18 +43,18 @@ export function principalAuthOf(env: Record<string, string | undefined>): Princi
   const sandbox3RunnerSecret = env.DEPLOYMENT_ENV === 'sandbox3' ? env.PRINCIPAL_SECRET_SANDBOX3_RUNNER?.trim() : undefined;
   const integrationV1Secret = env.PRINCIPAL_SECRET_INTEGRATION_V1?.trim();
   const codexSmokeSecret = env.PRINCIPAL_SECRET_CODEX_SMOKE?.trim();
-  const productionE2eSecret = env.DEPLOYMENT_ENV === 'production'
-    ? env.PRINCIPAL_SECRET_PRODUCTION_E2E?.trim() : undefined;
+  const productionAgentSmokeSecret = env.DEPLOYMENT_ENV === 'production'
+    ? env.PRINCIPAL_SECRET_PRODUCTION_AGENT_SMOKE?.trim() : undefined;
   return {
     secret: secret ? secret : null,
-    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret || productionE2eSecret ? { secretOverrides: {
+    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret || productionAgentSmokeSecret ? { secretOverrides: {
       ...(telegramUxSecret ? { 'integration-telegram-ux-v1': telegramUxSecret } : {}),
       ...(sandbox3Secret ? { 'integration-sandbox3-v1': sandbox3Secret } : {}),
       ...(sandbox3OpsSecret ? { [SANDBOX3.diagnosticPrincipalId]: sandbox3OpsSecret } : {}),
       ...(sandbox3RunnerSecret ? { [SANDBOX3.runnerIngressPrincipalId]: sandbox3RunnerSecret } : {}),
       ...(integrationV1Secret ? { 'integration-v1': integrationV1Secret } : {}),
       ...(codexSmokeSecret ? { 'sde-codex-smoke-v1': codexSmokeSecret } : {}),
-      ...(productionE2eSecret ? { 'production-e2e-telegram-v1': productionE2eSecret } : {}),
+      ...(productionAgentSmokeSecret ? { 'production-agent-smoke-v1': productionAgentSmokeSecret } : {}),
     } } : {}),
   };
 }
