@@ -1985,7 +1985,7 @@ export class TaskStore {
     const results = await this.db.batch([
       this.db
         .prepare(
-          `UPDATE durable_tasks SET status = 'cancelled', updated_at = ?, revision = revision + 1
+          `UPDATE durable_tasks SET status = 'cancelled', stage = 'finished', updated_at = ?, revision = revision + 1
            WHERE id = ? AND ${NON_TERMINAL_SQL} AND (? IS NULL OR generation = ?)
            ${opts.stopPin ? `AND ${CP_STOP_MEMBERSHIP_GUARD_SQL}` : ''}`,
         )

@@ -174,6 +174,7 @@ describe('M06: отмена, доставка и артефакты', () => {
     // Остановка подтверждена.
     const cancelled = await port.cancel(taskId, { reason: 'user pressed stop' });
     expect(cancelled.cancelled).toBe(true);
+    expect(await store.requireTask(taskId)).toMatchObject({ status: 'cancelled', stage: 'finished' });
 
     const delivery = (await store.listDeliveries(taskId))[0]!;
     expect(delivery.status).toBe('failed');
