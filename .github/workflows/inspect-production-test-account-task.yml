@@ -69,6 +69,15 @@ jobs:
             if (!response.ok) throw new Error(`task_report_http_${response.status}`);
             return body;
           };
+          const post = async (path, body) => {
+            const response = await fetch(new URL(path, base), {
+              method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
+            });
+            const value = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(`task_report_http_${response.status}`);
+            return value;
+          };
 
           const receipt = await get(`/receipt?taskId=${encodeURIComponent(taskId)}`);
           const events = [];
@@ -100,6 +109,12 @@ jobs:
           }
 
           const snapshot = await get(`/report?taskId=${encodeURIComponent(taskId)}`);
+          const runtime = await post('/status', { taskId });
+          const engine = runtime.engine && typeof runtime.engine === 'object' ? runtime.engine : {};
+          const runStatuses = Array.isArray(runtime.runs) ? runtime.runs.map((run) => ({
+            status: safeLabel(run.status), generation: Number.isSafeInteger(run.generation) ? run.generation : null,
+            engine: safeLabel(run.engine),
+          })) : [];
           console.log(JSON.stringify({
             taskId,
             receipt: {
@@ -118,6 +133,12 @@ jobs:
             latestEventSequence: snapshot.latestEventSequence ?? null,
             eventCount: snapshot.eventCount ?? null,
             events,
+            runtime: {
+              workflowStatus: safeLabel(engine.status),
+              workflowError: engine.error ? true : false,
+              runCount: runStatuses.length,
+              runs: runStatuses,
+            },
             sideEffects: 'read_only; no task, LLM, or Runner request was created',
           }));
           NODE
