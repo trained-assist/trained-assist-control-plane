@@ -31,14 +31,14 @@ jobs:
       - name: Read and sanitize one existing task's lifecycle
         env:
           TASK_ID: ${{ inputs.task_id }}
-          PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
+          PRINCIPAL_SECRET: ${{ secrets.PRINCIPAL_SECRET }}
         run: |
           node --input-type=module <<'NODE'
           import { createHmac } from 'node:crypto';
 
           const taskId = process.env.TASK_ID?.trim() ?? '';
           const secret = process.env.PRINCIPAL_SECRET?.trim() ?? '';
-          const principal = 'production-e2e-telegram-v1';
+          const principal = 'gateway';
           const base = 'https://trained-assist-cp-production.skillset-apply.workers.dev';
           const safeLabel = (value) => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value) ? value : null;
           if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(taskId)) throw new Error('invalid_task_id');
