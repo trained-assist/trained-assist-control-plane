@@ -1154,9 +1154,10 @@ export class TaskStore {
       this.db
         .prepare(
           `UPDATE durable_tasks SET delivery_state = 'pending', updated_at = ?, revision = revision + 1
-           WHERE id = ? AND delivery_state IN ('not_required','pending','failed','unknown')`,
+           WHERE id = ? AND delivery_state IN ('not_required','pending','failed','unknown')
+             AND EXISTS (SELECT 1 FROM deliveries WHERE id = ? AND user_task_id = ?)`,
         )
-        .bind(now, input.taskId),
+        .bind(now, input.taskId, deliveryId, input.taskId),
     ]);
 
     const delivery =
@@ -1297,6 +1298,29 @@ export class TaskStore {
         nextAttemptAt,
         reason: opts.error,
       },
+    });
+    return this.requireDelivery(deliveryId);
+  }
+
+  /** Ambiguous provider acceptance is terminal until an operator reconciles it. */
+  async markDeliveryUnknown(deliveryId: string, opts: { error: string } = { error: 'provider_outcome_unknown' }): Promise<DeliveryRow> {
+    const now = Date.now();
+    const delivery = await this.requireDelivery(deliveryId);
+    const results = await this.db.batch([
+      this.db.prepare(
+        `UPDATE deliveries SET status = 'unknown', last_error = ?, next_attempt_at = NULL, updated_at = ?
+         WHERE id = ? AND status IN ('accepted','pending')`,
+      ).bind(opts.error, now, deliveryId),
+      this.db.prepare(
+        `UPDATE durable_tasks SET delivery_state = 'unknown', updated_at = ?, revision = revision + 1 WHERE id = ?`,
+      ).bind(now, delivery.user_task_id),
+    ]);
+    if (results[0]!.meta.changes !== 1) throw new TaskStoreError(`delivery unknown transition failed: ${deliveryId}`);
+    await this.logEvent({
+      taskId: delivery.user_task_id,
+      kind: 'delivery_unknown',
+      source: 'output',
+      payload: { deliveryId, attempt: delivery.attempt, reason: opts.error },
     });
     return this.requireDelivery(deliveryId);
   }

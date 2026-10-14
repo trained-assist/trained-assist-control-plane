@@ -87,6 +87,7 @@ export const TASK_EVENT_KINDS = [
   'delivery_queued',
   'delivery_sent',
   'delivery_failed',
+  'delivery_unknown',
   'error',
   /** Продолжение, выданное Output (P17): ключ идемпотентности — decisionId. */
   'continuation.created',

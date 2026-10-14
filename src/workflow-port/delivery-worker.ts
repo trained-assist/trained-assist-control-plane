@@ -18,6 +18,15 @@ export interface DeliveryAdapter {
   send(delivery: DeliveryRow): Promise<{ providerMessageId?: string | null }>;
 }
 
+/** Provider may have accepted the message, but no receipt was persisted. Never retry it automatically. */
+export class DeliveryOutcomeUnknownError extends Error {
+  readonly deliveryOutcomeUnknown = true;
+  constructor(message = 'delivery outcome unknown') {
+    super(message);
+    this.name = 'DeliveryOutcomeUnknownError';
+  }
+}
+
 export interface DeliverOnceOptions {
   channel?: string | null;
   /** Ограничить забор задачей (в prod — общий FIFO outbox). */
@@ -30,7 +39,7 @@ export interface DeliverOnceOptions {
 export interface DeliverOnceResult {
   deliveryId: string;
   taskId: string;
-  outcome: 'delivered' | 'retry_scheduled' | 'failed';
+  outcome: 'delivered' | 'retry_scheduled' | 'failed' | 'unknown';
   attempt: number;
   providerMessageId?: string | null;
   error?: string;
@@ -73,6 +82,16 @@ export async function deliverOnce(
     };
   } catch (e) {
     const error = String((e as Error)?.message ?? e);
+    if (e instanceof DeliveryOutcomeUnknownError || (e as any)?.deliveryOutcomeUnknown === true) {
+      const unknown = await store.markDeliveryUnknown(claimed.id, { error });
+      logStructured({
+        event: 'delivery.unknown', level: 'warn', profileId: task.profile_id,
+        userTaskId: claimed.user_task_id, requestId: task.request_id,
+        deliveryId: claimed.id, channel: claimed.channel, attempt: unknown.attempt,
+      });
+      return { deliveryId: claimed.id, taskId: task.id, outcome: 'unknown',
+        attempt: unknown.attempt, error };
+    }
     const failed = await store.failDelivery(claimed.id, {
       error,
       retryAfterSec: opts.retryAfterSec,
