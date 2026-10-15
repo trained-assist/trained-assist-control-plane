@@ -61,8 +61,9 @@ function savedConversationMessage(author: string, value: string): string {
     });
     const topLevelRefs = Array.isArray(parsed.artifactRefs) ? parsed.artifactRefs : [];
     if (topLevelRefs.length) messages.push(`Вложения: ${topLevelRefs.map(ref => typeof ref === 'string' ? ref : JSON.stringify(ref)).join(', ')}`);
-    const supplemental = Object.fromEntries(Object.entries(parsed).filter(([key]) =>
-      !['inputItems', 'artifactRefs', 'pilotRoute', 'pilotReason'].includes(key)));
+    const supplemental = Object.fromEntries(Object.entries(parsed).filter(([key, value]) =>
+      !['inputItems', 'artifactRefs', 'pilotRoute', 'pilotReason'].includes(key) &&
+      value !== null && (!Array.isArray(value) || value.length > 0)));
     if (Object.keys(supplemental).length) messages.push(`Дополнительные данные ввода: ${JSON.stringify(supplemental)}`);
     return messages.join('\n');
   }
@@ -110,7 +111,7 @@ export function agentConversationInstructions(input: Pick<PreparedInput, 'text' 
     return `${role} (задача ${entry.id.split(':')[0]}):\n${message}`;
   });
   const activeTasks = history.active_tasks.slice(-5).map((task) =>
-    `- ${task.id}: ${compactInstructionText(task.goal, 300)}`);
+    `- ${task.id}: ${compactInstructionText(savedConversationMessage('user', task.goal), 300)}`);
   const activeBlock = activeTasks.length ? `Другие незавершённые задачи этой беседы:\n${activeTasks.join('\n')}` : '';
   const header = historyBlocks.length ? 'Предыдущие сообщения этой беседы, в хронологическом порядке. Используй их как контекст текущей задачи:' : '';
   const fixed = [base, activeBlock].filter(Boolean).join('\n\n');
