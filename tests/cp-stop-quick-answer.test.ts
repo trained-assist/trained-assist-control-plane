@@ -1,3 +1,4 @@
+import { taskTools, taskReplies, taskRpc } from './fixtures/task-replies';
 import { describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
@@ -23,7 +24,7 @@ async function fixture(capability = 'system_health', executed = false) {
     const attempt = await store.startRun(taskId, { generation: 1 });
     await store.finishRun(attempt.id, 'failed', { errorClass: 'fixture_prior_execution' });
   }
-  const catalog = communicationV1Catalog();
+  const catalog = communicationV1Catalog(taskTools);
   const principalId = `${taskId}-principal`;
   const selection = await routeRequest({
     envelope: { principalId, profileId, userTaskId: taskId, conversationId, requestId,
@@ -35,8 +36,8 @@ async function fixture(capability = 'system_health', executed = false) {
     authorization: await deriveAuthorization({ principalId, profileId, scopes: ['tasks:read', 'tasks:control'],
       grantedCapabilityIds: catalog.capabilities.map(entry => entry.id), grantedIntegrationIds: [] }, catalog),
     hostFacts: { clockMs: Date.now(), connections: {}, profileFields: {}, activeTasks: [], tasksYesterday: [] },
-  }, { communicationV1: { select: async () => ({ user_goal: task.goal, decision: capability }),
-    health: async () => ({ runner: 'reachable', checkedAt: '2026-10-06T00:00:00Z' }) } });
+  }, { communicationV1: { taskReplies, select: async () => ({ user_goal: task.goal, decision: capability }),
+ } });
   await store.saveRoutingSelection(taskId, 1, selection);
   await commitQuickAnswer(store, task, selection);
   const resolution = await store.resolveCpStopTargets({ profileId, conversationId, admissionRequestIds: [requestId] });

@@ -1,3 +1,4 @@
+import type { SystemHealthReport } from './diagnostic-probes';
 /**
  * RouteService: host-owned оркестрация fast path (P16 policy + P17 recipe).
  *
@@ -33,7 +34,7 @@ import type { CatalogBrief } from './brief/brief-types';
 import { buildExecutionContext } from './brief/execution-context';
 import { type CapabilityEntry, type RouteMode, type RoutingDecision, type RoutingInput, TERMINAL_EXECUTOR } from './router-types';
 import type { FastPathContinuationRequest } from '../output/continuation';
-import { routeCommunicationV1, type CommunicationV1Deps, type SystemHealthReport } from './communication-v1';
+import { routeCommunicationV1, type CommunicationV1Deps } from './communication-v1';
 import type { SelectedMcpInstruction } from './mcp-catalogue-types';
 
 export interface RouteServiceDeps {

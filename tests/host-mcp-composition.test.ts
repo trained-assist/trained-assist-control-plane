@@ -1,3 +1,4 @@
+import { taskTools, taskReplies, taskRpc } from './fixtures/task-replies';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import { TaskStore } from '../src/taskstore';
@@ -51,7 +52,7 @@ async function fixture(count = 66, profileId = 'integration-telegram-ux-v1', use
   const hostMcp: HostMcpRoutingDeps = { enabled: true, catalogue, readExecutionState: async () => structuredClone(state) };
   const text = 'Use the approved document method and preserve this complete original request';
   await store.admitTask({ id: taskId, profileId, goal: text, userValue: userValue ?? { inputItems: [{ text }] } });
-  const catalog = communicationV1Catalog();
+  const catalog = communicationV1Catalog(taskTools);
   const input: RoutingInput = {
     envelope: { userTaskId: taskId, profileId, principalId, generation: 1, conversationId: null, requestId: taskId,
       catalogVersion: catalog.version, policyVersion: catalog.version, runId: null, budgets: { llmCallsRemaining: 2, agentAllowed: true } },
@@ -79,7 +80,7 @@ describe('inactive host MCP routing composition', () => {
       expect(request).not.toHaveProperty('capabilities');
       return { user_goal: 'model reformulation must not replace input', decision: current.selectedName };
     });
-    const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select, hostMcp: current.hostMcp } });
     expect(routed).toMatchObject({ decision: { route: 'agent', degraded: false }, reply: null,
       mcpInstruction: { name: current.selectedName, description: current.selectedDescription, inputSchema: current.inputSchema,
         scope: current.scope, readiness: 'not_verified' }, execution: { capabilityExecutions: 0, agentDispatchAttempts: 1 } });
@@ -151,7 +152,7 @@ describe('inactive host MCP routing composition', () => {
       if (drift === 'binding') current.state.mcp.servers[0]!.bindingRef = 'foreign-ref';
       return { user_goal: 'untrusted reformulation', decision: current.selectedName };
     };
-    const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select, hostMcp: current.hostMcp } });
     expect(routed).toMatchObject({ decision: { route: 'agent', outcome: 'blocked', needsExecutor: false,
       reasonCode: 'MCP_REVALIDATION_REQUIRED', degraded: true, degradedNotice: { text: expect.any(String) } } });
     expect(routed.mcpInstruction).toBeUndefined();
@@ -165,8 +166,8 @@ describe('inactive host MCP routing composition', () => {
     ['policy', 'MCP_REVALIDATION_REQUIRED'], ['grant', 'execution_binding_missing'],
   ] as const)('holds cached selected route before dispatch with %s', async (drift, reasonCode) => {
     const current = await fixture();
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: '', decision: current.selectedName }),
+      hostMcp: current.hostMcp } });
     await current.store.saveRoutingSelection(current.taskId, 1, routed);
     const cached = await current.store.routingSelection(current.taskId, 1) as typeof routed;
     if (drift === 'scope') current.state.scope.taskId = 'foreign-task';
@@ -183,8 +184,8 @@ describe('inactive host MCP routing composition', () => {
 
   it('re-reads the authorized catalogue at Output handoff and blocks catalogue drift', async () => {
     const current = await fixture();
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: '', decision: current.selectedName }),
+      hostMcp: current.hostMcp } });
     expect(routed.mcpInstruction).toBeDefined();
     current.changeCatalogue();
     const submit = vi.fn();
@@ -197,8 +198,8 @@ describe('inactive host MCP routing composition', () => {
 
   it('reports a selected-instruction scope change as revalidation-required', async () => {
     const current = await fixture();
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: '', decision: current.selectedName }),
+      hostMcp: current.hostMcp } });
     routed.mcpInstruction = { ...routed.mcpInstruction!, scope: { ...routed.mcpInstruction!.scope, profileId: 'foreign-profile' } };
     const submit = vi.fn();
     const outcome = await dispatchAcceptedAgent(current.store, { submit } as unknown as CfWorkflowPort,
@@ -209,17 +210,17 @@ describe('inactive host MCP routing composition', () => {
 
   it('keeps policy drift blocked but routes without MCP after discovery failure', async () => {
     const current = await fixture();
-    const drifted = await routeRequest(current.input, { communicationV1: { select: async () => {
+    const drifted = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => {
       current.changeCatalogue();
       return { user_goal: '', decision: current.selectedName };
-    }, health: current.health, hostMcp: current.hostMcp } });
+    }, hostMcp: current.hostMcp } });
     expect(drifted.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_REVALIDATION_REQUIRED', providerCode: 'catalogue_drift' });
     expect(current.rpc).toHaveBeenCalledTimes(2);
 
     const unavailable = await fixture();
     unavailable.hostMcp.catalogue = new McpCatalogueAdapter(async () => { throw new McpCatalogueError('discovery_unavailable'); });
-    const fallback = await routeRequest(unavailable.input, { communicationV1: { namesOnly: true, select: async () => ({ user_goal: '', decision: 'agent' }),
-      health: unavailable.health, hostMcp: unavailable.hostMcp } });
+    const fallback = await routeRequest(unavailable.input, { communicationV1: { taskReplies, namesOnly: true, select: async () => ({ user_goal: '', decision: 'agent' }),
+      hostMcp: unavailable.hostMcp } });
     expect(fallback).toMatchObject({ mcpRefusalCode: 'binding_unavailable', decision: {
       outcome: 'dispatched', needsExecutor: true, degraded: true, reasonCode: 'COMMUNICATION_FALLBACK',
       providerCode: 'binding_unavailable',
@@ -230,9 +231,9 @@ describe('inactive host MCP routing composition', () => {
   it.each(['policy-drift', 'discovery-failure'] as const)(
     'keeps an admitted run authoritative on repeated dispatch after %s', async failure => {
       const current = await fixture();
-      const routed = await routeRequest(current.input, { communicationV1: {
+      const routed = await routeRequest(current.input, { communicationV1: { taskReplies,
         select: async () => ({ user_goal: '', decision: current.selectedName }),
-        health: current.health, hostMcp: current.hostMcp,
+        hostMcp: current.hostMcp,
       } });
       const instances = new Map<string, unknown>();
       const workflow = { create: vi.fn(async (request: { id: string; params: unknown }) => { instances.set(request.id, request.params); return {}; }),
@@ -256,9 +257,9 @@ describe('inactive host MCP routing composition', () => {
 
   it('honors GTD continuation ownership before MCP revalidation', async () => {
     const current = await fixture(66, 'integration-telegram-ux-v1', { gtdId: 'gtd-owned-task' });
-    const routed = await routeRequest(current.input, { communicationV1: {
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies,
       select: async () => ({ user_goal: '', decision: current.selectedName }),
-      health: current.health, hostMcp: current.hostMcp,
+      hostMcp: current.hostMcp,
     } });
     current.rpc.mockClear();
     const submit = vi.fn();
@@ -272,8 +273,8 @@ describe('inactive host MCP routing composition', () => {
   it('disabled injection does not discover or expose host catalogue metadata', async () => {
     const current = await fixture();
     current.hostMcp.enabled = false;
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: 'agent' }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: '', decision: 'agent' }),
+      hostMcp: current.hostMcp } });
     expect(current.rpc).not.toHaveBeenCalled();
     expect(routed.mcpInstruction).toBeUndefined();
     expect(routed.decision.degraded).toBe(false);
@@ -294,8 +295,8 @@ describe('inactive host MCP routing composition', () => {
   it('missing host execution binding cannot authorize selected metadata', async () => {
     const current = await fixture();
     current.state.mcp.servers = [];
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: '', decision: current.selectedName }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: '', decision: current.selectedName }),
+      hostMcp: current.hostMcp } });
     expect(routed.decision).toMatchObject({ outcome: 'blocked', reasonCode: 'MCP_EXECUTION_BINDING_MISSING', degraded: true, providerCode: 'execution_binding_missing' });
     expect(routed.mcpInstruction).toBeUndefined();
   });
@@ -304,8 +305,8 @@ describe('inactive host MCP routing composition', () => {
     const current = await fixture();
     current.rpc.mockRejectedValue(new Error('fixture network failure'));
     const select = vi.fn(async (_request: Record<string, unknown>) => ({ user_goal: 'original request', decision: 'agent' }));
-    const routed = await routeRequest(current.input, { communicationV1: { namesOnly: true, select,
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, namesOnly: true, select,
+      hostMcp: current.hostMcp } });
     expect(select.mock.calls[0]?.[0].decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
     expect(routed).toMatchObject({ mcpRefusalCode: 'discovery_unavailable', decision: {
       route: 'agent', outcome: 'dispatched', needsExecutor: true, degraded: true, providerCode: 'discovery_unavailable',
@@ -332,8 +333,8 @@ describe('inactive host MCP routing composition', () => {
         expect(request).not.toHaveProperty('capabilities');
         return { user_goal: 'Пользователь выбрал встроенную проверку.', decision: capabilityId };
       });
-      const routed = await routeRequest(current.input, { communicationV1: {
-        namesOnly: true, select, health: current.health, hostMcp: current.hostMcp,
+      const routed = await routeRequest(current.input, { communicationV1: { taskReplies,
+        namesOnly: true, select, hostMcp: current.hostMcp,
       } });
 
       expect(routed.decision).toMatchObject({ route: 'deterministic', capabilityId, outcome: 'reply' });
@@ -350,12 +351,12 @@ describe('inactive host MCP routing composition', () => {
     current.rpc.mockImplementation(async message => ({ jsonrpc: '2.0', id: message.id,
       error: { code: -32001, message: 'Unauthorized' } } as never));
     const select = vi.fn(async (_request: Record<string, unknown>) => ({ user_goal: 'Проверь, работает ли сервис', decision: 'system_health' }));
-    const routed = await routeRequest(current.input, { communicationV1: { namesOnly: true, select, health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, namesOnly: true, select, hostMcp: current.hostMcp } });
     expect(select.mock.calls[0]?.[0].decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
     expect(routed).toMatchObject({ mcpRefusalCode: 'discovery_authorization_failed', decision: {
       route: 'deterministic', outcome: 'reply', capabilityId: 'system_health', degraded: true,
       providerCode: 'discovery_authorization_failed',
-      degradedNotice: { text: 'Каталог MCP недоступен; выполнен встроенный маршрут без MCP-инструментов.' },
+      degradedNotice: { text: 'Каталог MCP недоступен; выполнен маршрут MCP-ответа без агентских MCP-инструментов.' },
     } });
     expect(routed.mcpInstruction).toBeUndefined();
     expect(routed.continuation).toBeNull();
@@ -367,7 +368,7 @@ describe('inactive host MCP routing composition', () => {
       expect(request.decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'registry.fixture_read' }]);
       return { user_goal: 'original task', decision: current.selectedName };
     });
-    const routed = await routeRequest(current.input, { communicationV1: { select, health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select, hostMcp: current.hostMcp } });
     expect(routed.mcpInstruction?.name).toBe(current.selectedName);
   });
 
@@ -375,16 +376,16 @@ describe('inactive host MCP routing composition', () => {
     const current = await fixture();
     current.names.push('agent');
     current.state.mcp.servers[0]!.allowedTools.push('agent');
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: 'original task', decision: 'agent' }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: 'original task', decision: 'agent' }),
+      hostMcp: current.hostMcp } });
     expect(routed.decision).toMatchObject({ outcome: 'dispatched', reasonCode: 'COMMUNICATION_FALLBACK', providerCode: 'unknown_id' });
     expect(routed.mcpInstruction).toBeUndefined();
   });
 
   it('no matching method starts ordinary agent work with the capability available, without requiring a call', async () => {
     const current = await fixture();
-    const routed = await routeRequest(current.input, { communicationV1: { select: async () => ({ user_goal: 'original task', decision: 'no_matching_option' }),
-      health: current.health, hostMcp: current.hostMcp } });
+    const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: 'original task', decision: 'no_matching_option' }),
+      hostMcp: current.hostMcp } });
     expect(routed.decision).toMatchObject({ route: 'agent', outcome: 'dispatched', degraded: false });
     expect(routed.agentInstructions).toContain(current.input.prepared.text);
     expect(routed.agentInstructions).toContain('не вызывай её автоматически');
@@ -396,6 +397,7 @@ describe('inactive host MCP routing composition', () => {
     await current.store.upsertPrincipal({ principalId: current.principalId, profileId: current.profileId, scopes: ['tasks:read', 'tasks:control'] });
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const rpc = JSON.parse(String(init?.body));
+      const quick = taskRpc(rpc); if (quick) return quick;
       expect(rpc.params.name).toBe('resolve_user_intent');
       expect(rpc.params.arguments.decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
       return Response.json({ id: rpc.id, result: { structuredContent: { user_goal: 'Preserve the original accepted task', decision: 'agent' } } });
