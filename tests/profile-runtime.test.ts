@@ -8,6 +8,7 @@ import { buildRunSpec, runSpecPolicyOf } from '../src/run-spec/run-spec';
 import { ProfileRuntimeConfigurationError, resolveProfileRuntime, SANDBOX3_PROFILE, TELEGRAM_UX_PROFILE } from '../src/run-spec/profile-runtime';
 import { requirePermission } from '../src/intake/authorization';
 import { registryFixtureMcpSpec } from '../src/router/registry-test-mcp';
+import { userSandboxMcpSpec } from '../src/router/user-sandbox-mcp';
 import { TELEGRAM_UX_SANDBOX } from '../src/deployment/telegram-ux-sandbox';
 
 const bindings = {
@@ -184,6 +185,22 @@ describe('trusted profile runtime', () => {
     expect(resolveProfileRuntime(bindings, TELEGRAM_UX_PROFILE).policy.mcp).toBeNull();
     expect(() => resolveProfileRuntime({ ...configured, MCP_TEST_AUTH_TOKEN: '' }, TELEGRAM_UX_PROFILE))
       .toThrow(ProfileRuntimeConfigurationError);
+  });
+
+  it('selects the pinned product user catalog only through the trusted sandbox profile override', () => {
+    const configured = { ...bindings,
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_PROFILE]: { policy: 'generic_text_v1',
+        runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX', hostMcpBinding: 'mem-gpt-user-sandbox' } }) };
+    const runtime = resolveProfileRuntime(configured, TELEGRAM_UX_PROFILE);
+    expect(runtime.policy.mcp).toEqual(userSandboxMcpSpec());
+    expect(runtime.policy.mcp?.servers[0]?.allowedTools).toEqual([
+      'identity.whoami', 'google_docs.connect', 'google_docs.get_document',
+    ]);
+    expect(runtime.policy.envAllowlist).toEqual(['LLM_LADDER_TOKEN']);
+    expect(resolveProfileRuntime(bindings, TELEGRAM_UX_PROFILE).policy.mcp).toBeNull();
+    expect(resolveProfileRuntime({ ...configured,
+      RUN_SPEC_ENV_ALLOWLIST: 'LLM_LADDER_TOKEN,GOOGLE_APPLICATION_CREDENTIALS' }, TELEGRAM_UX_PROFILE).policy.envAllowlist)
+      .toEqual(['LLM_LADDER_TOKEN']);
   });
 
   it('uses the shared serverless Runner URL for Telegram UX without a profile endpoint override', async () => {

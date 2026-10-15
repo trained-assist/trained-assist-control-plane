@@ -1,6 +1,7 @@
 import { runnerAdapterOf, type RunnerApiAdapter } from '../runner-adapter';
 import { RunSpecMappingError, runSpecPolicyOf, type OutputSpec, type RunSpecPolicy } from './run-spec';
 import { registryFixtureMcpSpec } from '../router/registry-test-mcp';
+import { userSandboxMcpSpec } from '../router/user-sandbox-mcp';
 
 export const TELEGRAM_UX_PROFILE = 'integration-telegram-ux-v1';
 export const SANDBOX3_PROFILE = 'integration-sandbox3-v1';
@@ -44,7 +45,7 @@ export function profileRunnerUrlOf(
       const entry = raw as Record<string, unknown>;
       if (Object.hasOwn(entry, 'runnerUrlBinding')
         || entry.policy !== 'generic_text_v1'
-        || !['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding']
+        || !['policy', 'hostMcpBinding,policy', 'policy,runnerKeyBinding', 'hostMcpBinding,policy,runnerKeyBinding']
           .includes(Object.keys(entry).sort().join(','))) return null;
     }
   } catch { /* resolveProfileRuntime returns the sanitized configuration error */ }
@@ -77,7 +78,7 @@ export function resolveProfileRuntime(
       if (!allowedKeys.includes(keys) || entry.policy !== 'generic_text_v1') return fail();
       if (sandboxOutputPolicy && env.DEPLOYMENT_ENV !== 'sandbox3') return fail();
       if (entry.runnerKeyBinding !== undefined && entry.runnerKeyBinding !== 'RUNNER_API_KEY_TELEGRAM_UX') return fail();
-      if (entry.hostMcpBinding !== undefined && entry.hostMcpBinding !== 'registry-mcp-test-160-read') return fail();
+      if (entry.hostMcpBinding !== undefined && !['registry-mcp-test-160-read', 'mem-gpt-user-sandbox'].includes(String(entry.hostMcpBinding))) return fail();
       if (sandboxOutputPolicy && !validDeclaredOutputs(entry.outputs)) return fail();
     }
   }
@@ -104,12 +105,13 @@ export function resolveProfileRuntime(
     if (!adapter) return fail();
     if (durableProfileId === TELEGRAM_UX_PROFILE || durableProfileId === SANDBOX3_PROFILE) {
       const profileOverride = overrides[durableProfileId] as Record<string, unknown> | undefined;
-      const hostMcpEnabled = profileOverride?.hostMcpBinding === 'registry-mcp-test-160-read';
-      if (hostMcpEnabled && !env.MCP_TEST_AUTH_TOKEN?.trim()) return fail();
+      const hostMcpBinding = profileOverride?.hostMcpBinding;
+      if (hostMcpBinding === 'registry-mcp-test-160-read' && !env.MCP_TEST_AUTH_TOKEN?.trim()) return fail();
       const sandboxOutputs = durableProfileId === SANDBOX3_PROFILE
         ? (profileOverride as { outputs: OutputSpec[] } | undefined)?.outputs ?? [] : [];
       return { policy: { ...policy, repository: null, outputs: sandboxOutputs, inputRefs: [],
-        mcp: hostMcpEnabled ? registryFixtureMcpSpec() : null,
+        mcp: hostMcpBinding === 'registry-mcp-test-160-read' ? registryFixtureMcpSpec()
+          : hostMcpBinding === 'mem-gpt-user-sandbox' ? userSandboxMcpSpec() : null,
         envAllowlist: policy.envAllowlist.filter(name => name === 'LLM_LADDER_TOKEN') }, adapter, runnerApiUrl: runnerUrl ?? null };
     }
     return { policy: { ...policy, repository: null, outputs: [], inputRefs: [], mcp: null,
@@ -122,12 +124,14 @@ export function resolveProfileRuntime(
     if (!profileOverride || !Object.hasOwn(overrides, durableProfileId) || !runnerUrl
     || !env.RUNNER_API_KEY_TELEGRAM_UX?.trim()
     || env.RUNNER_API_KEY_TELEGRAM_UX === env.RUNNER_API_KEY) return fail();
-  const hostMcpEnabled = profileOverride.hostMcpBinding === 'registry-mcp-test-160-read';
-  if (hostMcpEnabled && !env.MCP_TEST_AUTH_TOKEN?.trim()) return fail();
+  const hostMcpBinding = profileOverride.hostMcpBinding;
+  if (hostMcpBinding === 'registry-mcp-test-160-read' && !env.MCP_TEST_AUTH_TOKEN?.trim()) return fail();
   return {
     // This API principal is bound to its isolated test repository at Runner.
     // Sending RUN_SPEC_REPOSITORY would try to override that authenticated binding.
-    policy: { ...policy, outputs: [], inputRefs: [], repository: null, mcp: hostMcpEnabled ? registryFixtureMcpSpec() : null,
+    policy: { ...policy, outputs: [], inputRefs: [], repository: null,
+      mcp: hostMcpBinding === 'registry-mcp-test-160-read' ? registryFixtureMcpSpec()
+        : hostMcpBinding === 'mem-gpt-user-sandbox' ? userSandboxMcpSpec() : null,
       envAllowlist: policy.envAllowlist.filter(name => name === 'LLM_LADDER_TOKEN') },
     adapter: runnerAdapterOf({ RUNNER_API_URL: runnerUrl, RUNNER_API_KEY: env.RUNNER_API_KEY_TELEGRAM_UX,
       RUNNER_API_ENGINE_SELECTION: env.RUNNER_API_ENGINE_SELECTION, RUNNER_API_FETCH: resolved.fetch }),

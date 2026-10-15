@@ -13,7 +13,7 @@ const config = {
     RUNNER_API_URL: 'https://trained-assist-runner-api-telegram-ux-v1-sandbox.skillset-apply.workers.dev',
     RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: TELEGRAM_UX_SANDBOX.principalId,
     RUNNER_PROFILE_DELEGATION_TENANT_ID: 'telegram-ux-sandbox-20261009',
-    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { policy: 'generic_text_v1', hostMcpBinding: 'registry-mcp-test-160-read' } }) },
+    RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ [TELEGRAM_UX_SANDBOX.principalId]: { policy: 'generic_text_v1', hostMcpBinding: 'mem-gpt-user-sandbox' } }) },
   services: [
     { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-v1-sandbox' },
     { binding: 'REGISTRY_MCP_HOST_SERVICE', service: 'trained-assist-mcp-host-test-160' },

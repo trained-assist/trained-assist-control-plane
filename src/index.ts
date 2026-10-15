@@ -1404,7 +1404,7 @@ const store = new TaskStore(env.DB);
                 const entry = mapping as Record<string, unknown>;
                 profileMappingConfigured = entry.policy === 'generic_text_v1'
                   && entry.runnerKeyBinding === 'RUNNER_API_KEY_TELEGRAM_UX'
-                  && (entry.hostMcpBinding === undefined || entry.hostMcpBinding === 'registry-mcp-test-160-read');
+                  && (entry.hostMcpBinding === undefined || ['registry-mcp-test-160-read', 'mem-gpt-user-sandbox'].includes(String(entry.hostMcpBinding)));
                 hostMcpRequired = entry.hostMcpBinding === 'registry-mcp-test-160-read';
               }
             } catch { /* report the mapping as unavailable without echoing it */ }
