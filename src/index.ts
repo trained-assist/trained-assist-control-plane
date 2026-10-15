@@ -1,3 +1,4 @@
+import { taskReplyMcp, type TaskReplyTool } from './router/task-reply-mcp';
 import { agentInputArtifact } from './run-spec/agent-input';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
@@ -68,8 +69,8 @@ import { scriptedFixedModel, type SandboxModelFault } from './router/recipe/fixe
 import { ScopedBriefCache } from './router/brief/cache';
 import { briefBuildSummaryOf } from './router/brief/service';
 import { DEFAULT_BRIEF_MAX_BYTES, DEFAULT_BRIEF_MAX_CANDIDATES } from './router/brief/compiler';
-import { communicationSelector, communicationWriter, DEFAULT_COMMUNICATION_TIMEOUT_MS, DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS } from './router/communication-client';
-import { communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth } from './router/communication-v1';
+import { communicationSelector, DEFAULT_COMMUNICATION_TIMEOUT_MS } from './router/communication-client';
+import { communicationV1Catalog, durableConversationContext } from './router/communication-v1';
 import { registryFixtureHostMcp } from './router/registry-test-mcp';
 import { commitQuickAnswer, dispatchAcceptedAgent, persistMcpTaskBlock } from './output/communication-v1';
 import { observeHealthCatalogue, parseHealthCatalogue } from './diagnostics/health-catalogue';
@@ -614,13 +615,29 @@ async function handleRouteRoute(
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
   const runtime = resolveProfileRuntime(env as unknown as Record<string, string | undefined>, task.profile_id);
   const v1 = env.ROUTER_SELECTOR === 'communication_v1';
-  const catalog = v1 ? communicationV1Catalog() : sandboxCapabilityCatalog();
+  const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? DEFAULT_COMMUNICATION_TIMEOUT_MS) };
+  const saved = v1 && !body.typedSignal ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
+  const taskReplyClient = taskReplyMcp(communicationConfig);
+  let taskTools: TaskReplyTool[] = [];
+  let discoveryError: unknown;
+  if (v1 && !body.typedSignal) {
+    await authorizeTaskRoute(store, req, taskId, 'tasks:control', auth);
+    if (!saved) {
+      try { taskTools = await taskReplyClient.list(); }
+      catch (error) { discoveryError = error; }
+    }
+  }
+  const taskReplies = { ...taskReplyClient, list: async () => {
+    if (discoveryError) throw discoveryError;
+    return taskTools;
+  } };
+  const catalog = v1 ? communicationV1Catalog(taskTools) : sandboxCapabilityCatalog();
 
   // Права — из идентичности: выдача capability приходит из binding'а песочницы
   // (в проде — из credential broker). Текст запроса в выдачу не входит.
   const grants = parseJsonObject<Record<string, { capabilities?: string[]; integrations?: string[] }>>(env.ROUTER_GRANTS);
   const own = grants[principal.principalId] ?? {};
-  const platform = catalog.capabilities.map((c) => c.id).filter((id) => id === 'system_health' || /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
+  const platform = catalog.capabilities.map((c) => c.id).filter((id) => taskTools.some(tool => tool.name === id) || /^(service|tasks|clock|integrations|catalog|policy)\./.test(id));
   const authorization = await deriveAuthorization(
     {
       principalId: principal.principalId,
@@ -652,19 +669,6 @@ async function handleRouteRoute(
   const hostMcp = ordinaryV1 && env.REGISTRY_MCP_HOST_SERVICE ? registryFixtureHostMcp({ taskId: task.id, generation: task.generation,
     profileId: task.profile_id, principalId: principal.principalId }, env.MCP_TEST_AUTH_TOKEN, runtime.policy.mcp,
     env.REGISTRY_MCP_HOST_SERVICE.fetch.bind(env.REGISTRY_MCP_HOST_SERVICE)) : undefined;
-  const saved = ordinaryV1 ? await store.routingSelection(task.id, task.generation) as RouteResult | null : null;
-  const communicationConfig = { url: env.COMMUNICATION_API_URL, service: env.COMMUNICATION_SERVICE, token: env.COMMUNICATION_TOKEN, timeoutMs: Number(env.COMMUNICATION_TIMEOUT_MS ?? DEFAULT_COMMUNICATION_TIMEOUT_MS) };
-  const systemHealth = async () => {
-    const [runner, watcher] = await Promise.all([probeRunnerHealth(runtime.adapter), probeWatcherHealth(env)]);
-    return {
-      ...runner,
-      watcher: watcher.watcher,
-      watcherAlarmId: watcher.watcherAlarmId,
-      watcherReasons: watcher.watcherReasons,
-      openIncidents: watcher.watcherOpenIncidents,
-      staleSources: watcher.watcherStaleSources,
-    };
-  };
 
   let result = saved ?? await routeRequest(
     {
@@ -712,7 +716,7 @@ async function handleRouteRoute(
       },
     },
     {
-      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), write: communicationWriter({ ...communicationConfig, timeoutMs: Number(env.COMMUNICATION_WRITER_TIMEOUT_MS ?? DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS) }), health: systemHealth, hostMcp } : undefined,
+      communicationV1: ordinaryV1 ? { namesOnly: env.ROUTER_SELECTOR_NAMES_ONLY === 'true', select: communicationSelector(communicationConfig), taskReplies, hostMcp } : undefined,
       source: 'http-route',
       replyOrRoute: createReplyOrRouteRunner({
         model: scriptedFixedModel({

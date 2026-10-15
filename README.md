@@ -461,3 +461,38 @@ Set `ERROR_WATCHER_URL` and `ERROR_WATCHER_KEY` as Worker secrets to enable publ
 - Error event contract: [OBSERVABILITY-AND-ERROR-CONTRACT.md](https://github.com/trained-assist/trained-agent-architecture/blob/main/OBSERVABILITY-AND-ERROR-CONTRACT.md)
 - Watcher spec: [SYSTEM-ERROR-WATCHER.md](https://github.com/trained-assist/trained-agent-architecture/blob/main/SYSTEM-ERROR-WATCHER.md)
 - Architecture: [trained-agent-architecture](https://github.com/trained-assist/trained-agent-architecture)
+
+### MCP-owned task replies (architecture #272)
+
+Ordinary `communication_v1` routing discovers its read-only reply methods using
+standard MCP `tools/list` at the configured Communication binding's
+`/mcp/task-tools` door. Product applicability and wording are owned by that
+server. CP creates a catalogue projection, derives an identity authorization
+snapshot, gives only authorized names/descriptions to the intent resolver, and
+invokes the selected method via `tools/call`. The result is persisted unchanged;
+no writer/model renders it again. A new method in this scoped server catalogue
+needs no CP branch. Infrastructure resolver/writer methods are not exposed as
+user task options.
+
+The configured, authenticated service binding grants its complete read-only
+reply toolset as platform capabilities; annotations are checked as contract
+constraints and never treated as independent permission grants. Per-route calls
+still require `tasks:control` and the derived capability grant. The fast-reply
+contract accepts exactly empty object arguments. Schemas requiring parameters,
+unknown schema keywords, effectful/open-world methods and duplicate/reserved
+names fail closed. General argument-bearing MCP methods continue through the
+existing scoped agent-tool path. Host-owned catalogue facts are sent in standard
+MCP request `_meta`, with no user-supplied metadata or model-generated grants.
+
+Discovery, authentication, malformed results and tool errors produce an explicit
+degraded agent handoff with the original input/history. They never return a local
+success template. Saved decisions/results are reused without repeating MCP calls.
+Quick replies create no Runner execution or accepted agent-input document.
+
+Inventory: the active ordinary route had two product quick answers,
+`system_health` and `catalog.brief`; both now belong to the MCP provider. The
+legacy sandbox policy/template fixtures and typed lifecycle controls (`stop`,
+status, awaiting-answer signals) are separate protocol paths and are unchanged.
+Runner/Watcher diagnostics have no dependency or wiring in this quick route.
+Deploy the compatible MCP provider before this CP consumer, then refresh each
+integration sandbox through its owner workflow before testing.

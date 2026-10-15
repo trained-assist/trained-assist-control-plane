@@ -1,9 +1,11 @@
+import { probeRunnerHealth, probeWatcherHealth, type SystemHealthReport } from '../src/router/diagnostic-probes';
+import { taskTools, taskReplies, taskRpc } from './fixtures/task-replies';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { env } from './env';
 import { TaskStore, FencedError } from '../src/taskstore';
 import { CfWorkflowPort } from '../src/workflow-port';
 import { communicationSelector, communicationWriter, SelectorError, DEFAULT_COMMUNICATION_TIMEOUT_MS, DEFAULT_COMMUNICATION_WRITER_TIMEOUT_MS } from '../src/router/communication-client';
-import { agentConversationInstructions, communicationV1Catalog, durableConversationContext, probeRunnerHealth, probeWatcherHealth, type SystemHealthReport } from '../src/router/communication-v1';
+import { agentConversationInstructions, communicationV1Catalog, durableConversationContext } from '../src/router/communication-v1';
 import { deriveAuthorization } from '../src/router/authorization';
 import { routeRequest } from '../src/router/service';
 import type { RouteResult } from '../src/router/service';
@@ -15,7 +17,7 @@ import { IntakeService } from '../src/intake';
 import { PilotRouter } from '../src/pilot/pilot-router';
 import worker from '../src/index';
 
-const catalog = communicationV1Catalog();
+const catalog = communicationV1Catalog(taskTools);
 const createdIds: string[] = [];
 const nextId = () => {
   const id = `selector-${crypto.randomUUID()}`;
@@ -67,6 +69,7 @@ describe('communication MCP client', () => {
   it('calls the native MCP method with scoped bearer and validates structured output', async () => {
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const rpc = JSON.parse(String(init?.body));
+      const quick = taskRpc(rpc); if (quick) return quick;
       expect(rpc.params.name).toBe('resolve_user_intent');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-credential');
       return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { structuredContent: { user_goal: 'Проверить состояние системы.', decision: 'system_health' } } });
@@ -96,6 +99,7 @@ describe('communication MCP client', () => {
   it('uses the writer method and rejects stale context revisions', async () => {
     const write = communicationWriter({ url: 'https://communication.example.test', token: 'test-credential', fetcher: (async (_url, init) => {
       const rpc = JSON.parse(String(init?.body));
+      const quick = taskRpc(rpc); if (quick) return quick;
       expect(rpc.params.name).toBe('generate_next_message_to_conversation_partner');
       return Response.json({ id: rpc.id, result: { structuredContent: { status: 'generated', message_text: 'facts', context_revision: 'old' } } });
     }) as typeof fetch });
@@ -123,7 +127,7 @@ describe('communication MCP client', () => {
 describe('v1 routing', () => {
   it('passes a closed names-only option list without duplicating capability descriptions', async () => {
     const select = vi.fn(selection('system_health'));
-    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select, health: healthy, namesOnly: true } });
+    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { taskReplies, select, namesOnly: true } });
     const payload = select.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(payload[0].decision_options).toEqual([{ id: 'system_health' }, { id: 'catalog.brief' }, { id: 'agent' }]);
     expect(payload[0]).not.toHaveProperty('capabilities');
@@ -132,7 +136,7 @@ describe('v1 routing', () => {
 
   it.each(['Работает?', 'Система ещё отвечает?', 'Проверишь доступность помощника?'])('routes paraphrases through the shared selector: %s', async (text) => {
     const select = vi.fn(selection('system_health'));
-    const result = await routeRequest(await routingInput(text), { communicationV1: { select, health: healthy } });
+    const result = await routeRequest(await routingInput(text), { communicationV1: { taskReplies, select, } });
     expect(result.decision.capabilityId).toBe('system_health');
     expect(result.reply?.text).toBe('Сервис работает! Отправляйте задание!');
     expect(select).toHaveBeenCalledTimes(1);
@@ -143,7 +147,7 @@ describe('v1 routing', () => {
 
   it.each(['agent', 'no_matching_option', 'unknown'])('preserves a compound task on decision %s', async (decision) => {
     const text = 'Работает? Тогда обработай таблицу и запиши итоги, исходный лист сохрани.';
-    const result = await routeRequest(await routingInput(text), { communicationV1: { select: selection(decision), health: healthy } });
+    const result = await routeRequest(await routingInput(text), { communicationV1: { taskReplies, select: selection(decision), } });
     expect(result.decision.route).toBe('agent');
     expect(result.continuation?.goal).toBe(text);
     expect(result.agentInstructions).toContain(text);
@@ -155,7 +159,7 @@ describe('v1 routing', () => {
   });
 
   it.each(['unavailable_or_timeout', 'timeout', 'unavailable', 'malformed', 'tool_error', 'input_too_large'])('falls back to agent on %s', async (code) => {
-    const result = await routeRequest(await routingInput('Неизвестная задача'), { communicationV1: { select: async () => { throw new SelectorError(code); }, health: healthy } });
+    const result = await routeRequest(await routingInput('Неизвестная задача'), { communicationV1: { taskReplies, select: async () => { throw new SelectorError(code); }, } });
     expect(result.decision.route).toBe('agent');
     expect(result.decision.providerCode).toBe(code);
     expect(result.decision.degraded).toBe(true);
@@ -164,19 +168,17 @@ describe('v1 routing', () => {
   it('renders catalog and grants without claiming external tools work', async () => {
     const input = await routingInput('Что умеешь?');
     input.authorization.grantedCapabilityIds = ['system_health', 'catalog.brief', 'google-drive.read'];
-    const result = await routeRequest(input, { communicationV1: { select: selection('catalog.brief'), health: healthy } });
+    const result = await routeRequest(input, { communicationV1: { taskReplies, select: selection('catalog.brief'), } });
     expect(result.reply?.text).toContain('требует подключения');
     expect(result.reply?.text).not.toContain('google-drive.share_file');
     expect(result.reply?.evidenceRefs).toContain(input.authorization.snapshotRef);
   });
 
-  it('uses the writer once with verified facts; altered facts fall back deterministically', async () => {
+  it('preserves the MCP result without asking a writer to change it', async () => {
     const input = await routingInput('Работает?');
-    const write = vi.fn(async (payload: Record<string, unknown>) => (payload.context as { verified_reply: string }).verified_reply);
-    const result = await routeRequest(input, { communicationV1: { select: selection('system_health'), health: healthy, write } });
-    expect(result.rendering?.source).toBe('communication_writer');
-    expect(write).toHaveBeenCalledTimes(1);
-    const failed = await routeRequest(input, { communicationV1: { select: selection('system_health'), health: healthy, write: async () => 'Все инструменты работают!' } });
+    const result = await routeRequest(input, { communicationV1: { taskReplies, select: selection('system_health') } });
+    expect(result.rendering?.source).toBe('deterministic');
+    const failed = await routeRequest(input, { communicationV1: { taskReplies, select: selection('system_health') } });
     expect(failed.rendering?.source).toBe('deterministic');
     expect(failed.reply?.text).not.toContain('Все инструменты работают');
   });
@@ -233,7 +235,7 @@ describe('Task Store and Output ownership', () => {
     const input = await routingInput('Какую кодовую фразу я просил запомнить?', current.userTaskId);
     input.envelope.conversationId = conversationId;
     input.prepared.durableContext = context;
-    const result = await routeRequest(input, { communicationV1: { select, health: healthy } });
+    const result = await routeRequest(input, { communicationV1: { taskReplies, select, } });
 
     const selectorPayload = capturedSelectorPayload as unknown as { dialog_context: { history: Array<{ id: string; text: string }> } };
     expect(selectorPayload.dialog_context.history).toEqual(expect.arrayContaining([
@@ -264,7 +266,7 @@ describe('Task Store and Output ownership', () => {
     const input = await routingInput('add monthly totals', currentId);
     input.prepared.durableContext = context;
     const fetcher = vi.fn();
-    const result = await routeRequest(input, { communicationV1: { select: communicationSelector({ url: 'https://communication.example.test', token: 'test-credential', fetcher }), health: healthy } });
+    const result = await routeRequest(input, { communicationV1: { taskReplies, select: communicationSelector({ url: 'https://communication.example.test', token: 'test-credential', fetcher }), } });
     expect(result.decision.route).toBe('agent');
     expect(result.agentInstructions).toContain('DO_NOT_LOSE_THIS_OBLIGATION');
     expect(result.agentInstructions).toContain('Дополнительные результаты: {"spreadsheet":"sheet-ref"}');
@@ -290,8 +292,8 @@ describe('Task Store and Output ownership', () => {
     const id = nextId();
     await store.admitTask({ id, profileId: 'selector-profile', goal: 'health' });
     const input = await routingInput('health', id);
-    const quick = await routeRequest(input, { communicationV1: { select: selection('system_health'), health: healthy } });
-    const agent = await routeRequest(input, { communicationV1: { select: selection('agent'), health: healthy } });
+    const quick = await routeRequest(input, { communicationV1: { taskReplies, select: selection('system_health'), } });
+    const agent = await routeRequest(input, { communicationV1: { taskReplies, select: selection('agent'), } });
     const saved = await Promise.all([store.saveRoutingSelection(id, 1, quick), store.saveRoutingSelection(id, 1, agent)]) as RouteResult[];
     expect(saved[0]).toEqual(saved[1]);
     const task = await store.requireTask(id);
@@ -316,7 +318,7 @@ describe('Task Store and Output ownership', () => {
     const wf = { create, get: async (instanceId: string) => { if (!instances.has(instanceId)) throw new Error('missing'); return { status: async () => ({ status: 'running' }) }; } } as unknown as Workflow;
     const port = new CfWorkflowPort(wf, store);
     const task = await store.requireTask(id);
-    const result = await routeRequest(await routingInput(task.goal, id), { communicationV1: { select: selection('agent'), health: healthy } });
+    const result = await routeRequest(await routingInput(task.goal, id), { communicationV1: { taskReplies, select: selection('agent'), } });
     const receipts = await Promise.all([dispatchAcceptedAgent(store, port, task, result), dispatchAcceptedAgent(store, port, task, result)]);
     expect(receipts[0].runId).toBe(receipts[1].runId);
     expect((await store.listRuns(id))).toHaveLength(1);
@@ -347,7 +349,7 @@ describe('Task Store and Output ownership', () => {
     const run = await store.startRun(id, { generation: 1, idempotent: true });
     await store.markConnectionLost(run.id);
     const port = new CfWorkflowPort({ create: vi.fn(), get: vi.fn() } as unknown as Workflow, store);
-    const result = await routeRequest(await routingInput(task.goal, id), { communicationV1: { select: selection('agent'), health: healthy } });
+    const result = await routeRequest(await routingInput(task.goal, id), { communicationV1: { taskReplies, select: selection('agent'), } });
     expect(await dispatchAcceptedAgent(store, port, task, result)).toMatchObject({ issued: false, refusal: 'existing_run_requires_reconciliation', runId: run.id });
     expect((await store.requireTask(id)).generation).toBe(1);
     expect(await store.listRuns(id)).toHaveLength(1);
@@ -359,9 +361,10 @@ describe('Task Store and Output ownership', () => {
     await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:read', 'tasks:control'] });
     await store.admitTask({ id, profileId: 'selector-profile', goal: 'Что умеешь?', userValue: { inputItems: [{ text: 'Что умеешь?' }] } });
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
-      expect(_url).toBe('https://communication.example.test/mcp');
+      expect(String(_url)).toMatch(/^https:\/\/communication\.example\.test\/mcp(?:\/task-tools)?$/);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-credential');
       const rpc = JSON.parse(String(init?.body));
+      const quick = taskRpc(rpc); if (quick) return quick;
       const data = rpc.params.name === 'resolve_user_intent'
         ? { user_goal: 'Узнать доступные возможности помощника.', decision: 'catalog.brief' }
         : { status: 'generated', message_text: rpc.params.arguments.context.verified_reply, context_revision: rpc.params.arguments.context_revision };
@@ -379,7 +382,7 @@ describe('Task Store and Output ownership', () => {
     expect(task.status).toBe('done');
     expect(JSON.parse(task.result_json!).answer).toContain('Каталог');
     expect((await worker.fetch(request(), bindings)).status).toBe(200);
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(3);
     if (transport === 'service') expect(externalFetch).not.toHaveBeenCalled();
   });
 
@@ -398,6 +401,7 @@ describe('Task Store and Output ownership', () => {
     createdIds.push(admitted.userTaskId);
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const rpc = JSON.parse(String(init?.body));
+      const quick = taskRpc(rpc); if (quick) return quick;
       expect(rpc.params.name).toBe('resolve_user_intent');
       expect(rpc.params.arguments.input_bundle.events[0].text).toBe(text);
       return Response.json({ id: rpc.id, result: { structuredContent: {
@@ -430,7 +434,7 @@ describe('Task Store and Output ownership', () => {
     expect(replayResponse.status).toBe(200);
     const replay = await replayResponse.json() as Record<string, unknown>;
     expect(replay.decisionId).toBe(selected.decisionId);
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
   });
 
@@ -477,6 +481,7 @@ describe('system_health: проба Error Watcher', () => {
 
   const selectorFetch = async (_url: unknown, init?: RequestInit) => {
     const rpc = JSON.parse(String(init?.body));
+      const quick = taskRpc(rpc); if (quick) return quick;
     const data = rpc.params.name === 'resolve_user_intent'
       ? { user_goal: 'Проверить работоспособность помощника.', decision: 'system_health' }
       : { status: 'generated', message_text: rpc.params.arguments.context.verified_reply, context_revision: rpc.params.arguments.context_revision };
@@ -538,7 +543,7 @@ describe('system_health: проба Error Watcher', () => {
 
   it.each(['reachable', 'unreachable', 'not_configured', 'unknown'] as const)('быстрый ответ не вызывает диагностику при статусе %s', async (runner) => {
     const health = vi.fn(async () => ({ runner, checkedAt: '2026-10-05T10:00:00Z' }));
-    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select: selection('system_health'), health } });
+    const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { taskReplies, select: selection('system_health') } });
     expect(result.reply?.text).toBe('Сервис работает! Отправляйте задание!');
     expect(health).not.toHaveBeenCalled();
     expect(result.reply?.health).toBeUndefined();

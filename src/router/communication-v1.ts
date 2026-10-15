@@ -1,3 +1,4 @@
+import type { TaskReplyMcp, TaskReplyTool } from './task-reply-mcp';
 import { isCapabilityAllowed, isIntegrationAllowed } from './authorization';
 import { sandboxCapabilityCatalog } from './catalog';
 import { agentWorkOrder } from './handlers';
@@ -9,26 +10,24 @@ import type { RouteResult } from './service';
 import type { CapabilityCatalog, PreparedInput, RoutingInput } from './router-types';
 import type { TaskRow, TaskStore } from '../taskstore';
 import { isTerminalStatus } from '../taskstore';
-import { RunnerNotFoundError } from '../runner-adapter/errors';
 import { McpCatalogueError, mcpReasonCode, requiresMcpRevalidation } from './mcp-catalogue';
 import type { McpCatalogueScope, McpCatalogueSnapshot, SelectedMcpInstruction } from './mcp-catalogue-types';
 import { sameMcpScope, validateHostMcpExecution, type HostMcpRoutingDeps } from './host-mcp-routing';
 
 export const COMMUNICATION_V1_VERSION = 'communication-v1';
 
-export const QUICK_ANSWERS = [
-  { id: 'system_health', version: 1, description: 'Быстро подтвердить, что сервис отвечает, и предложить отправить задание.', applicability: 'Самостоятельный вопрос о работоспособности самого помощника, в том числе короткий вопрос без названия компонента. Исключены диагностика Runner API, движка, инструментов и интеграций, дополнительные полезные задачи, чтение файлов и изменения данных.', instruction: 'Ответить ровно: Сервис работает! Отправляйте задание! Без вызова диагностических проверок.' },
-  { id: 'catalog.brief', version: 1, description: 'Описать зарегистрированные возможности и выданный доступ к интеграциям из каталога и прав профиля.', applicability: 'Только вопрос о возможностях. Исключены просьбы выполнить работу, проверить файл, создать или изменить данные.', instruction: 'Показать разрешённые записи каталога; подключение и права не считать проверкой работоспособности внешних инструментов.' },
-] as const;
-
-export function communicationV1Catalog(): CapabilityCatalog {
+export function communicationV1Catalog(tools: TaskReplyTool[] = []): CapabilityCatalog {
   const catalog = sandboxCapabilityCatalog();
-  return { version: `${catalog.version}:${COMMUNICATION_V1_VERSION}`, capabilities: [...catalog.capabilities, {
-    id: 'system_health', version: 1, title: 'Доступность системы', aliases: ['system_health'],
-    dataSource: 'none', effect: 'none', integrationId: null, requiredInputs: [], routeHint: 'deterministic',
-    supportedModes: ['deterministic'], preferredMode: 'deterministic', templateId: null,
-    handlerRef: 'handler:system_health', routingName: 'system_health',
-  }] };
+  const names = new Set(tools.map(tool => tool.name));
+  return { version: `${catalog.version}:${COMMUNICATION_V1_VERSION}`, capabilities: [
+    ...catalog.capabilities.filter(entry => !names.has(entry.id)),
+    ...tools.map(tool => ({
+      id: tool.name, version: 1, title: tool.description, aliases: [tool.name],
+      dataSource: 'none' as const, effect: 'none' as const, integrationId: null, requiredInputs: [], routeHint: 'deterministic' as const,
+      supportedModes: ['deterministic' as const], preferredMode: 'deterministic' as const, templateId: null,
+      handlerRef: `mcp:${tool.name}`,
+    })),
+  ] };
 }
 
 export async function durableConversationContext(store: TaskStore, task: TaskRow): Promise<NonNullable<PreparedInput['durableContext']>> {
@@ -137,88 +136,11 @@ export function agentConversationInstructions(input: Pick<PreparedInput, 'text' 
     : compactInstructionText(result, AGENT_INSTRUCTIONS_BUDGET);
 }
 
-export type WatcherStatus = 'ok' | 'degraded' | 'failing' | 'not_configured';
-
-export interface SystemHealthCheck {
-  runner: 'reachable' | 'unreachable' | 'not_configured' | 'unknown';
-  checkedAt: string;
-  watcher?: WatcherStatus;
-  watcherAlarmId?: string | null;
-  watcherReasons?: string[];
-  openIncidents?: number;
-  staleSources?: string[];
-}
-
-export interface SystemHealthReport {
-  runner: SystemHealthCheck['runner'];
-  watcher: WatcherStatus;
-  openIncidents: number;
-  staleSources: string[];
-}
-
-export interface WatcherHealthEnv {
-  ERROR_WATCHER_URL?: string;
-  ERROR_WATCHER_KEY?: string;
-}
-
-export interface WatcherHealthReport {
-  watcher: WatcherStatus;
-  watcherAlarmId: string | null;
-  watcherReasons: string[];
-  watcherOpenIncidents: number;
-  watcherStaleSources: string[];
-}
-
 export interface CommunicationV1Deps {
+  taskReplies?: TaskReplyMcp;
   hostMcp?: HostMcpRoutingDeps;
   namesOnly?: boolean;
   select: (input: Record<string, unknown>) => Promise<IntentSelection>;
-  health: () => Promise<SystemHealthCheck>;
-  write?: (input: Record<string, unknown>) => Promise<string>;
-}
-
-export async function probeRunnerHealth(adapter: { status: (runId: string) => Promise<unknown> } | null, timeoutMs = 5_000): Promise<Awaited<ReturnType<CommunicationV1Deps['health']>>> {
-  let runner: Awaited<ReturnType<CommunicationV1Deps['health']>>['runner'] = 'not_configured';
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  if (adapter) {
-    try {
-      await Promise.race([adapter.status('probe-run'), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SelectorError('probe_timeout')), timeoutMs); })]);
-      runner = 'reachable';
-    } catch (error) { runner = error instanceof RunnerNotFoundError ? 'reachable' : 'unreachable'; }
-    finally { clearTimeout(timer); }
-  }
-  return { runner, checkedAt: new Date().toISOString() };
-}
-
-const WATCHER_SCOPES = 'error:read';
-
-export async function probeWatcherHealth(env: WatcherHealthEnv, timeoutMs = 5_000): Promise<WatcherHealthReport> {
-  const unavailable: WatcherHealthReport = { watcher: 'not_configured', watcherAlarmId: null, watcherReasons: [], watcherOpenIncidents: 0, watcherStaleSources: [] };
-  const url = env.ERROR_WATCHER_URL?.trim();
-  const key = env.ERROR_WATCHER_KEY?.trim();
-  if (!url || !key) return unavailable;
-  try {
-    const response = await fetch(`${url.replace(/\/+$/, '')}/health`, {
-      headers: { 'x-watcher-key': key, 'x-watcher-scopes': WATCHER_SCOPES },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!response.ok) return unavailable;
-    const body = await response.json() as { status?: unknown; reasons?: unknown; alarmId?: unknown; summary?: { openIncidents?: unknown; staleSources?: unknown } };
-    if (body.status !== 'ok' && body.status !== 'degraded' && body.status !== 'failing') return unavailable;
-    const reasons = Array.isArray(body.reasons) ? body.reasons.filter((entry): entry is string => typeof entry === 'string') : [];
-    const stale = body.summary?.staleSources;
-    const staleSources = Array.isArray(stale) ? stale.filter((entry): entry is string => typeof entry === 'string') : [];
-    const openIncidents = Number(body.summary?.openIncidents ?? 0);
-    return {
-      watcher: body.status,
-      watcherAlarmId: typeof body.alarmId === 'string' ? body.alarmId : null,
-      watcherReasons: reasons,
-      watcherOpenIncidents: Number.isFinite(openIncidents) ? openIncidents : 0,
-      watcherStaleSources: staleSources,
-    };
-  } catch {
-    return unavailable;
-  }
 }
 
 export async function routeCommunicationV1(input: RoutingInput, deps: CommunicationV1Deps): Promise<RouteResult> {
@@ -226,7 +148,8 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   const decision = initialSelectorDecision(input);
   decision.policyVersion = COMMUNICATION_V1_VERSION;
   decision.decisionId = `${input.envelope.userTaskId}:${input.envelope.requestId}:${COMMUNICATION_V1_VERSION}`;
-  const allowed = QUICK_ANSWERS.filter((answer) => isCapabilityAllowed(input.authorization, answer.id));
+  let allowed: Array<TaskReplyTool & { id: string }> = [];
+  let mcpReply: string | undefined;
   const visible = input.catalog.capabilities.filter((entry) => isCapabilityAllowed(input.authorization, entry.id));
   const bundleVersion = input.prepared.contextVersion;
   let selected = 'agent';
@@ -242,6 +165,8 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   const hostMcp = deps.hostMcp?.enabled ? deps.hostMcp : undefined;
   try {
     if (input.envelope.budgets.llmCallsRemaining <= 0) throw new SelectorError('budget_denied');
+    if (!deps.taskReplies) throw new SelectorError('mcp_not_configured');
+    allowed = (await deps.taskReplies.list()).filter(tool => isCapabilityAllowed(input.authorization, tool.name)).map(tool => ({ ...tool, id: tool.name }));
     if (hostMcp) {
       scope = { taskId: input.envelope.userTaskId, profileId: input.envelope.profileId,
         principalId: input.envelope.principalId, generation: input.envelope.generation ?? 0 };
@@ -269,13 +194,13 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
         attachments: input.prepared.attachments.map((attachment) => ({ id: attachment.artifactRef, name: attachment.artifactRef, resource_ref: attachment.artifactRef, content_status: 'metadata_only' })),
       },
       recipient: snapshot ? { role: 'Выбери точный id quick answer или имя зарегистрированного метода из списка; если ничего не подходит — no_matching_option.' }
-        : { role: 'Ты сам — помощник trained-assist и система, к которой пользователь обращается в этом диалоге.', persona: 'Пользователь может спрашивать о твоей работоспособности или возможностях коротко, без имени системы. Выбери quick answer, который выполнит проверку после выбора, либо агентскую задачу.' },
+        : { role: 'Ты сам — помощник trained-assist и система, к которой пользователь обращается в этом диалоге.', persona: 'Выбери один метод MCP, только если он целиком покрывает запрос. Составные запросы и продолжения работы передавай агенту целиком.' },
       decision_options: snapshot ? [
         ...allowed.map(({ id }) => ({ id })),
         ...snapshot.decisionOptions,
       ]
-        : deps.namesOnly ? [...allowed.map(({ id }) => ({ id })), { id: 'agent' }] : [...allowed.map(({ id, description, applicability }) => ({ id, description, applicability })),
-        { id: 'agent', description: 'Выполнить любую задачу, не покрытую целиком одним доступным quick answer; сохранить все подзадачи и ограничения.', applicability: 'Составные запросы, работа с файлами, внешние действия, непонятные запросы и продолжения задач. Не подходит для самостоятельного вопроса о работоспособности самого помощника или его возможностях, если такой quick answer доступен.' }],
+        : deps.namesOnly ? [...allowed.map(({ id }) => ({ id })), { id: 'agent' }] : [...allowed.map(({ id, description }) => ({ id, description })),
+        { id: 'agent', description: 'Выполнить любую задачу, не покрытую целиком одним доступным quick answer; сохранить все подзадачи и ограничения.', applicability: 'Составные запросы, работа с файлами, внешние действия, непонятные запросы и продолжения задач. Если один опубликованный MCP-метод полностью покрывает самостоятельный запрос, выбирай этот метод.' }],
       ...(deps.namesOnly || snapshot ? {} : { capabilities: visible.map((entry) => ({ id: entry.id, title: entry.title, description: `Режимы: ${entry.supportedModes.join(', ')}; источник: ${entry.dataSource}; эффект: ${entry.effect}.`, version: String(entry.version), availability: entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'granted_readiness_unverified' : 'not_connected') : 'registered' })) }),
       dialog_context: input.prepared.durableContext ?? { history: [], active_tasks: [] },
       options: { language: 'ru' },
@@ -292,8 +217,6 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     } else if (result.decision === 'no_matching_option') {
       throw new SelectorError('no_matching_option');
     } else if (allowed.some(answer => answer.id === result.decision)) {
-      // Built-in quick answers stay selectable when this profile also has a
-      // discovered Host MCP catalogue. MCP names do not replace CP handlers.
       selected = result.decision;
     } else if (snapshot && hostMcp && scope) {
       if (!snapshot.decisionOptions.some(option => option.id === result.decision)) throw new SelectorError('unknown_id');
@@ -307,6 +230,14 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       selected = result.decision;
     }
     if (input.prepared.attachments.length && selected !== 'agent') throw new SelectorError('attachment_not_covered');
+    if (selected !== 'agent') {
+      const tool = allowed.find(entry => entry.id === selected)!;
+      mcpReply = await deps.taskReplies.call(tool, `${decision.decisionId}:mcp`, {
+        catalog: { version: input.catalog.version, entries: visible.map(entry => ({ id: entry.id, title: entry.title,
+          availability: entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'granted_readiness_unverified' : 'not_connected') : 'registered' })) },
+        authorizationRef: input.authorization.snapshotRef,
+      });
+    }
   } catch (error) {
     selectionFailure = true;
     if (error instanceof McpCatalogueError) {
@@ -332,8 +263,8 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     : mcpRefusalCode
       ? selected === 'agent'
         ? 'Каталог MCP недоступен; задача передана агенту без MCP-инструментов.'
-        : 'Каталог MCP недоступен; выполнен встроенный маршрут без MCP-инструментов.'
-      : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
+        : 'Каталог MCP недоступен; выполнен маршрут MCP-ответа без агентских MCP-инструментов.'
+      : failure?.startsWith('mcp_') ? 'Вызов MCP недоступен; исходная задача передана агенту.' : 'Определение маршрута недоступно; исходная задача передана агенту.', actions: [] } : null;
   let reply: RouteResult['reply'] = null;
   let continuation: RouteResult['continuation'] = null;
   let workOrder: RouteResult['workOrder'] = null;
@@ -380,34 +311,13 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     decision.capabilityVersion = 1;
     decision.replyAllowed = true;
     decision.outcome = 'reply';
-    if (selected === 'system_health') {
-      reply = { text: 'Сервис работает! Отправляйте задание!', evidenceRefs: [`task_store:${input.envelope.userTaskId}`, `communication:resolve_user_intent:${bundleVersion}`], mode: 'deterministic-handler' };
-    } else {
-      const entries = visible.map((entry) => `${entry.title} (${entry.id}): ${entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'доступ выдан; работоспособность интеграции не проверена' : 'требует подключения и выдачи доступа') : 'зарегистрировано в каталоге'}`);
-      reply = { text: `Доступные quick answers: состояние системы и описание возможностей. Остальные задачи передаются агенту. Каталог ${input.catalog.version}:\n${entries.join('\n')}`, evidenceRefs: [`catalog:${input.catalog.version}`, input.authorization.snapshotRef], mode: 'deterministic-handler' };
-    }
+    reply = { text: mcpReply!, evidenceRefs: [`mcp:tools/call:${selected}:${decision.decisionId}`, input.authorization.snapshotRef], mode: 'deterministic-handler' };
     decision.capabilityExecutions = 1;
     decision.firstUsefulReplyMs = Date.now() - startedAt;
   }
   let rendering: RouteResult['rendering'];
   if (reply) {
     rendering = { source: 'deterministic', failure: null };
-    if (deps.write && input.envelope.budgets.llmCallsRemaining > calls) {
-      try {
-        calls += 1;
-        const rendered = await deps.write({
-          request_id: `${decision.decisionId}:writer`, context_revision: bundleVersion,
-          goal: { instruction: 'Сообщи пользователю подготовленные подтверждённые факты. Верни ровно context.verified_reply без добавлений, обещаний и новых утверждений.', required_points: [], forbidden_points: ['Непроверенная готовность движка, инструментов или внешних интеграций'] },
-          communication_style: { instructions: 'Кратко и фактически, без приветствия.' }, language: 'ru',
-          conversation_history: { format: 'messages', messages: [...(input.prepared.durableContext?.history ?? []).map((entry) => ({ id: entry.id, speaker: entry.author === 'user' ? 'partner' : 'sender', text: entry.text })), { id: input.envelope.userTaskId, speaker: 'partner', text: input.prepared.text }] },
-          context: { verified_reply: reply.text, evidence_refs: reply.evidenceRefs },
-          constraints: { required_verbatim_blocks: [reply.text], max_questions: 0 },
-        });
-        if (rendered.trim() !== reply.text) throw new SelectorError('writer_changed_verified_facts');
-        reply.text = rendered.trim();
-        rendering = { source: 'communication_writer', failure: null };
-      } catch (error) { rendering.failure = error instanceof SelectorError ? error.code : 'writer_failed'; }
-    }
     decision.firstUsefulReplyMs = Date.now() - startedAt;
   }
   decision.modelCalls = calls;
