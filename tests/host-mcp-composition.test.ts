@@ -84,10 +84,11 @@ describe('inactive host MCP routing composition', () => {
     expect(routed).toMatchObject({ decision: { route: 'agent', degraded: false }, reply: null,
       mcpInstruction: { name: current.selectedName, description: current.selectedDescription, inputSchema: current.inputSchema,
         scope: current.scope, readiness: 'not_verified' }, execution: { capabilityExecutions: 0, agentDispatchAttempts: 1 } });
-    expect(routed.agentInstructions).toContain(current.input.prepared.text);
+    expect(routed.agentInstructions).not.toContain(current.input.prepared.text);
+    expect(routed.workOrder?.goal).toBe(current.input.prepared.text);
     expect(routed.agentInstructions).not.toContain(current.selectedDescription);
     expect(routed.agentInstructions).not.toContain('UNSELECTED_DESCRIPTION');
-    expect(routed.agentInstructions).toContain('Используй capability только если она нужна');
+    expect(routed.agentInstructions).toContain('Используй метод только по необходимости');
     const saved = await current.store.saveRoutingSelection(current.taskId, 1, routed);
     expect(saved).toEqual(routed);
     let params: PlanParams | undefined;
@@ -121,6 +122,10 @@ describe('inactive host MCP routing composition', () => {
         expect(body.mcp.servers[0]).not.toHaveProperty('scope');
         expect(body.mcp.servers[0]).not.toHaveProperty('registryDigest');
         expect(body.instructions).toContain(routed.agentInstructions);
+        expect(body.input.inlinePrompt).toBe(current.input.prepared.text);
+        const effective = `${body.input.inlinePrompt}\n\nAdditional instructions: ${body.instructions}`;
+        expect(effective.split(current.input.prepared.text)).toHaveLength(2);
+        expect(effective).not.toContain('UNSELECTED_DESCRIPTION');
         return Response.json({ userTaskId: current.taskId, runId: canonicalRun, requestId: 'fixture-native-receipt', deduplicated: false });
       }
       if (path.endsWith('/status')) return Response.json({ runId: canonicalRun, state: 'succeeded', answer: 'fixture native answer' });
@@ -387,8 +392,9 @@ describe('inactive host MCP routing composition', () => {
     const routed = await routeRequest(current.input, { communicationV1: { taskReplies, select: async () => ({ user_goal: 'original task', decision: 'no_matching_option' }),
       hostMcp: current.hostMcp } });
     expect(routed.decision).toMatchObject({ route: 'agent', outcome: 'dispatched', degraded: false });
-    expect(routed.agentInstructions).toContain(current.input.prepared.text);
-    expect(routed.agentInstructions).toContain('не вызывай её автоматически');
+    expect(routed.agentInstructions).not.toContain(current.input.prepared.text);
+    expect(routed.workOrder?.goal).toBe(current.input.prepared.text);
+    expect(routed.agentInstructions).toContain('не вызывай его автоматически');
     expect(routed.mcpInstruction).toMatchObject({ name: 'registry.fixture_read', readiness: 'not_verified' });
   });
 

@@ -22,6 +22,20 @@ async function fixture() {
 }
 
 describe('receipt-backed agent input document', () => {
+  it('shows only actual MCP grants and excludes executable and credential configuration', () => {
+    const spec = buildRunSpec({ userTaskId: 'task', profileId: 'profile', conversationId: null, ownerGeneration: 1,
+      engineName: 'opencode', prompt: 'Task', instructions: 'History', refs: [], inputManifest: null,
+      attemptRunId: null, timeoutMs: 120000 }, defaultRunSpecPolicy()).spec;
+    spec.mcp = { servers: [{ serverId: 'authorized-history', transport: 'remote',
+      url: 'https://private.example.test/mcp', bindingRef: 'private-credential-binding', allowedTools: ['history.read'] }] };
+    const doc = acceptedAgentInput(spec, 'run_123', 1);
+    expect(doc.mcp).toEqual({ servers: [{ serverId: 'authorized-history', transport: 'remote', allowedTools: ['history.read'] }] });
+    expect(JSON.stringify(doc)).not.toContain('private-credential-binding');
+    expect(JSON.stringify(doc)).not.toContain('private.example.test');
+    spec.mcp.servers[0]!.allowedTools.push('later-tool');
+    expect(doc.mcp?.servers[0]!.allowedTools).toEqual(['history.read']);
+  });
+
   it('has no document before Runner admission, including tasks completed by a quick answer', async () => {
     const { taskId, request, store } = await fixture();
     expect(await (await request(`/agent-inputs?taskId=${taskId}`)).json()).toEqual({ taskId, inputs: [] });
@@ -66,6 +80,8 @@ describe('receipt-backed agent input document', () => {
     const doc = acceptedAgentInput(spec, 'run_123', 1);
     expect(doc.input).toEqual(spec.input);
     expect(doc.instructions).toBe(spec.instructions);
-    expect(Object.keys(doc)).toEqual(['contractVersion', 'taskId', 'runId', 'generation', 'input', 'instructions', 'ingressManifest']);
+    expect(doc.scope).toBe('host-input');
+    expect(doc.mcp).toEqual({ servers: [] });
+    expect(Object.keys(doc)).toEqual(['contractVersion', 'taskId', 'runId', 'generation', 'input', 'instructions', 'ingressManifest', 'scope', 'mcp']);
   });
 });
