@@ -45,9 +45,11 @@ export function principalAuthOf(env: Record<string, string | undefined>): Princi
   const codexSmokeSecret = env.PRINCIPAL_SECRET_CODEX_SMOKE?.trim();
   const productionAgentSmokeSecret = env.DEPLOYMENT_ENV === 'production'
     ? env.PRINCIPAL_SECRET_PRODUCTION_AGENT_SMOKE?.trim() : undefined;
+  const productionRunnerIngressSecret = env.DEPLOYMENT_ENV === 'production'
+    ? env.PRINCIPAL_SECRET_PRODUCTION_RUNNER_INGRESS?.trim() : undefined;
   return {
     secret: secret ? secret : null,
-    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret || productionAgentSmokeSecret ? { secretOverrides: {
+    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret || productionAgentSmokeSecret || productionRunnerIngressSecret ? { secretOverrides: {
       ...(telegramUxSecret ? { 'integration-telegram-ux-v1': telegramUxSecret } : {}),
       ...(sandbox3Secret ? { 'integration-sandbox3-v1': sandbox3Secret } : {}),
       ...(sandbox3OpsSecret ? { [SANDBOX3.diagnosticPrincipalId]: sandbox3OpsSecret } : {}),
@@ -55,6 +57,7 @@ export function principalAuthOf(env: Record<string, string | undefined>): Princi
       ...(integrationV1Secret ? { 'integration-v1': integrationV1Secret } : {}),
       ...(codexSmokeSecret ? { 'sde-codex-smoke-v1': codexSmokeSecret } : {}),
       ...(productionAgentSmokeSecret ? { 'production-agent-smoke-v1': productionAgentSmokeSecret } : {}),
+      ...(productionRunnerIngressSecret ? { 'production-runner-ingress-v1': productionRunnerIngressSecret } : {}),
     } } : {}),
   };
 }
@@ -86,7 +89,7 @@ export async function verifyPrincipal(req: Request, auth: PrincipalAuth): Promis
     logStructured({ event: 'auth.principal_rejected', level: 'warn', reason: 'principal_id_malformed' });
     return null;
   }
-  if ((principalId === SANDBOX3.diagnosticPrincipalId || principalId === SANDBOX3.runnerIngressPrincipalId)
+  if ((principalId === SANDBOX3.diagnosticPrincipalId || principalId === SANDBOX3.runnerIngressPrincipalId || principalId === 'production-runner-ingress-v1')
     && !auth.secretOverrides?.[principalId]) return null;
   const secret = auth.secretOverrides?.[principalId] ?? auth.secret;
   if (!secret) {

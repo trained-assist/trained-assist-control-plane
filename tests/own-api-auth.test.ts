@@ -246,3 +246,16 @@ it('production agent smoke principal uses a dedicated production-only secret', a
     expect(await verifyPrincipal(req(principal, signature), principalAuthOf({ ...configured, DEPLOYMENT_ENV: deployment }))).toBeNull();
   }
 });
+
+it('production Runner ingress principal accepts only its dedicated production credential', async () => {
+  const principal = 'production-runner-ingress-v1';
+  const own = 'synthetic-production-runner-ingress-secret';
+  const signature = await signPrincipal(principal, own);
+  const configured = { PRINCIPAL_SECRET: SECRET, PRINCIPAL_SECRET_PRODUCTION_RUNNER_INGRESS: own };
+  expect(await verifyPrincipal(req(principal, signature), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'production' }))).toBe(principal);
+  expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf({ ...configured, DEPLOYMENT_ENV: 'production' }))).toBeNull();
+  for (const deployment of ['sandbox3', 'staging', undefined]) {
+    expect(await verifyPrincipal(req(principal, signature), principalAuthOf({ ...configured, DEPLOYMENT_ENV: deployment }))).toBeNull();
+    expect(await verifyPrincipal(req(principal, await signPrincipal(principal, SECRET)), principalAuthOf({ ...configured, DEPLOYMENT_ENV: deployment }))).toBeNull();
+  }
+});
