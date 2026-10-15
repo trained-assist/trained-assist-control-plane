@@ -22,6 +22,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.deepEqual(production.services, [
       { binding: 'COMMUNICATION_SERVICE', service: 'trained-assist-communication-skills' },
       { binding: 'RUNNER_API_SERVICE', service: 'trained-assist-runner-api-production' },
+      { binding: 'INGRESS_BUFFER', service: 'trained-assist-ingress-buffer-production' },
     ]);
     for (const target of [staging, production]) assert.deepEqual(target.r2_buckets ?? [], []);
     assert.equal(staging.vars.PREVIEW_ONLY, 'true');
