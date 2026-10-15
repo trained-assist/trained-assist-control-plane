@@ -182,6 +182,8 @@ export interface Env {
   PRINCIPAL_SECRET_CODEX_SMOKE?: string;
   PRINCIPAL_SECRET_PRODUCTION_AGENT_SMOKE?: string;
   PRINCIPAL_SECRET_PRODUCTION_RUNNER_INGRESS?: string;
+  /** Dedicated production HMAC credential for Chemistry GPT. */
+  PRINCIPAL_SECRET_CHEMISTRY_GPT?: string;
   CREDENTIAL_HOST_PRINCIPALS?: string;
   /**
    * Фиксированный «сейчас» расписания (epoch ms) — только для песочницы I07 на
