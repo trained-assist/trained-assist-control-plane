@@ -157,53 +157,37 @@ function attachmentRefsOf(userValue: string | null): { ref: string; version?: st
   }
 }
 
-/**
- * Recover the most recent verified OpenCode transcript for this task, or for an
- * earlier completed task in the same durable conversation. The checkpoint is
- * only an artifact reference: bytes stay in Runner/GCS and Runner revalidates
- * archive ownership/integrity before importing them.
+/** Recover only this task's previous-generation transcript. Cross-task session
+ * continuation is intentionally out of scope: a follow-up is a new run whose
+ * prompt and chat context can use the existing MCP conversation history.
  */
 async function latestOpenCodeCheckpoint(store: TaskStore, taskId: string, generation: number) {
-  const current = await store.getTask(taskId);
-  if (!current) return null;
-  const conversationTasks = current.conversation_id
-    ? await store.tasksByConversation(current.conversation_id)
-    : [current];
-  const priorTasks = conversationTasks
-    .filter((task) => task.profile_id === current.profile_id
-      && (task.id === current.id || (task.status === 'done' && task.created_at < current.created_at)))
-    .sort((first, second) => second.created_at - first.created_at || second.id.localeCompare(first.id));
-
-  for (const task of priorTasks) {
-    const attempts = (await store.listRuns(task.id))
-      .filter((run) => run.status === 'success' && run.engine === 'opencode' && run.session_id
-        && (task.id !== current.id || run.generation < generation))
-      .sort((first, second) => second.generation - first.generation || second.started_at - first.started_at);
-    const attempt = attempts[0];
-    if (!attempt) continue;
-    try {
-      const decoded = attempt.result_json ? JSON.parse(attempt.result_json) as { sessionCheckpoint?: {
-        sourceRunId?: unknown; sessionId?: unknown; path?: unknown; sha256?: unknown; size?: unknown;
-      } } : {};
-      const checkpoint = decoded.sessionCheckpoint;
-      if (checkpoint && typeof checkpoint.sourceRunId === 'string' && checkpoint.sourceRunId === attempt.session_id
-        && typeof checkpoint.sessionId === 'string' && typeof checkpoint.path === 'string'
-        && typeof checkpoint.sha256 === 'string' && typeof checkpoint.size === 'number'
-        && checkpoint.path === `.session-traces/${checkpoint.sessionId}.json`) {
-        return {
-          sourceRunId: checkpoint.sourceRunId,
-          sessionId: checkpoint.sessionId,
-          path: checkpoint.path,
-          sha256: checkpoint.sha256,
-          size: checkpoint.size,
-        };
-      }
-    } catch {
-      // Older attempt results may be non-JSON or predate session checkpoints.
+  const attempts = (await store.listRuns(taskId))
+    .filter((run) => run.status === 'success' && run.engine === 'opencode' && run.session_id && run.generation < generation)
+    .sort((first, second) => second.generation - first.generation || second.started_at - first.started_at);
+  const attempt = attempts[0];
+  if (!attempt) return null;
+  try {
+    const decoded = attempt.result_json ? JSON.parse(attempt.result_json) as { sessionCheckpoint?: {
+      sourceRunId?: unknown; sessionId?: unknown; path?: unknown; sha256?: unknown; size?: unknown;
+    } } : {};
+    const checkpoint = decoded.sessionCheckpoint;
+    if (checkpoint && typeof checkpoint.sourceRunId === 'string' && checkpoint.sourceRunId === attempt.session_id
+      && typeof checkpoint.sessionId === 'string' && typeof checkpoint.path === 'string'
+      && typeof checkpoint.sha256 === 'string' && typeof checkpoint.size === 'number'
+      && checkpoint.path === `.session-traces/${checkpoint.sessionId}.json`) {
+      return {
+        sourceRunId: checkpoint.sourceRunId,
+        sessionId: checkpoint.sessionId,
+        path: checkpoint.path,
+        sha256: checkpoint.sha256,
+        size: checkpoint.size,
+      };
     }
-    throw new RunSpecMappingError('The previous OpenCode session has no verified archive checkpoint', 'resumeSessionFrom');
+  } catch {
+    // Older attempt results may be non-JSON or predate session checkpoints.
   }
-  return null;
+  throw new RunSpecMappingError('The previous OpenCode session has no verified archive checkpoint', 'resumeSessionFrom');
 }
 
 async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
