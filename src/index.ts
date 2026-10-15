@@ -1,3 +1,4 @@
+import { agentInputArtifact } from './run-spec/agent-input';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { FencedError, TaskNotFoundError, TaskStore, TerminalStateError, UnresolvedRunError } from './taskstore';
@@ -1753,12 +1754,33 @@ const store = new TaskStore(env.DB);
         }
         return await serveIngressInputArtifact(env, task, manifest, ref, version);
       }
+      if (url.pathname === '/agent-inputs') {
+        if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+        const taskId = url.searchParams.get('taskId');
+        if (!taskId) return json({ error: 'taskId is required' }, 400);
+        await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
+        const inputs = await store.acceptedAgentInputs(taskId);
+        return json({ taskId, inputs: await Promise.all(inputs.map(async input => {
+          const { body: _body, ...artifact } = await agentInputArtifact(input);
+          return { runId: input.runId, generation: input.generation, artifact };
+        })) });
+      }
       if (url.pathname === '/artifact') {
         if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
         const taskId = url.searchParams.get('taskId');
         const ref = url.searchParams.get('ref');
         if (!taskId || !ref) return json({ error: 'taskId and ref are required' }, 400);
         await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
+        if (ref.startsWith('cp-agent-input:')) {
+          const input = (await store.acceptedAgentInputs(taskId)).find(item => `cp-agent-input:${item.runId}` === ref);
+          if (!input) return json({ error: 'accepted agent input not found' }, 404);
+          const artifact = await agentInputArtifact(input);
+          return new Response(artifact.body, { headers: {
+            'content-type': artifact.contentType, 'cache-control': 'private, no-store',
+            'content-disposition': `attachment; filename="${artifact.name}"`,
+            'content-length': String(artifact.sizeBytes), 'x-artifact-sha256': artifact.sha256,
+          } });
+        }
         return await serveArtifact(env, store, taskId, ref);
       }
       if (url.pathname === '/artifacts/reconcile') {

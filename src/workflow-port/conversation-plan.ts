@@ -1,3 +1,4 @@
+import { acceptedAgentInput } from '../run-spec/agent-input';
 // Демо-план M1.2/M1: реплика -> ожидание ответа -> сигнал -> результат.
 // Зависит только от StepCtx + TaskStore (как pilotPlan в пилоте P-DB),
 // написан по TASK-STORE-SCHEMA-V1 (awaiting_inputs, дедуп сигналов, guard).
@@ -601,6 +602,9 @@ export async function conversationPlan(
             idempotencyKey: attemptKey,
             runSpec: runSpec.spec,
           });
+          // Record only after a durable Runner receipt, inside the retried submit step.
+          // A lost receipt is reconciled with the same idempotency key; it never exposes a draft.
+          await store.saveAcceptedAgentInput(acceptedAgentInput(runSpec.spec, submitted.runId, generation));
           return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [] };
         } catch (e) {
           // A definitive 4xx rejection means Runner did not admit this request;
