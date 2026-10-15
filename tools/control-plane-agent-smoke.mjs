@@ -7,6 +7,17 @@ const safeCode = value => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_:-]{
 
 function fail(code) { const error = new Error(code); error.code = code; throw error; }
 
+export function classifyMcpDiagnostic(value) {
+  const text = typeof value === 'string' ? value.toLowerCase() : '';
+  if (/\b401\b|unauthori[sz]ed|invalid (?:credential|token|proof)|signature (?:invalid|mismatch)/.test(text)) return 'mcp_auth';
+  if (/\b403\b|forbidden|permission denied|not authorized/.test(text)) return 'mcp_permission';
+  if (/timeout|timed out|deadline exceeded/.test(text)) return 'mcp_timeout';
+  if (/econn|enotfound|fetch failed|network error|connection refused|connection reset/.test(text)) return 'mcp_transport';
+  if (/unknown tool|no such tool|tool not found|tool.{0,20}not available/.test(text)) return 'mcp_tool_missing';
+  if (/\bmcp\b/.test(text) && /error|failed|unavailable|unable/.test(text)) return 'mcp_other';
+  return 'none';
+}
+
 export async function runControlPlaneAgentSmoke(config, environment = process.env, fetchImpl = fetch) {
   const { baseUrl, principal, profile, secretEnv, requestPrefix, runnerApiUrl, runnerPrincipal, runnerTenant,
     runnerProfile, expectedExecutionWorker, maxWaitMs = 8 * 60_000, inputText,
@@ -226,6 +237,7 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
     identityToolErrorCount: toolStates.filter(state => state.status === 'error').length,
     identityToolResultContainsExpectedUserId: typeof expectedRunnerResultIncludes === 'string'
       && toolStates.some(state => JSON.stringify(state).includes(expectedRunnerResultIncludes)),
+    stderrClass: classifyMcpDiagnostic(stderr),
   };
   report.runnerEventTail = eventsPage.events.slice(-20).map(event => ({
     sequence: Number.isSafeInteger(event.sequence) ? event.sequence : null,
@@ -247,6 +259,11 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
   if (status.state === 'succeeded' && result.outcome === 'succeeded' && typeof expectedRunnerResultIncludes === 'string') {
     const answer = typeof result.text === 'string' ? result.text : '';
     report.runnerResultTextChars = answer.length;
+    report.runnerResultTextEvidence = {
+      mentionsMcp: /\bmcp\b/i.test(answer),
+      mentionsTool: /\btool\b/i.test(answer),
+      saysUnavailable: /unavailable|not available|could not|cannot|can't/i.test(answer),
+    };
     report.expectedResultMatched = answer.includes(expectedRunnerResultIncludes);
     if (!report.expectedResultMatched) fail(answer ? 'expected_runner_result_mismatch' : 'expected_runner_result_empty');
   }
