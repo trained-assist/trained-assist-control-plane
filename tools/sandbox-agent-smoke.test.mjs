@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { runControlPlaneAgentSmoke } from './control-plane-agent-smoke.mjs';
+import { classifyMcpDiagnostic, runControlPlaneAgentSmoke } from './control-plane-agent-smoke.mjs';
 import { SANDBOX_AGENT_SMOKE } from './sandbox-agent-smoke.mjs';
 
 const SHA = 'a'.repeat(40);
@@ -79,6 +79,8 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
     assert.equal(report.runnerOutputEvidence.identityToolCompletedCount, 1);
     assert.equal(report.runnerOutputEvidence.identityToolErrorCount, 0);
     assert.equal(report.runnerOutputEvidence.identityToolResultContainsExpectedUserId, true);
+    assert.equal(report.runnerOutputEvidence.stderrClass, 'none');
+    assert.deepEqual(report.runnerResultTextEvidence, { mentionsMcp: false, mentionsTool: false, saysUnavailable: false });
     assert.equal(report.runnerResultTextChars, 'trained-assist-product-owner'.length);
     assert.equal(report.workerTailCapture, 'captured');
     assert.deepEqual(paths, ['/healthz', '/intake', '/route', '/status', '/events']);
@@ -88,6 +90,14 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
     assert.doesNotMatch(saved, /trained-assist-product-owner/);
     assert.match(saved, /run_sandbox_agent_1/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('MCP diagnostic classification stores categories instead of stderr text', () => {
+  assert.equal(classifyMcpDiagnostic('MCP request failed: HTTP 401 unauthorized'), 'mcp_auth');
+  assert.equal(classifyMcpDiagnostic('MCP server connection timed out'), 'mcp_timeout');
+  assert.equal(classifyMcpDiagnostic('MCP server unavailable: fetch failed'), 'mcp_transport');
+  assert.equal(classifyMcpDiagnostic('MCP tool not available'), 'mcp_tool_missing');
+  assert.equal(classifyMcpDiagnostic('ordinary OpenCode stderr'), 'none');
 });
 
 test('sandbox agent smoke fails closed on a missing Runner event tail', async () => {
