@@ -85,7 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      RUNNER_PRODUCTION_SOURCE_SHA: 86afa8e23781a3fd008eaa2010f62a841935508a
+      # The CP deploy also ships this pinned Runner source; advance it with the reviewed Runner API release.
+      RUNNER_PRODUCTION_SOURCE_SHA: 55a18455b7d6161c393c2536b5deb7d089172605
       RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
