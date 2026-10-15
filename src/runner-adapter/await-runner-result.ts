@@ -228,13 +228,20 @@ async function finalize(
   // contract, never a physical worker name.
   const statusAnswer = typeof status.answer === 'string' && status.answer.trim().length > 0
     ? status.answer : null;
-  const text = opts.answerMode === 'runner_api' ? statusAnswer : engineText?.text ?? result.text ?? null;
+  const resultText = typeof result.text === 'string' && result.text.trim().length > 0 ? result.text : null;
+  // The Runner API status is the primary public answer. Its terminal result is
+  // also durable and can contain the same captured answer; keep it as a
+  // fallback in case status and result were observed across a state update.
+  // Never promote arbitrary stdout in API mode: it can contain progress/tool JSON.
+  const text = opts.answerMode === 'runner_api' ? statusAnswer ?? resultText : engineText?.text ?? resultText;
   const resolution = [...seenEvents].sort((first, second) => second.sequence - first.sequence)
     .find((event) => event.type === 'agent_exit_resolved')?.payload as { answerSource?: unknown } | undefined;
   const answerSource = text !== null && (resolution?.answerSource === 'agent_file' || resolution?.answerSource === 'engine_stdout')
     ? resolution.answerSource : null;
   const answer: RunnerAnswer = { text, answerSource,
-    source: text === null ? null : opts.answerMode === 'runner_api' ? 'runner_status_answer' : engineText ? engineText.source : 'runner_result_text',
+    source: text === null ? null : opts.answerMode === 'runner_api'
+      ? statusAnswer !== null ? 'runner_status_answer' : 'runner_result_text'
+      : engineText ? engineText.source : 'runner_result_text',
     version: text === null ? null : opts.answerMode === 'runner_api' ? 'runner-answer-v1' : engineText?.version ?? 'runner-answer-v1' };
   return { ok: true, result, eventsRecorded, artifacts, engineText, answer };
 }
