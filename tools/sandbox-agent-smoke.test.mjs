@@ -32,7 +32,9 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
         .update(`${SANDBOX_AGENT_SMOKE.runnerPrincipal}\0${SANDBOX_AGENT_SMOKE.runnerTenant}\0${SANDBOX_AGENT_SMOKE.runnerProfile}\0${expiresAt}`).digest('hex');
       assert.equal(runnerHeaders.get('x-agent-profile-sig'), runnerSignature);
       if (parsed.pathname.endsWith('/status')) return Response.json({ runId: 'run_sandbox_agent_1', state: 'succeeded' });
-      if (parsed.pathname.endsWith('/events')) return Response.json({ events: [{ sequence: 4, type: 'completed', payload: { output: 'do not retain' } }] });
+      if (parsed.pathname.endsWith('/events')) return Response.json({ events: [{ sequence: 4, type: 'completed', payload: { output: 'do not retain' } }],
+        snapshot: { output: { stdout: JSON.stringify({ type: 'tool_use', part: { tool: SANDBOX_AGENT_SMOKE.expectedToolName,
+          state: { status: 'completed', output: { content: [{ type: 'text', text: '{"userId":"trained-assist-product-owner"}' }] } } } }), stderr: '' } } });
       if (parsed.pathname.endsWith('/result')) return Response.json({ runId: 'run_sandbox_agent_1', outcome: 'succeeded', exitReason: 'completed', text: 'trained-assist-product-owner' });
     }
     const headers = new Headers(init.headers);
@@ -57,7 +59,7 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
   };
   try {
     const report = await runControlPlaneAgentSmoke(SANDBOX_AGENT_SMOKE, env, fetchImpl);
-    assert.equal(report.outcome, 'passed');
+    assert.equal(report.outcome, 'passed', JSON.stringify(report));
     assert.equal(report.deployedBuildSha, SHA);
     assert.equal(report.route, 'agent');
     assert.equal(report.taskStatus, 'done');
@@ -69,15 +71,21 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
     assert.equal(report.expectedResultMatched, true);
     assert.equal(report.controlPlaneEventCount, 2);
     assert.equal(report.runnerEventCount, 1);
-    assert.deepEqual(report.runnerOutputEvidence, {
-      stdoutChars: 0, stderrChars: 0, identityToolNameObserved: false, expectedUserIdObserved: false,
-    });
+    assert.ok(report.runnerOutputEvidence.stdoutChars > 0);
+    assert.equal(report.runnerOutputEvidence.stderrChars, 0);
+    assert.equal(report.runnerOutputEvidence.identityToolNameObserved, true);
+    assert.equal(report.runnerOutputEvidence.expectedUserIdObserved, true);
+    assert.equal(report.runnerOutputEvidence.identityToolCallCount, 1);
+    assert.equal(report.runnerOutputEvidence.identityToolCompletedCount, 1);
+    assert.equal(report.runnerOutputEvidence.identityToolErrorCount, 0);
+    assert.equal(report.runnerOutputEvidence.identityToolResultContainsExpectedUserId, true);
     assert.equal(report.runnerResultTextChars, 'trained-assist-product-owner'.length);
     assert.equal(report.workerTailCapture, 'captured');
     assert.deepEqual(paths, ['/healthz', '/intake', '/route', '/status', '/events']);
     const saved = readFileSync(reportFile, 'utf8');
     assert.doesNotMatch(saved, new RegExp(SECRET));
     assert.doesNotMatch(saved, /must not be included|do not retain/);
+    assert.doesNotMatch(saved, /trained-assist-product-owner/);
     assert.match(saved, /run_sandbox_agent_1/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

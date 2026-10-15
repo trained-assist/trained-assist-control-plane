@@ -10,7 +10,7 @@ function fail(code) { const error = new Error(code); error.code = code; throw er
 export async function runControlPlaneAgentSmoke(config, environment = process.env, fetchImpl = fetch) {
   const { baseUrl, principal, profile, secretEnv, requestPrefix, runnerApiUrl, runnerPrincipal, runnerTenant,
     runnerProfile, expectedExecutionWorker, maxWaitMs = 8 * 60_000, inputText,
-    expectedRunnerResultIncludes } = config;
+    expectedRunnerResultIncludes, expectedToolName } = config;
   const expectedBuildSha = environment.CONTROL_PLANE_EXPECTED_BUILD_SHA;
   const secret = typeof environment[secretEnv] === 'string' ? environment[secretEnv].trim() : '';
   const reportFile = environment.INTEGRATION_REPORT_FILE;
@@ -152,10 +152,10 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
       fail('agent_task_deadline_exceeded');
     }
 
-    if (!await captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes)) fail('runner_run_not_successful');
+    if (!await captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName)) fail('runner_run_not_successful');
     report.outcome = 'passed';
   } catch (error) {
-    report.reason = error?.code ?? 'agent_smoke_failed';
+    report.reason = error?.code ?? safeCode(error?.message) ?? 'agent_smoke_failed';
     if (taskId && !taskCompleted) {
       try {
         const tail = await captureWorkerTail(async (path, body) => {
@@ -166,7 +166,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
             ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(20_000) });
           if (!response.ok) fail(`worker_tail_http_${response.status}`);
           return response.json();
-        }, runnerRequest, taskId, report, expectedRunnerResultIncludes);
+        }, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName);
         if (!tail && report.workerTailCapture !== 'captured') report.workerTailCapture = 'failed';
       } catch { report.workerTailCapture = 'failed'; }
       try {
@@ -185,7 +185,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
   return report;
 }
 
-async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes) {
+async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName) {
   const page = await call(`/events?taskId=${encodeURIComponent(taskId)}&limit=500`);
   if (!Array.isArray(page.events)) fail('worker_event_tail_invalid');
   const events = page.events.map(event => ({
@@ -205,6 +205,14 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
     ? eventsPage.snapshot.output : {};
   const stdout = typeof runnerOutput.stdout === 'string' ? runnerOutput.stdout : '';
   const stderr = typeof runnerOutput.stderr === 'string' ? runnerOutput.stderr : '';
+  const outputEvents = stdout.split(/\r?\n/).flatMap(line => {
+    try {
+      const event = JSON.parse(line);
+      return event && typeof event === 'object' && !Array.isArray(event) ? [event] : [];
+    } catch { return []; }
+  });
+  const toolCalls = outputEvents.filter(event => event.type === 'tool_use' && event.part?.tool === expectedToolName);
+  const toolStates = toolCalls.map(event => event.part?.state).filter(state => state && typeof state === 'object');
   report.runnerState = status.state;
   report.runnerEventCount = eventsPage.events.length;
   report.runnerOutputEvidence = {
@@ -213,6 +221,11 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
     identityToolNameObserved: `${stdout}\n${stderr}`.includes('mem_gpt_identity_whoami'),
     expectedUserIdObserved: typeof expectedRunnerResultIncludes === 'string'
       && `${stdout}\n${stderr}`.includes(expectedRunnerResultIncludes),
+    identityToolCallCount: toolCalls.length,
+    identityToolCompletedCount: toolStates.filter(state => state.status === 'completed').length,
+    identityToolErrorCount: toolStates.filter(state => state.status === 'error').length,
+    identityToolResultContainsExpectedUserId: typeof expectedRunnerResultIncludes === 'string'
+      && toolStates.some(state => JSON.stringify(state).includes(expectedRunnerResultIncludes)),
   };
   report.runnerEventTail = eventsPage.events.slice(-20).map(event => ({
     sequence: Number.isSafeInteger(event.sequence) ? event.sequence : null,
