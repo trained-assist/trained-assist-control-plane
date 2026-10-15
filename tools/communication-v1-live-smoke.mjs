@@ -138,7 +138,7 @@ export async function runSmoke(environment = process.env, fetchImpl = fetch) {
           assert.equal(route.route, 'deterministic');
           assert.equal(route.capabilityId, capabilityId);
           assert.ok(typeof route.reply?.text === 'string' && route.reply.text.trim());
-          const expectedReplyMarker = name === 'health' ? 'control plane отвечает' : 'Доступные quick answers';
+          const expectedReplyMarker = name === 'health' ? 'Сервис работает! Отправляйте задание!' : 'Доступные quick answers';
           assert.ok(route.reply.text.toLowerCase().includes(expectedReplyMarker.toLowerCase()));
           evidence.replyMatchesExpected = true;
         }

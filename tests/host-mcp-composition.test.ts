@@ -340,7 +340,7 @@ describe('inactive host MCP routing composition', () => {
       expect(routed.reply?.text).toBeTruthy();
       expect(routed.mcpInstruction).toBeUndefined();
       expect(routed.continuation).toBeNull();
-      expect(current.health).toHaveBeenCalledTimes(capabilityId === 'system_health' ? 1 : 0);
+      expect(current.health).not.toHaveBeenCalled();
       expect(current.rpc).toHaveBeenCalledOnce();
       expect(current.rpc.mock.calls[0]?.[0].method).toBe('tools/list');
     });
