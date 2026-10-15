@@ -132,6 +132,33 @@ describe('reporting: текст движка и манифесты артефа�
     expect(((submitted?.runSpec?.input ?? {}) as Record<string, unknown>)['resumeSessionFrom']).toEqual(checkpoint);
   });
 
+  it('fails closed instead of silently starting a fresh session when the previous OpenCode archive is missing', async () => {
+    const store = new TaskStore(env.DB);
+    const conversationId = `tg-followup-missing-${Date.now()}-${++seq}`;
+    const previousTaskId = nextId('ut-followup-no-archive');
+    await store.admitTask({ id: previousTaskId, profileId: 'profile-1', goal: 'first request', conversationId });
+    await env.DB.prepare('UPDATE durable_tasks SET created_at = ? WHERE id = ?').bind(Date.now() - 60_000, previousTaskId).run();
+    const previousRun = await store.startRun(previousTaskId, { generation: 1, engine: 'opencode' });
+    await env.DB.prepare('UPDATE executions SET session_id = ? WHERE id = ?').bind('run_previous_no_archive', previousRun.id).run();
+    await store.finishRun(previousRun.id, 'success', { result: { answer: 'done without an archive checkpoint' } });
+    await store.commit(previousTaskId, 1, { status: 'done', stage: 'finished', step: 'test-complete', result: { answer: 'done' } });
+
+    const taskId = nextId('ut-followup-missing-next');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'continue that request', conversationId });
+    const currentRun = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const submitted: string[] = [];
+    const { adapter } = makeRunner({ onSubmit: (input) => { submitted.push(input.userTaskId); } });
+
+    await expect(conversationPlan(ctx, store, {
+      taskId, generation: 1, profileId: 'profile-1', runId: currentRun.id,
+      goal: 'continue that request', runnerEngine: 'opencode', runnerPollSec: 1, runnerTimeoutSec: 30,
+    }, { adapter: adapter as unknown as RunnerApiAdapter })).resolves.toMatchObject({
+      ok: false, reason: 'opencode_resume_checkpoint_unavailable',
+    });
+    expect(submitted).toEqual([]);
+    expect((await store.getTask(taskId))?.status).toBe('failed');
+  });
+
   it('отчёт отдаёт конечный текст движка отдельно от ответа человека', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-report-text');
