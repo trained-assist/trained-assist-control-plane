@@ -72,7 +72,8 @@ describe('generic MCP reply dispatch', () => {
     const { mcp, fetcher } = client();
     const result = await routeCommunicationV1(current, { taskReplies: mcp, select });
     expect(result.reply).toBeNull();
-    expect(result.agentInstructions).toContain('Original complete request');
+    expect(result.continuation?.goal).toBe('Original complete request');
+    expect(result.agentInstructions).not.toContain('Original complete request');
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

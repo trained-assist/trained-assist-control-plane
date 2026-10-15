@@ -119,10 +119,11 @@ describe('verified credential completion', () => {
     const prompt = `${request.runSpec!.input!.inlinePrompt!}\n\nAdditional instructions:\n${request.runSpec!.instructions ?? ''}`;
     expect(prompt).toContain(goal);
     expect(prompt).toContain(source);
-    expect(prompt).toContain('Полный исходный принятый ввод');
-    expect(prompt).toContain('Полный сохранённый контекст диалога для continuation');
+    expect(prompt.split(goal)).toHaveLength(2);
+    expect(prompt).not.toContain('Полный исходный принятый ввод');
+    expect(prompt).toContain('Предыдущие сообщения этой беседы');
     expect(prompt).toContain('Saved Category results');
-    expect(prompt).toContain(`Текущий исходный ввод пользователя (сохраняй формулировку и все ограничения):\n${goal}`);
+    expect(request.runSpec?.instructions).not.toContain(goal);
     expect(prompt.match(/\[work-style:v1\]/g)).toHaveLength(1);
     expect(prompt).toContain(instructions);
     for (const excluded of ['FOREIGN_PROFILE_PRIVATE', 'UNRELATED_DIALOG_PRIVATE', 'UNTRUSTED_PROVIDER_QUESTION',

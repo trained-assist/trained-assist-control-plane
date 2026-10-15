@@ -9,12 +9,17 @@ export interface AcceptedAgentInput {
   input: RunSpec['input'] | null;
   instructions: string | null;
   ingressManifest: RunSpec['ingressManifest'] | null;
+  /** Safe binding projection; never commands, URLs, credential refs or values. */
+  mcp?: { servers: Array<{ serverId: string; transport: string; allowedTools: string[] }> };
+  scope?: 'host-input';
 }
 
 export function acceptedAgentInput(spec: RunSpec, runId: string, generation: number): AcceptedAgentInput {
   return { contractVersion: 1, taskId: spec.userTaskId, runId, generation,
     input: spec.input ?? null, instructions: spec.instructions ?? null,
-    ingressManifest: spec.ingressManifest ?? null };
+    ingressManifest: spec.ingressManifest ?? null,
+    scope: 'host-input',
+    mcp: { servers: (spec.mcp?.servers ?? []).map(server => ({ serverId: server.serverId, transport: server.transport, allowedTools: [...server.allowedTools] })) } };
 }
 
 export async function agentInputArtifact(input: AcceptedAgentInput) {

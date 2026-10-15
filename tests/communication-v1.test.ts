@@ -125,6 +125,25 @@ describe('communication MCP client', () => {
 });
 
 describe('v1 routing', () => {
+  it('keeps the current request canonical and preserves only ordered attachment metadata in extra instructions', () => {
+    const text = 'Сравни эти файлы; первый исходник не меняй.';
+    const originalInput = { inputItems: [
+      { text: 'Первый документ', artifactRefs: ['file:first'], snapshotId: 'snapshot:first' },
+      { text: 'Второй документ', artifactRefs: ['file:second'] },
+    ], pilotRoute: 'new-plane', pilotReason: 'internal-routing-detail', artifactRefs: ['file:first', 'file:second'] };
+    const context = agentConversationInstructions({ text, originalInput });
+    expect(context).not.toContain(text);
+    expect(context).not.toContain('Первый документ');
+    expect(context).not.toContain('Второй документ');
+    expect(context).not.toContain('internal-routing-detail');
+    expect(context).toContain('snapshot:first');
+    expect(context.indexOf('file:first')).toBeLessThan(context.indexOf('file:second'));
+    expect(context).toContain('"inputItem":1');
+    expect(context).toContain('"inputItem":2');
+    expect(context).not.toContain('MCP');
+    expect(context).not.toContain('историю');
+  });
+
   it('passes a closed names-only option list without duplicating capability descriptions', async () => {
     const select = vi.fn(selection('system_health'));
     const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { taskReplies, select, namesOnly: true } });
@@ -150,11 +169,8 @@ describe('v1 routing', () => {
     const result = await routeRequest(await routingInput(text), { communicationV1: { taskReplies, select: selection(decision), } });
     expect(result.decision.route).toBe('agent');
     expect(result.continuation?.goal).toBe(text);
-    expect(result.agentInstructions).toContain(text);
-    if (decision === 'agent') {
-      expect(result.agentInstructions).toContain('Проверить запрошенное пользователем состояние.');
-      expect(result.agentInstructions).toContain('исходный запрос пользователя имеет приоритет');
-    } else expect(result.agentInstructions).toContain(text);
+    expect(result.agentInstructions).not.toContain(text);
+    expect(result.agentInstructions).not.toContain('Проверить запрошенное пользователем состояние.');
     expect(result.reply).toBeNull();
   });
 
@@ -326,8 +342,9 @@ describe('Task Store and Output ownership', () => {
     expect((await store.requireTask(id)).generation).toBe(1);
     const created = [...instances.values()].find(value => (value as { taskId?: string }).taskId === id) as { goal: string; instructions: string; autoRun?: boolean } | undefined;
     expect(created).toMatchObject({ taskId: id, generation: 1, instructions: expect.stringContaining('Режим запуска: explore') });
-    expect(created?.instructions).toContain('Проверить запрошенное пользователем состояние.');
-    expect(created?.instructions).toContain('perform original task');
+    expect(created?.goal).toBe('perform original task');
+    expect(created?.instructions).not.toContain('perform original task');
+    expect(created?.instructions).not.toContain('Проверить запрошенное пользователем состояние.');
     expect(created?.autoRun).not.toBe(true);
     await dispatchAcceptedAgent(store, port, task, result);
     expect((await store.listRuns(id))).toHaveLength(1);
@@ -470,7 +487,7 @@ describe('Task Store and Output ownership', () => {
     expect(launched).toBeDefined();
     if (!launched) throw new Error('Workflow instance was not created for the admitted task');
     expect(launched).toMatchObject({ goal, generation: 1, runnerEngine: 'dynamic-ip-azure-agent-run' });
-    expect(launched.instructions).toContain(goal);
+    expect(launched.instructions).not.toContain(goal);
     expect(launched.instructions.match(/\[work-style:v1\]/g)).toHaveLength(1);
     expect(launched.instructions).toContain('Режим запуска: auto');
   });

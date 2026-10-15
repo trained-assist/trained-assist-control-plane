@@ -496,3 +496,20 @@ status, awaiting-answer signals) are separate protocol paths and are unchanged.
 Runner/Watcher diagnostics have no dependency or wiring in this quick route.
 Deploy the compatible MCP provider before this CP consumer, then refresh each
 integration sandbox through its owner workflow before testing.
+
+### Agent start context (architecture #275)
+
+The current user request has one canonical copy in `RunSpec.input.inlinePrompt`.
+Additional instructions carry conversation history, active tasks, ordered attachment
+metadata and the work mode, without reprinting the request, intake routing JSON
+or the intent resolver's paraphrase. The scoped MCP hint is added only when a
+validated method is actually handed to the agent; its native tool catalogue owns
+descriptions and schemas. A history method is usable only when actually granted.
+
+New receipt-backed agent-input documents identify `scope:"host-input"` and include
+`mcp.servers:[{serverId,transport,allowedTools}]`. This is a safe projection of the
+actual launch binding, without URLs, commands, environment, credential bindings
+or values. An empty array means no MCP server was supplied for that run. Older
+immutable snapshots omit this field and should not be interpreted as proving an
+empty toolset. The document records host input and instructions; it does not claim
+to record OpenCode's complete internal system prompt or built-in tools.

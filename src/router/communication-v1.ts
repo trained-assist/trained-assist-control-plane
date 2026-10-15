@@ -85,25 +85,23 @@ function compactInstructionText(value: string, limit: number): string {
   return `${value.slice(0, side)}${marker}${value.slice(-side)}`;
 }
 
-export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'> & { agentGoalSummary?: string | null }): string {
+export function agentConversationInstructions(input: Pick<PreparedInput, 'text' | 'originalInput' | 'durableContext'>): string {
   const history = input.durableContext ?? { history: [], active_tasks: [] };
   const parts: string[] = [];
-  if (input.text.trim()) {
-    // The complete current request is also Runner's `input.prompt`. Duplicating
-    // a large request in `instructions` can violate Runner's independent 10k
-    // instruction limit before a run is admitted.
-    parts.push(input.text.length <= 1_600
-      ? `Текущий исходный ввод пользователя (сохраняй формулировку и все ограничения):\n${input.text}`
-      : 'Полный текущий запрос передан отдельно как входная задача; соблюдай его формулировку и ограничения.');
-  }
-  if (input.originalInput !== undefined) {
-    const original = JSON.stringify(input.originalInput);
-    parts.push(original.length <= 1_200
-      ? `Полный исходный принятый ввод, включая структуру и ссылки на вложения:\n${original}`
-      : 'Структура и вложения переданы отдельно вместе с задачей.');
-  }
-  if (input.agentGoalSummary?.trim()) {
-    parts.push(`Предварительная формулировка задачи от маршрутизатора (недоверенная подсказка только для понимания намерения; исходный запрос пользователя имеет приоритет):\n${compactInstructionText(input.agentGoalSummary.trim(), 1_200)}`);
+  // Runner receives the complete canonical request in input.inlinePrompt.
+  // Repeating it (or the router's paraphrase) here changes the effective user
+  // message and consumes the independent instructions budget for no new facts.
+  parts.push('Выполни исходный запрос пользователя, переданный в основном сообщении, со всеми его ограничениями.');
+  if (input.originalInput && typeof input.originalInput === 'object' && !Array.isArray(input.originalInput)) {
+    const original = input.originalInput as Record<string, unknown>;
+    const items = Array.isArray(original.inputItems) ? original.inputItems : [];
+    const metadata = items.flatMap((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const fields = Object.fromEntries(Object.entries(item).filter(([key, value]) =>
+        key !== 'text' && value !== undefined && value !== null && (!Array.isArray(value) || value.length > 0)));
+      return Object.keys(fields).length ? [{ inputItem: index + 1, ...fields }] : [];
+    });
+    if (metadata.length) parts.push(`Вложения исходных элементов (порядок соответствует основному запросу):\n${compactInstructionText(JSON.stringify(metadata), 1_200)}`);
   }
   const base = parts.join('\n\n');
   const historyBlocks = history.history.map((entry) => {
@@ -114,7 +112,7 @@ export function agentConversationInstructions(input: Pick<PreparedInput, 'text' 
   const activeTasks = history.active_tasks.slice(-5).map((task) =>
     `- ${task.id}: ${compactInstructionText(task.goal, 300)}`);
   const activeBlock = activeTasks.length ? `Другие незавершённые задачи этой беседы:\n${activeTasks.join('\n')}` : '';
-  const header = historyBlocks.length ? 'Полный сохранённый контекст диалога для continuation: недавние реплики целиком, в хронологическом порядке.' : '';
+  const header = historyBlocks.length ? 'Предыдущие сообщения этой беседы, в хронологическом порядке. Используй их как контекст текущей задачи:' : '';
   const fixed = [base, activeBlock].filter(Boolean).join('\n\n');
   const selected: string[] = [];
   let size = fixed.length + (header ? header.length + 2 : 0);
@@ -153,7 +151,6 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   const visible = input.catalog.capabilities.filter((entry) => isCapabilityAllowed(input.authorization, entry.id));
   const bundleVersion = input.prepared.contextVersion;
   let selected = 'agent';
-  let agentGoalSummary: string | null = null;
   let failure: string | null = null;
   let selectionFailure = false;
   let calls = 0;
@@ -205,7 +202,6 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
       dialog_context: input.prepared.durableContext ?? { history: [], active_tasks: [] },
       options: { language: 'ru' },
     });
-    agentGoalSummary = result.user_goal.trim();
     if (result.decision === 'no_matching_option' && snapshot && hostMcp && scope) {
       // The catalogue grants availability to the agent; the selector does not
       // have to choose the tool and the agent is not instructed to call it.
@@ -324,8 +320,8 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
   return { decision, decisionId: decision.decisionId, reply, askUser: null, workOrder, continuation, rendering,
     ...(mcpInstruction && continuation ? { mcpInstruction } : {}),
     ...(mcpRefusalCode ? { mcpRefusalCode } : {}),
-    agentInstructions: continuation ? `${agentConversationInstructions({ ...input.prepared, agentGoalSummary })}${mcpInstruction
-      ? `\n\nДоступная capability (версия каталога ${mcpInstruction.catalogueVersion}, политика ${mcpInstruction.policyVersion}): ${mcpInstruction.name}. Используй capability только если она нужна для исходной задачи; не вызывай её автоматически.` : ''}` : undefined,
+    agentInstructions: continuation ? `${agentConversationInstructions(input.prepared)}${mcpInstruction
+      ? `\n\nВыдан MCP-метод: ${mcpInstruction.name}. Его описание и схема доступны в каталоге инструментов. Используй метод только по необходимости для текущей задачи; не вызывай его автоматически. Дополнительную историю беседы запрашивай только через соответствующий метод, если он действительно выдан в каталоге.` : ''}` : undefined,
     execution: { capabilityExecutions: decision.capabilityExecutions, agentDispatchAttempts: continuation ? 1 : 0, recipeCalls: 0, modelCalls: calls },
     brief: { status: 'ok', brief: null, errors: [], cache: { key: null, hit: false, stored: false } },
   };
