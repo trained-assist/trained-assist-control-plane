@@ -347,7 +347,12 @@ async function finalizeRun(
   userAnswer: unknown,
 ): Promise<PlanOutcome> {
   const { taskId, generation } = p;
-  const ok = engine ? engine.ok : true;
+  const hasUserVisibleOutcome = !!engine && (
+    (typeof engine.text === 'string' && engine.text.trim().length > 0)
+    || engine.artifacts.length > 0
+  );
+  const emptySuccessfulExit = !!engine && engine.ok && !hasUserVisibleOutcome;
+  const ok = engine ? engine.ok && hasUserVisibleOutcome : true;
   const result = {
     ok,
     // Конечный текст движка. Без движка — null: «ответа нет» видно, а не
@@ -355,6 +360,7 @@ async function finalizeRun(
     answer: engine ? engine.text : null,
     userAnswer: answerText(userAnswer),
     version: PLAN_VERSION,
+    ...(emptySuccessfulExit ? { reason: 'no_user_visible_outcome' } : {}),
     ...(engine
       ? {
           mode: 'engine' as const,

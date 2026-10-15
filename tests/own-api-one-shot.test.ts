@@ -185,31 +185,35 @@ describe('one-shot с движком: результат = текст движк
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'молча сделай работу' });
     const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
     const { adapter } = makeFakeRunner({ stdout: [] });
+    const noOutput = { ...adapter, result: async () => ({ ...await adapter.result(), outputRefs: [], persistence: 'not_required' as const }) };
 
     const outcome = await conversationPlan(
       ctx,
       store,
       { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, goal: 'молча сделай работу', runnerPollSec: 1, runnerTimeoutSec: 30 },
-      { adapter: adapter as unknown as RunnerApiAdapter },
+      { adapter: noOutput as unknown as RunnerApiAdapter },
     );
 
-    expect(outcome.ok).toBe(true);
+    expect(outcome.ok).toBe(false);
     expect(outcome.answer).toBeNull();
-    const result = JSON.parse((await store.requireTask(taskId)).result_json!);
-    expect(result.answer).toBeNull();
+    const task = await store.requireTask(taskId);
+    expect(task.status).toBe('failed');
+    const result = JSON.parse(task.result_json!);
     expect(result.answer).toBeNull();
     expect(result.mode).toBe('engine');
+    expect(result.reason).toBe('no_user_visible_outcome');
   });
 });
 
 describe('one-shot: RunSpec доходит до Runner целиком', () => {
   it.each([
-    { answer: 'Итоги CSV:\n3 строки обработаны.', source: 'agent_file', expected: 'Итоги CSV:\n3 строки обработаны.' },
-    { answer: 'Only the final assistant answer', source: 'engine_stdout', expected: 'Only the final assistant answer' },
-    { answer: undefined, source: 'agent_file', expected: null },
-    { answer: null, source: null, expected: null },
-    { answer: '  \n', source: 'engine_stdout', expected: null },
-  ])('uses only normalized Runner API answers, preserves provenance and terminal replay: %j', async ({ answer, source, expected }) => {
+    { answer: 'Итоги CSV:\n3 строки обработаны.', resultText: 'result fallback', source: 'agent_file', expected: 'Итоги CSV:\n3 строки обработаны.', textSource: 'runner_status_answer' },
+    { answer: 'Only the final assistant answer', resultText: 'result fallback', source: 'engine_stdout', expected: 'Only the final assistant answer', textSource: 'runner_status_answer' },
+    { answer: undefined, resultText: 'durable result answer', source: 'agent_file', expected: 'durable result answer', textSource: 'runner_result_text' },
+    { answer: null, resultText: 'durable result answer', source: 'agent_file', expected: 'durable result answer', textSource: 'runner_result_text' },
+    { answer: undefined, resultText: undefined, source: null, expected: null, textSource: null },
+    { answer: '  \n', resultText: 'durable result answer', source: 'engine_stdout', expected: 'durable result answer', textSource: 'runner_result_text' },
+  ])('uses normalized status answer first and durable result text as fallback: %j', async ({ answer, resultText, source, expected, textSource }) => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-native-answer');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'process the CSV' });
@@ -221,14 +225,14 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
       const page = await adapter.events();
       return { ...page, events: [...page.events, { type: 'agent_exit_resolved', sequence: page.cursor + 1, payload: { answerSource: source } }], cursor: page.cursor + 1 };
     };
-    const native = { ...adapter, submit, status, events, result: async () => ({ ...await adapter.result(), text: 'result-text fallback must not leak' }) };
+    const native = { ...adapter, submit, status, events, result: async () => ({ ...await adapter.result(), ...(resultText === undefined ? {} : { text: resultText }) }) };
     const params = { taskId, generation: 1, profileId: 'profile-1', runId: attempt.id, runnerEngine: 'agent_api', goal: 'process the CSV' };
     expect(await conversationPlan(ctx, store, params, { adapter: native as unknown as RunnerApiAdapter })).toMatchObject({ ok: true, answer: expected });
     const task = await store.requireTask(taskId);
     const result = JSON.parse(task.result_json!);
     expect(result.answer).toBe(expected);
     expect(result.answerSource).toBe(expected === null ? null : source);
-    expect(result.engineText).toMatchObject({ text: expected, source: expected === null ? null : 'runner_status_answer', answerSource: expected === null ? null : source });
+    expect(result.engineText).toMatchObject({ text: expected, source: textSource, answerSource: expected === null ? null : source });
     expect(task.result_json).not.toContain('tool_use');
     expect(result.runId).toBe(runId);
     const artifacts = await store.listArtifacts(taskId);
