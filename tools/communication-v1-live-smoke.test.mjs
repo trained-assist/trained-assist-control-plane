@@ -52,12 +52,12 @@ function fixture(context) {
         ...(state.missingDecisionId ? {} : { decisionId: `decision:${body.taskId}` }),
         ...(name === 'agent-intent' ? { workOrder: { goal: 'Составь три идеи для вопросов на собеседовании.' } }
           : { reply: { text: replay && state.answerMismatch ? sentinel
-            : name === 'health' ? 'Fixture: control plane отвечает.' : 'Доступные quick answers: fixture.' } }),
+            : name === 'health' ? 'Сервис работает! Отправляйте задание!' : 'Доступные quick answers: fixture.' } }),
         continuation: { issued: false } });
     }
     assert.equal(url.pathname, '/status');
     const statusName = state.tasks.get(body.taskId);
-    const answer = statusName === 'health' ? 'Fixture: control plane отвечает.' : 'Доступные quick answers: fixture.';
+    const answer = statusName === 'health' ? 'Сервис работает! Отправляйте задание!' : 'Доступные quick answers: fixture.';
     return Response.json({ taskStore: { id: body.taskId, status: statusName === 'agent-intent' ? 'accepted' : 'done', generation: 1,
       ...(statusName === 'agent-intent' ? {} : { result: { answer, quickAnswer: { id: capabilityId },
         rendering: { source: 'communication_writer', failure: state.renderingFailure } } }) },

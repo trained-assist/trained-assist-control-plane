@@ -17,7 +17,7 @@ import { sameMcpScope, validateHostMcpExecution, type HostMcpRoutingDeps } from 
 export const COMMUNICATION_V1_VERSION = 'communication-v1';
 
 export const QUICK_ANSWERS = [
-  { id: 'system_health', version: 1, description: 'Проверить, работает ли сам помощник trained-assist, отвечает ли система и доступен ли Runner API; после выбора выполнить проверку и сообщить факты.', applicability: 'Самостоятельный вопрос о работоспособности самого помощника или системы, в том числе короткий вопрос без названия компонента. Факты проверки не нужны до выбора: этот сценарий выполняет пробу ПОСЛЕ выбора. Исключены любые дополнительные полезные задачи, чтение файлов и изменения данных.', instruction: 'Проверить Runner через существующий адаптер; сообщить время и ограничение проверки доступностью API, без утверждения готовности движка или инструментов.' },
+  { id: 'system_health', version: 1, description: 'Быстро подтвердить, что сервис отвечает, и предложить отправить задание.', applicability: 'Самостоятельный вопрос о работоспособности самого помощника, в том числе короткий вопрос без названия компонента. Исключены диагностика Runner API, движка, инструментов и интеграций, дополнительные полезные задачи, чтение файлов и изменения данных.', instruction: 'Ответить ровно: Сервис работает! Отправляйте задание! Без вызова диагностических проверок.' },
   { id: 'catalog.brief', version: 1, description: 'Описать зарегистрированные возможности и выданный доступ к интеграциям из каталога и прав профиля.', applicability: 'Только вопрос о возможностях. Исключены просьбы выполнить работу, проверить файл, создать или изменить данные.', instruction: 'Показать разрешённые записи каталога; подключение и права не считать проверкой работоспособности внешних инструментов.' },
 ] as const;
 
@@ -381,19 +381,7 @@ export async function routeCommunicationV1(input: RoutingInput, deps: Communicat
     decision.replyAllowed = true;
     decision.outcome = 'reply';
     if (selected === 'system_health') {
-      let health: Awaited<ReturnType<CommunicationV1Deps['health']>>;
-      try { health = await deps.health(); } catch { health = { runner: 'unknown', checkedAt: new Date().toISOString() }; }
-      const labels = { reachable: 'доступен', unreachable: 'недоступен', not_configured: 'не настроен', unknown: 'проверка не завершена' };
-      const watcherLabels: Record<WatcherStatus, string> = { ok: 'в норме', degraded: 'деградирован', failing: 'со сбоями', not_configured: 'не настроен' };
-      const report: SystemHealthReport = {
-        runner: health.runner,
-        watcher: health.watcher ?? 'not_configured',
-        openIncidents: health.openIncidents ?? 0,
-        staleSources: health.staleSources ?? [],
-      };
-      const reasons = health.watcherReasons ?? [];
-      const watcherText = `${watcherLabels[report.watcher]}; открытых инцидентов: ${report.openIncidents}${report.staleSources.length ? `; устаревшие источники: ${report.staleSources.join(', ')}` : ''}${reasons.length ? `; причины: ${reasons.join('; ')}` : ''}`;
-      reply = { text: `Проверка ${health.checkedAt}: control plane отвечает, Task Store прочитан; Runner API — ${labels[health.runner]}; Error Watcher — ${watcherText}. Готовность движка, инструментов и доставка в канал этой проверкой не подтверждены.`, evidenceRefs: [`task_store:${input.envelope.userTaskId}`, `runner_api:${health.runner}:${health.checkedAt}`, `error_watcher:${report.watcher}:${health.watcherAlarmId ?? health.checkedAt}`, `communication:resolve_user_intent:${bundleVersion}`], mode: 'deterministic-handler', health: report };
+      reply = { text: 'Сервис работает! Отправляйте задание!', evidenceRefs: [`task_store:${input.envelope.userTaskId}`, `communication:resolve_user_intent:${bundleVersion}`], mode: 'deterministic-handler' };
     } else {
       const entries = visible.map((entry) => `${entry.title} (${entry.id}): ${entry.integrationId ? (isIntegrationAllowed(input.authorization, entry.integrationId) ? 'доступ выдан; работоспособность интеграции не проверена' : 'требует подключения и выдачи доступа') : 'зарегистрировано в каталоге'}`);
       reply = { text: `Доступные quick answers: состояние системы и описание возможностей. Остальные задачи передаются агенту. Каталог ${input.catalog.version}:\n${entries.join('\n')}`, evidenceRefs: [`catalog:${input.catalog.version}`, input.authorization.snapshotRef], mode: 'deterministic-handler' };
