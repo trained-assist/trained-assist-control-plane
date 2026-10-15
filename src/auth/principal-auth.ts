@@ -47,9 +47,11 @@ export function principalAuthOf(env: Record<string, string | undefined>): Princi
     ? env.PRINCIPAL_SECRET_PRODUCTION_AGENT_SMOKE?.trim() : undefined;
   const productionRunnerIngressSecret = env.DEPLOYMENT_ENV === 'production'
     ? env.PRINCIPAL_SECRET_PRODUCTION_RUNNER_INGRESS?.trim() : undefined;
+  const chemistryGptSecret = env.DEPLOYMENT_ENV === 'production'
+    ? env.PRINCIPAL_SECRET_CHEMISTRY_GPT?.trim() : undefined;
   return {
     secret: secret ? secret : null,
-    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret || productionAgentSmokeSecret || productionRunnerIngressSecret ? { secretOverrides: {
+    ...(telegramUxSecret || sandbox3Secret || sandbox3OpsSecret || sandbox3RunnerSecret || integrationV1Secret || codexSmokeSecret || productionAgentSmokeSecret || productionRunnerIngressSecret || chemistryGptSecret ? { secretOverrides: {
       ...(telegramUxSecret ? { 'integration-telegram-ux-v1': telegramUxSecret } : {}),
       ...(sandbox3Secret ? { 'integration-sandbox3-v1': sandbox3Secret } : {}),
       ...(sandbox3OpsSecret ? { [SANDBOX3.diagnosticPrincipalId]: sandbox3OpsSecret } : {}),
@@ -58,6 +60,7 @@ export function principalAuthOf(env: Record<string, string | undefined>): Princi
       ...(codexSmokeSecret ? { 'sde-codex-smoke-v1': codexSmokeSecret } : {}),
       ...(productionAgentSmokeSecret ? { 'production-agent-smoke-v1': productionAgentSmokeSecret } : {}),
       ...(productionRunnerIngressSecret ? { 'production-runner-ingress-v1': productionRunnerIngressSecret } : {}),
+      ...(chemistryGptSecret ? { 'chemistry-gpt': chemistryGptSecret } : {}),
     } } : {}),
   };
 }
