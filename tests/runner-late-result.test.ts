@@ -33,6 +33,7 @@ describe('durable same-run result reconciliation', () => {
     const result = vi.fn(async () => ({ runId, userTaskId: taskId, profileId, ownerGeneration: 1,
       outcome: terminalState, exitReason: terminalState === 'failed' ? 'nonzero_exit' : 'completed',
       exitObserved: true, persistence: 'persisted', outputRefs: [],
+      ...(terminalState === 'succeeded' ? { text: 'late native answer' } : {}),
       ...(terminalState === 'failed' ? { failure: { code: 'ENGINE_NONZERO', safeSummary: 'fixture engine failed' } } : {}) }));
     const adapter = { submit, status, result,
       events: async () => ({ events: [], cursor: 0, hasMore: false }), artifacts: async () => [],

@@ -64,7 +64,7 @@ describe('CP routes admitted media as a pinned Runner ingress manifest', () => {
         runId: runnerRunId, userTaskId: taskId, profileId, ownerGeneration: 1,
         outcome: 'succeeded', exitReason: 'completed', exitCode: 0, exitSignal: null,
         exitObserved: true, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
-        usage: { status: 'unknown' }, outputRefs: [], persistence: 'not_required', cleanup: 'completed', logPath: null,
+        usage: { status: 'unknown' }, text: 'Audio summary', outputRefs: [], persistence: 'not_required', cleanup: 'completed', logPath: null,
       });
       if (path.endsWith('/events')) return Response.json({ events: [], cursor: 0, hasMore: false });
       if (path.endsWith('/artifacts')) return Response.json({ artifacts: [] });

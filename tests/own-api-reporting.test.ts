@@ -88,7 +88,7 @@ describe('reporting: текст движка и манифесты артефа�
     expect((snapshot.result as Record<string, unknown>)['mode']).toBe('engine');
   });
 
-  it('движок без текста: answer=null виден в отчёте, а не пустый ответ', async () => {
+  it('движок без текста и файлов: успешный exit не становится успешной задачей', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-report-no-text');
     await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'молча сделай работу' });
@@ -103,8 +103,9 @@ describe('reporting: текст движка и манифесты артефа�
     );
 
     const snapshot = await reportSnapshot(store, taskId);
-    expect(snapshot.status).toBe('done');
+    expect(snapshot.status).toBe('failed');
     expect(snapshot.answer).toBeNull();
+    expect((snapshot.result as Record<string, unknown>)['reason']).toBe('no_user_visible_outcome');
   });
 
   it('uses the normalized Runner API answer without knowing the worker engine name', async () => {
