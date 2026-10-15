@@ -414,6 +414,49 @@ describe('one-shot: RunSpec доходит до Runner целиком', () => {
 });
 
 describe('awaitRunnerResult: текст движка возвращается вместе с результатом', () => {
+  it('записывает завершённое промежуточное сообщение до терминального статуса и дедуплицирует повтор Runner event', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-live-assistant-message');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'проверь промежуточное сообщение' });
+    let polls = 0;
+    const message = {
+      eventId: 'run-live:3', runId: 'run-live', jobId: 'job-live', userTaskId: taskId,
+      profileId: 'profile-1', ownerGeneration: 1, sequence: 3, timestamp: new Date().toISOString(),
+      type: 'assistant_message', payload: {
+        sessionId: 'ses_01J9A3J9Y7V8W2K4M6N0PQRSTZ', messageId: 'msg_01J9A3J9Y7V8W2K4M6N0PQRSTZ',
+        text: 'Сейчас проверю репозиторий, затем выполню изменения.',
+      },
+    };
+    const adapter = {
+      async events() { return { runId: 'run-live', events: [message], cursor: 3, hasMore: false }; },
+      async status() {
+        polls += 1;
+        if (polls === 1) return { runId: 'run-live', userTaskId: taskId, conversationId: '', requestId: '', ownerGeneration: 1,
+          state: 'running', cancelRequested: false, connectionLost: false, observedAt: new Date().toISOString(), sequence: 3, fencing: { rejected: 0 } };
+        const live = (await store.history(taskId)).filter((event) => {
+          try { return (JSON.parse(event.payload_json) as { type?: string }).type === 'assistant_message'; } catch { return false; }
+        });
+        expect(live).toHaveLength(1);
+        return { runId: 'run-live', userTaskId: taskId, conversationId: '', requestId: '', ownerGeneration: 1,
+          state: 'succeeded', cancelRequested: false, connectionLost: false, observedAt: new Date().toISOString(), sequence: 3, fencing: { rejected: 0 } };
+      },
+      async result() { return { runId: 'run-live', userTaskId: taskId, profileId: 'profile-1', ownerGeneration: 1,
+        outcome: 'succeeded' as const, exitReason: 'completed', exitCode: 0, exitSignal: null, exitObserved: true,
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), usage: { status: 'unknown' as const },
+        outputRefs: [], persistence: 'not_required' as const, cleanup: 'completed' as const, logPath: '/logs/run-live' }; },
+      async artifacts() { return []; },
+    };
+    const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store,
+      { runId: 'run-live', taskId, generation: 1, pollSec: 1, timeoutSec: 5, declaredOutputPaths: [] });
+    if (!outcome.ok) throw new Error(`live message run failed: ${outcome.reason}`);
+    expect(outcome.ok).toBe(true);
+    const recorded = (await store.history(taskId)).filter((event) => {
+      try { return (JSON.parse(event.payload_json) as { type?: string }).type === 'assistant_message'; } catch { return false; }
+    });
+    expect(recorded).toHaveLength(1);
+    expect(JSON.parse(recorded[0]!.payload_json)).toMatchObject({ payload: message.payload, type: 'assistant_message' });
+  });
+
   it('engineText собирается из событий и не зависит от ответа человека', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-engine-text');

@@ -71,6 +71,12 @@ const RUNNER_EVENT_KIND: Record<string, TaskEventKind> = {
   connection_lost: 'error',
 };
 
+function stableEventId(event: RunnerEvent): string {
+  return typeof event.eventId === 'string' && event.eventId
+    ? event.eventId
+    : `${event.runId}:${event.sequence}:${event.type}`;
+}
+
 export async function awaitRunnerResult(
   adapter: RunnerApiAdapter,
   store: TaskStore,
@@ -78,8 +84,51 @@ export async function awaitRunnerResult(
 ): Promise<AwaitRunnerResult> {
   const pollSec = Math.max(1, opts.pollSec ?? 1);
   const deadline = Date.now() + (opts.timeoutSec ?? 120) * 1000;
+  let eventCursor = 0;
+  let eventsRecorded = 0;
+  const seenEvents: RunnerEvent[] = [];
+  const seenEventIds = new Set<string>();
 
   for (;;) {
+    // Persist structured assistant messages while the process is active. The
+    // stable Runner event ID makes this safe across Workflow retries/restarts.
+    try {
+      for (;;) {
+        const page = await adapter.events(opts.runId, eventCursor, 500);
+        for (const event of page.events) {
+          const eventId = stableEventId(event);
+          if (seenEventIds.has(eventId)) continue;
+          seenEventIds.add(eventId);
+          seenEvents.push(event);
+          await store.logEvent({
+            eventId: `runner:${opts.runId}:${eventId}`,
+            taskId: opts.taskId,
+            kind: RUNNER_EVENT_KIND[event.type] ?? 'progress',
+            executionId: event.runId,
+            source: 'executor',
+            generation: event.ownerGeneration,
+            payload: {
+              runId: event.runId,
+              eventId: event.eventId,
+              sequence: event.sequence,
+              type: event.type,
+              ownerGeneration: event.ownerGeneration,
+              at: event.timestamp,
+              ...(event.payload === undefined ? {} : { payload: event.payload }),
+            },
+          });
+          eventsRecorded += 1;
+        }
+        eventCursor = page.cursor;
+        if (!page.hasMore) break;
+      }
+    } catch (e) {
+      // The polling loop already treats temporary Runner unavailability as a
+      // separate state. A transient event endpoint failure must not terminate
+      // the workflow before the status read can establish whether the run lives.
+      if (!(e instanceof Error) || !/unreachable|HTTP_5|HTTP_429/.test(e.message)) throw e;
+    }
+
     let status: RunnerStatusView;
     try {
       status = await adapter.status(opts.runId);
@@ -99,7 +148,7 @@ export async function awaitRunnerResult(
     }
 
     if (['succeeded', 'failed', 'cancelled'].includes(status.state)) {
-      return finalize(adapter, store, opts, status);
+      return finalize(adapter, store, opts, status, { cursor: eventCursor, seenEvents, seenEventIds, eventsRecorded });
     }
 
     if (Date.now() >= deadline) return { ok: false, reason: 'runner_timeout' };
@@ -112,16 +161,22 @@ async function finalize(
   store: TaskStore,
   opts: AwaitRunnerResultOptions,
   status: RunnerStatusView,
+  prior: { cursor: number; seenEvents: RunnerEvent[]; seenEventIds: Set<string>; eventsRecorded: number },
 ): Promise<AwaitRunnerResult> {
-  // События по курсору: читаем с нуля, записываем в журнал с курсором в payload.
-  let cursor = 0;
-  let eventsRecorded = 0;
-  const seenEvents: RunnerEvent[] = [];
+  // Подбираем только события после последнего live poll; предыдущие уже
+  // записаны с тем же стабильным event ID и останутся дедуплицированными.
+  let cursor = prior.cursor;
+  let eventsRecorded = prior.eventsRecorded;
+  const seenEvents = prior.seenEvents;
   for (;;) {
     const page = await adapter.events(opts.runId, cursor, 500);
     for (const event of page.events) {
+      const eventId = stableEventId(event);
+      if (prior.seenEventIds.has(eventId)) continue;
+      prior.seenEventIds.add(eventId);
       seenEvents.push(event);
       await store.logEvent({
+        eventId: `runner:${opts.runId}:${eventId}`,
         taskId: opts.taskId,
         kind: RUNNER_EVENT_KIND[event.type] ?? 'progress',
         executionId: event.runId,

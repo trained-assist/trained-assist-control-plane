@@ -1483,6 +1483,7 @@ export class TaskStore {
    */
   async logEvent(e: {
     taskId: string;
+    eventId?: string | null;
     kind: TaskEventKind;
     step?: string | null;
     executionId?: string | null;
@@ -1495,10 +1496,11 @@ export class TaskStore {
   }): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO task_events(user_task_id, task_item_id, execution_id, kind, status_before, status_after, generation, source, payload_json, created_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT ${e.eventId ? 'OR IGNORE ' : ''}INTO task_events(event_id, user_task_id, task_item_id, execution_id, kind, status_before, status_after, generation, source, payload_json, created_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .bind(
+        e.eventId ?? null,
         e.taskId,
         e.step ?? null,
         e.executionId ?? null,
