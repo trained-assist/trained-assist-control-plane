@@ -116,8 +116,11 @@ export interface IngressManifestRef {
 }
 
 export interface ResumeSessionRef {
-  runId: string;
-  artifactId: string;
+  sourceRunId: string;
+  sessionId: string;
+  path: string;
+  sha256: string;
+  size: number;
 }
 
 export interface ResultPolicy {
@@ -477,8 +480,12 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if (input.conversationId !== null && (input.conversationId.length === 0 || input.conversationId.length > 200)) {
     fail('conversationId', 'conversationId: expected 1..200 chars or null');
   }
-  if (input.resumeSessionFrom && (!SAFE_ID.test(input.resumeSessionFrom.runId) || !SAFE_ID.test(input.resumeSessionFrom.artifactId))) {
-    fail('resumeSessionFrom', 'resumeSessionFrom: expected safe Runner run and artifact ids');
+  if (input.resumeSessionFrom && (!SAFE_ID.test(input.resumeSessionFrom.sourceRunId)
+    || !/^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(input.resumeSessionFrom.sessionId)
+    || input.resumeSessionFrom.path !== `.session-traces/${input.resumeSessionFrom.sessionId}.json`
+    || !/^[0-9a-f]{64}$/.test(input.resumeSessionFrom.sha256)
+    || !Number.isSafeInteger(input.resumeSessionFrom.size) || input.resumeSessionFrom.size < 0)) {
+    fail('resumeSessionFrom', 'resumeSessionFrom: expected a verified OpenCode session from the profile archive');
   }
   // Контракт Runner'а требует непустой conversationId. У headless-задачи его
   // нет — хост выводит стабильный scope из userTaskId (не из тела запроса).

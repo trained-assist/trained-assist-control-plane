@@ -19,11 +19,17 @@ const ctx: StepCtx = {
   },
 };
 
-const makeRunner = (opts: { stdout?: string[]; statusAnswer?: string; manifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string; mime: string }> } = {}) => {
+const makeRunner = (opts: {
+  stdout?: string[];
+  statusAnswer?: string;
+  manifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string; mime: string }>;
+  onSubmit?: (input: { userTaskId: string; runSpec?: { input?: unknown } }) => void;
+} = {}) => {
   const runId = nextId('run');
   const stdout = opts.stdout ?? ['Отчёт готов.'];
   const adapter = {
-    async submit(input: { userTaskId: string }) {
+    async submit(input: { userTaskId: string; runSpec?: { input?: unknown } }) {
+      opts.onSubmit?.(input);
       return { requestId: `req-${runId}`, userTaskId: input.userTaskId, runId, deduplicated: false };
     },
     async status() {
@@ -67,6 +73,33 @@ const makeRunner = (opts: { stdout?: string[]; statusAnswer?: string; manifests?
 };
 
 describe('reporting: текст движка и манифесты артефактов', () => {
+  it('pins the last same-task OpenCode session from the profile archive onto the next generation', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-resume-profile-checkpoint');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'continue after my answer' });
+    const first = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const checkpoint = {
+      sourceRunId: 'run_source_123',
+      sessionId: 'ses_01J5Y5H0AH4Q4NXJ6P4C3P5V2K',
+      path: '.session-traces/ses_01J5Y5H0AH4Q4NXJ6P4C3P5V2K.json',
+      sha256: 'a'.repeat(64),
+      size: 4096,
+    };
+    await env.DB.prepare('UPDATE executions SET session_id = ? WHERE id = ?').bind(checkpoint.sourceRunId, first.id).run();
+    await store.finishRun(first.id, 'success', { result: { checkpointWasArchived: true, sessionCheckpoint: checkpoint } });
+    await store.bumpGeneration(taskId, { reason: 'resume_after_checkpoint' });
+    const next = await store.startRun(taskId, { generation: 2, engine: 'opencode' });
+
+    let submitted: { userTaskId: string; runSpec?: { input?: unknown } } | undefined;
+    const { adapter } = makeRunner({ onSubmit: (input) => { submitted = input; } });
+    await conversationPlan(ctx, store, {
+      taskId, generation: 2, profileId: 'profile-1', runId: next.id,
+      goal: 'continue after my answer', runnerEngine: 'opencode', runnerPollSec: 1, runnerTimeoutSec: 30,
+    }, { adapter: adapter as unknown as RunnerApiAdapter });
+
+    expect(((submitted?.runSpec?.input ?? {}) as Record<string, unknown>)['resumeSessionFrom']).toEqual(checkpoint);
+  });
+
   it('отчёт отдаёт конечный текст движка отдельно от ответа человека', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-report-text');

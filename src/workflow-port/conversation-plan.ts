@@ -169,10 +169,21 @@ async function latestOpenCodeCheckpoint(store: TaskStore, taskId: string, genera
   for (const attempt of attempts) {
     if (!attempt.result_json) continue;
     try {
-      const decoded = JSON.parse(attempt.result_json) as { sessionCheckpoint?: { artifactId?: unknown } };
+      const decoded = JSON.parse(attempt.result_json) as { sessionCheckpoint?: {
+        sourceRunId?: unknown; sessionId?: unknown; path?: unknown; sha256?: unknown; size?: unknown;
+      } };
       const checkpoint = decoded.sessionCheckpoint;
-      if (checkpoint && typeof checkpoint.artifactId === 'string' && typeof attempt.session_id === 'string') {
-        return { runId: attempt.session_id, artifactId: checkpoint.artifactId };
+      if (checkpoint && typeof checkpoint.sourceRunId === 'string'
+        && typeof checkpoint.sessionId === 'string' && typeof checkpoint.path === 'string'
+        && typeof checkpoint.sha256 === 'string' && typeof checkpoint.size === 'number'
+        && checkpoint.path === `.session-traces/${checkpoint.sessionId}.json`) {
+        return {
+          sourceRunId: checkpoint.sourceRunId,
+          sessionId: checkpoint.sessionId,
+          path: checkpoint.path,
+          sha256: checkpoint.sha256,
+          size: checkpoint.size,
+        };
       }
     } catch {
       // Older attempt results may be non-JSON or predate session checkpoints.
@@ -353,7 +364,7 @@ export interface EngineRun {
   textSource: RunnerAnswer['source'];
   textVersion: RunnerAnswer['version'];
   answerSource: RunnerAnswer['answerSource'];
-  sessionCheckpoint?: { artifactId: string; sessionId: string; sha256: string; size: number };
+  sessionCheckpoint?: { sourceRunId: string; sessionId: string; path: string; sha256: string; size: number };
 }
 
 /**
