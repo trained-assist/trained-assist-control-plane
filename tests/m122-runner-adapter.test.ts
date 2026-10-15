@@ -4,7 +4,7 @@
 //  - connection_lost = НЕИЗВЕСТНЫЙ исход (не failed), без авто-rerun;
 //  - Runner недоступен -> задача не теряется, повтор безопасен.
 import { env } from './env';
-import { TaskStore } from '../src/taskstore';
+import { FencedError, TaskStore } from '../src/taskstore';
 import { awaitRunnerResult, RunnerApiAdapter, stableAttemptKey } from '../src/runner-adapter';
 import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
 import type { StepCtx } from '../src/workflow-port/step-ctx';
@@ -360,6 +360,37 @@ describe('Runner adapter: результат, курсор событий, ар�
     const task = await store.requireTask(taskId);
     expect(task.status).toBe('active');
     expect(task.generation).toBe(1);
+  });
+
+  it('one confirmed VM restart leaves the task active for a fenced replacement, then fails after the retry limit', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'resume after VM reboot' });
+    const adapter = {
+      async status() { return { state: 'failed', connectionLost: false }; },
+      async events() { return { events: [], cursor: 0, hasMore: false }; },
+      async result(runId: string) { return { runId, ownerGeneration: 1, outcome: 'failed', exitReason: 'worker_crash',
+        persistence: 'not_required', outputRefs: [], failure: { code: 'WORKER_CRASH', failureClass: 'runtime',
+          safeSummary: 'worker restarted while the run was active', retryable: true } }; },
+    } as unknown as RunnerApiAdapter;
+    const first = await store.startRun(taskId, { generation: 1, sessionId: nextId('run') });
+    expect(await awaitRunnerResult(adapter, store, { taskId, generation: 1, runId: first.session_id! }))
+      .toEqual({ ok: false, reason: 'worker_restart_pending' });
+    expect((await store.requireTask(taskId)).status).toBe('active');
+    expect(await store.workerRestartCandidates()).toContainEqual({ taskId, generation: 1, previousRunId: first.session_id });
+
+    const resumed = await store.resumeRun(taskId, { reason: 'worker_restart', expectedGeneration: 1 });
+    expect(resumed.generation).toBe(2);
+    await expect(store.resumeRun(taskId, { reason: 'worker_restart', expectedGeneration: 1 }))
+      .rejects.toBeInstanceOf(FencedError);
+    expect(await store.workerRestartCandidates()).not.toContainEqual({ taskId, generation: 1, previousRunId: first.session_id });
+    await store.attachRunnerRun(resumed.run.id, nextId('run'), {
+      ownerGeneration: 2, idempotencyKey: await stableAttemptKey(taskId, 2),
+    });
+    const second = await store.requireRun(resumed.run.id);
+    expect(await awaitRunnerResult(adapter, store, { taskId, generation: 2, runId: second.session_id! }))
+      .toEqual({ ok: false, reason: 'runner_failed' });
+    expect((await store.requireTask(taskId)).status).toBe('failed');
   });
 
   it('Runner недоступен: задача не теряется, повтор с тем же ключом безопасен', async () => {

@@ -6,6 +6,7 @@
   "compatibility_flags": ["global_fetch_strictly_public"],
   "workers_dev": true,
   "observability": { "enabled": true },
+  "triggers": { "crons": ["* * * * *"] },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "ta-sandbox3-taskstore",

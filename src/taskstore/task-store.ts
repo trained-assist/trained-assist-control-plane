@@ -898,6 +898,19 @@ export class TaskStore {
     return res.results;
   }
 
+  /** Terminal Runner proof with a live task: a fresh generation may retry it once. */
+  async workerRestartCandidates(limit = 10): Promise<Array<{ taskId: string; generation: number; previousRunId: string }>> {
+    const res = await this.db.prepare(`
+      SELECT t.id AS taskId, t.generation, e.session_id AS previousRunId
+      FROM durable_tasks t JOIN executions e ON e.task_id = t.id AND e.generation = t.generation
+      WHERE t.status = 'active' AND e.status = 'failed' AND e.error_class = 'WORKER_CRASH'
+        AND e.session_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM executions newer WHERE newer.task_id = t.id AND newer.generation > e.generation)
+      ORDER BY e.finished_at ASC LIMIT ?
+    `).bind(limit).all<{ taskId: string; generation: number; previousRunId: string }>();
+    return res.results;
+  }
+
   /** Активная (running) попытка задачи — для cancel/stop. */
   async activeRun(taskId: string): Promise<RunAttemptRow | null> {
     const res = await this.db
@@ -1038,13 +1051,15 @@ export class TaskStore {
       sessionId?: string | null;
       leaseSec?: number;
       previousRunId?: string | null;
+      expectedGeneration?: number;
     } = {},
   ): Promise<{ run: RunAttemptRow; generation: number }> {
     const task = await this.requireTask(taskId);
     if (isTerminalStatus(task.status)) {
       throw new TaskStoreError(`cannot resume terminal task ${taskId} (${task.status})`, taskId);
     }
-    const generation = await this.bumpGeneration(taskId, { reason: opts.reason ?? 'resume', source: 'gateway' });
+    const generation = await this.bumpGeneration(taskId, { reason: opts.reason ?? 'resume', source: 'gateway',
+      expectedGeneration: opts.expectedGeneration });
     const run = await this.startRun(taskId, {
       generation,
       engine: opts.engine ?? null,
@@ -1908,7 +1923,7 @@ export class TaskStore {
    * Новое поколение записавшего (lease истёк, ручное возобновление).
    * Терминальной задаче поколение не поднимается.
    */
-  async bumpGeneration(taskId: string, opts: { status?: TaskStatus; source?: EventSource; reason?: string } = {}): Promise<number> {
+  async bumpGeneration(taskId: string, opts: { status?: TaskStatus; source?: EventSource; reason?: string; expectedGeneration?: number } = {}): Promise<number> {
     const now = Date.now();
     const before = await this.requireTask(taskId);
     if (isTerminalStatus(before.status)) {
@@ -1918,12 +1933,15 @@ export class TaskStore {
       this.db
         .prepare(
           `UPDATE durable_tasks SET generation = generation + 1, status = COALESCE(?, status), updated_at = ?, revision = revision + 1
-           WHERE id = ? AND ${NON_TERMINAL_SQL}`,
+           WHERE id = ? AND ${NON_TERMINAL_SQL} AND (? IS NULL OR generation = ?)`,
         )
-        .bind(opts.status ?? null, now, taskId),
+        .bind(opts.status ?? null, now, taskId, opts.expectedGeneration ?? null, opts.expectedGeneration ?? null),
     ]);
     if (results[0]!.meta.changes !== 1) {
       const row = await this.requireTask(taskId);
+      if (opts.expectedGeneration !== undefined && row.generation !== opts.expectedGeneration) {
+        throw new FencedError(taskId, opts.expectedGeneration, row.generation);
+      }
       throw new TerminalStateError(taskId, row.status, opts.status);
     }
     const after = await this.requireTask(taskId);
