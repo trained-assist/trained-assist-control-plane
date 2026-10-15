@@ -1,3 +1,4 @@
+import type { AcceptedAgentInput } from '../run-spec/agent-input';
 // Репозиторий Task Store (ARCHITECTURE §4.1, TASK-STORE-SCHEMA-V1 §5).
 //
 // Три правила, которые держит этот слой:
@@ -1511,6 +1512,24 @@ export class TaskStore {
         e.at ?? Date.now(),
       )
       .run();
+  }
+
+  async saveAcceptedAgentInput(input: AcceptedAgentInput): Promise<void> {
+    await this.db.prepare(`INSERT OR IGNORE INTO task_events
+      (event_id, user_task_id, kind, generation, source, payload_json, created_at)
+      VALUES (?, ?, 'progress', ?, 'executor', ?, ?)`)
+      .bind(`agent-input:${input.taskId}:${input.runId}`, input.taskId, input.generation,
+        JSON.stringify({ event: 'agent_input.accepted', input }), Date.now()).run();
+  }
+
+  async acceptedAgentInputs(taskId: string): Promise<AcceptedAgentInput[]> {
+    const rows = await this.db.prepare(`SELECT payload_json FROM task_events
+      WHERE user_task_id = ? AND event_id LIKE 'agent-input:%' AND source = 'executor' ORDER BY id`)
+      .bind(taskId).all<{ payload_json: string }>();
+    return rows.results.flatMap(row => {
+      const payload = JSON.parse(row.payload_json) as { event?: string; input?: AcceptedAgentInput };
+      return payload.event === 'agent_input.accepted' && payload.input?.taskId === taskId ? [payload.input] : [];
+    });
   }
 
   async history(taskId: string): Promise<TaskEventRow[]> {

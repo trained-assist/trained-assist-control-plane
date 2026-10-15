@@ -27,12 +27,29 @@ describe('text-only native persistence contract', () => {
     }, { adapter, runSpecPolicy: defaultRunSpecPolicy() })).resolves.toEqual({ ok: false, reason: 'runner_request_invalid' });
 
     expect(submit).not.toHaveBeenCalled();
+    expect(await store.acceptedAgentInputs(taskId)).toEqual([]);
     expect(await store.requireTask(taskId)).toMatchObject({ status: 'failed', stage: 'finished' });
     expect(await store.requireRun(attempt.id)).toMatchObject({ status: 'failed', error_class: 'runner_request_invalid' });
     expect(await store.history(taskId)).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'error' }),
       expect.objectContaining({ status_after: 'failed' }),
     ]));
+  });
+
+  it.each([409, 503])('does not publish an input when Runner admission returns HTTP %s', async status => {
+    const store = new TaskStore(env.DB);
+    const taskId = `ut-no-admission-${crypto.randomUUID()}`;
+    await store.admitTask({ id: taskId, profileId: 'fixture-profile', goal: 'A task whose admission is unconfirmed' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'agent_api' });
+    const adapter = new RunnerApiAdapter('https://runner.example.test', 'fixture-key',
+      async () => Response.json({ error: 'unavailable' }, { status }));
+    const context: StepCtx = { step: async (_name, callback) => callback({ attempt: 1 }),
+      sleep: async () => {}, waitFor: async () => { throw new Error('Unexpected wait'); } };
+    const run = conversationPlan(context, store, { taskId, profileId: 'fixture-profile', generation: 1,
+      runId: attempt.id, runnerEngine: 'agent_api' }, { adapter, runSpecPolicy: defaultRunSpecPolicy() });
+    if (status === 409) await expect(run).resolves.toEqual({ ok: false, reason: 'runner_rejected' });
+    else await expect(run).rejects.toThrow();
+    expect(await store.acceptedAgentInputs(taskId)).toEqual([]);
   });
 
   it.each([
@@ -56,6 +73,7 @@ describe('text-only native persistence contract', () => {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-key');
       if (path === '/v1/runs') {
         const body = JSON.parse(String(init?.body));
+        expect(await store.acceptedAgentInputs(taskId)).toEqual([]);
         submit(body);
         expect(body.outputs ?? []).toEqual(declared ? [{ path: 'outputs/required.csv' }] : []);
         return Response.json({ requestId: 'fixture-request', userTaskId: taskId, runId, deduplicated: false });
@@ -98,6 +116,9 @@ describe('text-only native persistence contract', () => {
       outputs: declared ? [] : [{ path: 'outputs/new-policy.csv' }] } };
     expect((await conversationPlan(context, store, params, changedHostPolicy)).ok).toBe(ok);
     expect(submit).toHaveBeenCalledOnce();
+    const snapshots = await store.acceptedAgentInputs(taskId);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({ runId, generation: 1, taskId, input: submit.mock.calls[0]![0].input });
     const task = await store.requireTask(taskId);
     expect(task).toMatchObject({ status: ok ? 'done' : 'failed', generation: 1 });
     const result = JSON.parse(task.result_json!);
