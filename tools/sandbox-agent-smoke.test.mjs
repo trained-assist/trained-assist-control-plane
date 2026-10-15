@@ -33,7 +33,7 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
       assert.equal(runnerHeaders.get('x-agent-profile-sig'), runnerSignature);
       if (parsed.pathname.endsWith('/status')) return Response.json({ runId: 'run_sandbox_agent_1', state: 'succeeded' });
       if (parsed.pathname.endsWith('/events')) return Response.json({ events: [{ sequence: 4, type: 'completed', payload: { output: 'do not retain' } }] });
-      if (parsed.pathname.endsWith('/result')) return Response.json({ runId: 'run_sandbox_agent_1', outcome: 'succeeded', exitReason: 'completed' });
+      if (parsed.pathname.endsWith('/result')) return Response.json({ runId: 'run_sandbox_agent_1', outcome: 'succeeded', exitReason: 'completed', text: 'trained-assist-product-owner' });
     }
     const headers = new Headers(init.headers);
     assert.equal(headers.get('x-principal'), SANDBOX_AGENT_SMOKE.principal);
@@ -43,6 +43,7 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
       const body = JSON.parse(init.body);
       assert.equal(body.profileId, SANDBOX_AGENT_SMOKE.profile);
       assert.match(body.requestId, /^sandbox-agent-smoke-/);
+      assert.equal(body.inputItems[0].text, SANDBOX_AGENT_SMOKE.inputText);
       return Response.json({ durable: true, userTaskId: 'ut-sandbox-smoke', profileId: SANDBOX_AGENT_SMOKE.profile });
     }
     if (parsed.pathname === '/route') return Response.json({ route: 'agent', reasonCode: 'COMMUNICATION_SELECTED', continuation: { issued: true } });
@@ -65,6 +66,7 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
     assert.equal(report.executionWorker, 'eu-vm-agent-run');
     assert.equal(report.runnerApiBuildSha, 'b'.repeat(40));
     assert.equal(report.runnerState, 'succeeded');
+    assert.equal(report.expectedResultMatched, true);
     assert.equal(report.controlPlaneEventCount, 2);
     assert.equal(report.runnerEventCount, 1);
     assert.equal(report.workerTailCapture, 'captured');
