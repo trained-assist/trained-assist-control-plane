@@ -69,6 +69,10 @@ test('sandbox agent smoke checks profile route and captures only the Runner even
     assert.equal(report.expectedResultMatched, true);
     assert.equal(report.controlPlaneEventCount, 2);
     assert.equal(report.runnerEventCount, 1);
+    assert.deepEqual(report.runnerOutputEvidence, {
+      stdoutChars: 0, stderrChars: 0, identityToolNameObserved: false, expectedUserIdObserved: false,
+    });
+    assert.equal(report.runnerResultTextChars, 'trained-assist-product-owner'.length);
     assert.equal(report.workerTailCapture, 'captured');
     assert.deepEqual(paths, ['/healthz', '/intake', '/route', '/status', '/events']);
     const saved = readFileSync(reportFile, 'utf8');

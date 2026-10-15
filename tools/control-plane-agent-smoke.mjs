@@ -201,8 +201,19 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
   if (status.runId !== report.runnerRunId || !['queued', 'starting', 'running', 'succeeded', 'failed', 'cancelled', 'unknown'].includes(status.state)) fail('runner_status_mapping_mismatch');
   const eventsPage = await runnerRequest(`/v1/runs/${encodedRunId}/events?cursor=0&limit=500`);
   if (!Array.isArray(eventsPage.events)) fail('runner_event_tail_invalid');
+  const runnerOutput = eventsPage.snapshot?.output && typeof eventsPage.snapshot.output === 'object'
+    ? eventsPage.snapshot.output : {};
+  const stdout = typeof runnerOutput.stdout === 'string' ? runnerOutput.stdout : '';
+  const stderr = typeof runnerOutput.stderr === 'string' ? runnerOutput.stderr : '';
   report.runnerState = status.state;
   report.runnerEventCount = eventsPage.events.length;
+  report.runnerOutputEvidence = {
+    stdoutChars: stdout.length,
+    stderrChars: stderr.length,
+    identityToolNameObserved: `${stdout}\n${stderr}`.includes('mem_gpt_identity_whoami'),
+    expectedUserIdObserved: typeof expectedRunnerResultIncludes === 'string'
+      && `${stdout}\n${stderr}`.includes(expectedRunnerResultIncludes),
+  };
   report.runnerEventTail = eventsPage.events.slice(-20).map(event => ({
     sequence: Number.isSafeInteger(event.sequence) ? event.sequence : null,
     type: safeCode(event.type),
@@ -221,8 +232,10 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
   report.runnerOutcome = result.outcome;
   report.runnerExitReason = safeCode(result.exitReason);
   if (status.state === 'succeeded' && result.outcome === 'succeeded' && typeof expectedRunnerResultIncludes === 'string') {
-    report.expectedResultMatched = typeof result.text === 'string' && result.text.includes(expectedRunnerResultIncludes);
-    if (!report.expectedResultMatched) fail('expected_runner_result_missing');
+    const answer = typeof result.text === 'string' ? result.text : '';
+    report.runnerResultTextChars = answer.length;
+    report.expectedResultMatched = answer.includes(expectedRunnerResultIncludes);
+    if (!report.expectedResultMatched) fail(answer ? 'expected_runner_result_mismatch' : 'expected_runner_result_empty');
   }
   return status.state === 'succeeded' && result.outcome === 'succeeded';
 }
