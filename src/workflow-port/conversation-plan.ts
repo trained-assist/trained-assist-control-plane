@@ -158,35 +158,49 @@ function attachmentRefsOf(userValue: string | null): { ref: string; version?: st
 }
 
 /**
- * Recover the most recent verified OpenCode transcript for this same durable task.
- * The checkpoint is just an artifact reference: the bytes stay in Runner/GCS and
- * Runner revalidates task/profile ownership before importing them.
+ * Recover the most recent verified OpenCode transcript for this task, or for an
+ * earlier completed task in the same durable conversation. The checkpoint is
+ * only an artifact reference: bytes stay in Runner/GCS and Runner revalidates
+ * archive ownership/integrity before importing them.
  */
 async function latestOpenCodeCheckpoint(store: TaskStore, taskId: string, generation: number) {
-  const attempts = (await store.listRuns(taskId))
-    .filter((run) => run.generation < generation && run.status === 'success' && run.session_id)
-    .sort((first, second) => second.generation - first.generation || second.started_at - first.started_at);
-  for (const attempt of attempts) {
-    if (!attempt.result_json) continue;
-    try {
-      const decoded = JSON.parse(attempt.result_json) as { sessionCheckpoint?: {
-        sourceRunId?: unknown; sessionId?: unknown; path?: unknown; sha256?: unknown; size?: unknown;
-      } };
-      const checkpoint = decoded.sessionCheckpoint;
-      if (checkpoint && typeof checkpoint.sourceRunId === 'string'
-        && typeof checkpoint.sessionId === 'string' && typeof checkpoint.path === 'string'
-        && typeof checkpoint.sha256 === 'string' && typeof checkpoint.size === 'number'
-        && checkpoint.path === `.session-traces/${checkpoint.sessionId}.json`) {
-        return {
-          sourceRunId: checkpoint.sourceRunId,
-          sessionId: checkpoint.sessionId,
-          path: checkpoint.path,
-          sha256: checkpoint.sha256,
-          size: checkpoint.size,
-        };
+  const current = await store.getTask(taskId);
+  if (!current) return null;
+  const conversationTasks = current.conversation_id
+    ? await store.tasksByConversation(current.conversation_id)
+    : [current];
+  const priorTasks = conversationTasks
+    .filter((task) => task.profile_id === current.profile_id
+      && (task.id === current.id || (task.status === 'done' && task.created_at < current.created_at)))
+    .sort((first, second) => second.created_at - first.created_at || second.id.localeCompare(first.id));
+
+  for (const task of priorTasks) {
+    const attempts = (await store.listRuns(task.id))
+      .filter((run) => run.status === 'success' && run.session_id
+        && (task.id !== current.id || run.generation < generation))
+      .sort((first, second) => second.generation - first.generation || second.started_at - first.started_at);
+    for (const attempt of attempts) {
+      if (!attempt.result_json) continue;
+      try {
+        const decoded = JSON.parse(attempt.result_json) as { sessionCheckpoint?: {
+          sourceRunId?: unknown; sessionId?: unknown; path?: unknown; sha256?: unknown; size?: unknown;
+        } };
+        const checkpoint = decoded.sessionCheckpoint;
+        if (checkpoint && typeof checkpoint.sourceRunId === 'string' && checkpoint.sourceRunId === attempt.session_id
+          && typeof checkpoint.sessionId === 'string' && typeof checkpoint.path === 'string'
+          && typeof checkpoint.sha256 === 'string' && typeof checkpoint.size === 'number'
+          && checkpoint.path === `.session-traces/${checkpoint.sessionId}.json`) {
+          return {
+            sourceRunId: checkpoint.sourceRunId,
+            sessionId: checkpoint.sessionId,
+            path: checkpoint.path,
+            sha256: checkpoint.sha256,
+            size: checkpoint.size,
+          };
+        }
+      } catch {
+        // Older attempt results may be non-JSON or predate session checkpoints.
       }
-    } catch {
-      // Older attempt results may be non-JSON or predate session checkpoints.
     }
   }
   return null;

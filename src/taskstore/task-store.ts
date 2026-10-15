@@ -432,7 +432,7 @@ export class TaskStore {
 
   async tasksByConversation(conversationId: string): Promise<TaskRow[]> {
     const res = await this.db
-      .prepare(`SELECT * FROM durable_tasks WHERE conversation_id = ? ORDER BY created_at`)
+      .prepare(`SELECT * FROM durable_tasks WHERE conversation_id = ? ORDER BY created_at, id`)
       .bind(conversationId)
       .all<TaskRow>();
     return res.results;

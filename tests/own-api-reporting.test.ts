@@ -100,6 +100,38 @@ describe('reporting: текст движка и манифесты артефа�
     expect(((submitted?.runSpec?.input ?? {}) as Record<string, unknown>)['resumeSessionFrom']).toEqual(checkpoint);
   });
 
+  it('resumes the latest successful checkpoint from the previous completed task in the same conversation', async () => {
+    const store = new TaskStore(env.DB);
+    const conversationId = `tg-followup-${Date.now()}-${++seq}`;
+    const previousTaskId = nextId('ut-followup-previous');
+    await store.admitTask({ id: previousTaskId, profileId: 'profile-1', goal: 'first request', conversationId });
+    await env.DB.prepare('UPDATE durable_tasks SET created_at = ? WHERE id = ?').bind(Date.now() - 60_000, previousTaskId).run();
+    const previousRun = await store.startRun(previousTaskId, { generation: 1, engine: 'opencode' });
+    const checkpoint = {
+      sourceRunId: 'run_previous_task',
+      sessionId: 'ses_01J5Y5H0AH4Q4NXJ6P4C3P5V2K',
+      path: '.session-traces/ses_01J5Y5H0AH4Q4NXJ6P4C3P5V2K.json',
+      sha256: 'b'.repeat(64),
+      size: 8192,
+    };
+    await env.DB.prepare('UPDATE executions SET session_id = ? WHERE id = ?').bind(checkpoint.sourceRunId, previousRun.id).run();
+    await store.finishRun(previousRun.id, 'success', { result: { checkpointWasArchived: true, sessionCheckpoint: checkpoint } });
+    await store.commit(previousTaskId, 1, { status: 'done', stage: 'finished', step: 'test-complete', result: { answer: 'done' } });
+
+    const taskId = nextId('ut-followup-next');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'continue that request', conversationId });
+    const currentRun = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    let submitted: { userTaskId: string; runSpec?: { input?: unknown } } | undefined;
+    const { adapter } = makeRunner({ onSubmit: (input) => { submitted = input; } });
+
+    await conversationPlan(ctx, store, {
+      taskId, generation: 1, profileId: 'profile-1', runId: currentRun.id,
+      goal: 'continue that request', runnerEngine: 'opencode', runnerPollSec: 1, runnerTimeoutSec: 30,
+    }, { adapter: adapter as unknown as RunnerApiAdapter });
+
+    expect(((submitted?.runSpec?.input ?? {}) as Record<string, unknown>)['resumeSessionFrom']).toEqual(checkpoint);
+  });
+
   it('отчёт отдаёт конечный текст движка отдельно от ответа человека', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-report-text');
