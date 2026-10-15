@@ -72,6 +72,14 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
+  it('passes a host-derived OpenCode checkpoint ref without putting session bytes in the RunSpec', () => {
+    const resumeSessionFrom = { runId: 'run_ut-abc123_0', artifactId: 'art-0123456789abcdef01234567' };
+    const built = buildRunSpec({ ...baseInput, resumeSessionFrom }, policy);
+    expect(built.spec.input?.resumeSessionFrom).toEqual(resumeSessionFrom);
+    expect(toSubmitRequest(built.spec).input?.resumeSessionFrom).toEqual(resumeSessionFrom);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
   it('passes the CP-pinned ingress manifest separately from workspace snapshot refs', () => {
     const built = buildRunSpec({ ...baseInput, inputManifest: {
       manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64),

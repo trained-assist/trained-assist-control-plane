@@ -157,6 +157,30 @@ function attachmentRefsOf(userValue: string | null): { ref: string; version?: st
   }
 }
 
+/**
+ * Recover the most recent verified OpenCode transcript for this same durable task.
+ * The checkpoint is just an artifact reference: the bytes stay in Runner/GCS and
+ * Runner revalidates task/profile ownership before importing them.
+ */
+async function latestOpenCodeCheckpoint(store: TaskStore, taskId: string, generation: number) {
+  const attempts = (await store.listRuns(taskId))
+    .filter((run) => run.generation < generation && run.status === 'success' && run.session_id)
+    .sort((first, second) => second.generation - first.generation || second.started_at - first.started_at);
+  for (const attempt of attempts) {
+    if (!attempt.result_json) continue;
+    try {
+      const decoded = JSON.parse(attempt.result_json) as { sessionCheckpoint?: { artifactId?: unknown } };
+      const checkpoint = decoded.sessionCheckpoint;
+      if (checkpoint && typeof checkpoint.artifactId === 'string' && typeof attempt.session_id === 'string') {
+        return { runId: attempt.session_id, artifactId: checkpoint.artifactId };
+      }
+    } catch {
+      // Older attempt results may be non-JSON or predate session checkpoints.
+    }
+  }
+  return null;
+}
+
 async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
   const { taskId, generation } = p;
   const current = await store.getTask(taskId);
@@ -329,6 +353,7 @@ export interface EngineRun {
   textSource: RunnerAnswer['source'];
   textVersion: RunnerAnswer['version'];
   answerSource: RunnerAnswer['answerSource'];
+  sessionCheckpoint?: { artifactId: string; sessionId: string; sha256: string; size: number };
 }
 
 /**
@@ -389,7 +414,10 @@ async function finalizeRun(
       },
     }),
   );
-  if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', { result });
+  if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', {
+    result,
+    ...(engine?.sessionCheckpoint ? { sessionCheckpoint: engine.sessionCheckpoint } : {}),
+  });
 
   return { ok, answer: result.answer };
 }
@@ -525,6 +553,9 @@ export async function conversationPlan(
     const runSpecPolicy = p.mcpDescriptor ? { ...baseRunSpecPolicy, mcp: p.mcpDescriptor } : baseRunSpecPolicy;
     const attemptKey = await stableAttemptKey(taskId, generation);
     const inputManifest = current ? await inputManifestForTask(current) : null;
+    const resumeSessionFrom = p.runnerEngine === 'agent_api'
+      ? null
+      : await latestOpenCodeCheckpoint(store, taskId, generation);
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
@@ -539,6 +570,7 @@ export async function conversationPlan(
           engineName: p.runnerEngine ?? 'opencode',
           prompt: p.goal ?? current?.goal ?? '',
           refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
+          resumeSessionFrom,
           inputManifest: inputManifest ? {
             manifestRef: inputManifest.manifestRef,
             manifestVersion: inputManifest.manifestVersion,
@@ -790,6 +822,7 @@ export async function conversationPlan(
       exitReason: runnerResult.exitReason,
       runId: runnerResult.runId,
       ownerGeneration: runnerResult.ownerGeneration,
+      ...(runnerResult.sessionCheckpoint ? { sessionCheckpoint: runnerResult.sessionCheckpoint } : {}),
     };
   }
 
