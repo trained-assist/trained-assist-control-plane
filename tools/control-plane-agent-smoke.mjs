@@ -229,7 +229,7 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
   report.runnerOutputEvidence = {
     stdoutChars: stdout.length,
     stderrChars: stderr.length,
-    identityToolNameObserved: `${stdout}\n${stderr}`.includes('mem_gpt_identity_whoami'),
+    identityToolNameObserved: `${stdout}\n${stderr}`.includes(expectedToolName ?? 'mem-gpt_identity_whoami'),
     expectedUserIdObserved: typeof expectedRunnerResultIncludes === 'string'
       && `${stdout}\n${stderr}`.includes(expectedRunnerResultIncludes),
     identityToolCallCount: toolCalls.length,

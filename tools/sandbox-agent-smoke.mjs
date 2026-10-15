@@ -12,8 +12,8 @@ export const SANDBOX_AGENT_SMOKE = {
   runnerTenant: 'telegram-ux-sandbox-20261009',
   runnerProfile: 'integration-telegram-ux-v1',
   expectedExecutionWorker: 'eu-vm-agent-run',
-  inputText: 'Call the OpenCode MCP tool mem_gpt_identity_whoami (server mem-gpt, MCP tool identity.whoami). Reply with exactly the returned userId and nothing else. Do not guess the userId; if the tool call fails, say so.',
-  expectedToolName: 'mem_gpt_identity_whoami',
+  inputText: 'Call the OpenCode MCP tool mem-gpt_identity_whoami (server mem-gpt, MCP tool identity.whoami). Reply with exactly the returned userId and nothing else. Do not guess the userId; if the tool call fails, say so.',
+  expectedToolName: 'mem-gpt_identity_whoami',
   expectedRunnerResultIncludes: 'trained-assist-product-owner',
 };
 
