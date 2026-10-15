@@ -157,6 +157,39 @@ function attachmentRefsOf(userValue: string | null): { ref: string; version?: st
   }
 }
 
+/** Recover only this task's previous-generation transcript. Cross-task session
+ * continuation is intentionally out of scope: a follow-up is a new run whose
+ * prompt and chat context can use the existing MCP conversation history.
+ */
+async function latestOpenCodeCheckpoint(store: TaskStore, taskId: string, generation: number) {
+  const attempts = (await store.listRuns(taskId))
+    .filter((run) => run.status === 'success' && run.engine === 'opencode' && run.session_id && run.generation < generation)
+    .sort((first, second) => second.generation - first.generation || second.started_at - first.started_at);
+  const attempt = attempts[0];
+  if (!attempt) return null;
+  try {
+    const decoded = attempt.result_json ? JSON.parse(attempt.result_json) as { sessionCheckpoint?: {
+      sourceRunId?: unknown; sessionId?: unknown; path?: unknown; sha256?: unknown; size?: unknown;
+    } } : {};
+    const checkpoint = decoded.sessionCheckpoint;
+    if (checkpoint && typeof checkpoint.sourceRunId === 'string' && checkpoint.sourceRunId === attempt.session_id
+      && typeof checkpoint.sessionId === 'string' && typeof checkpoint.path === 'string'
+      && typeof checkpoint.sha256 === 'string' && typeof checkpoint.size === 'number'
+      && checkpoint.path === `.session-traces/${checkpoint.sessionId}.json`) {
+      return {
+        sourceRunId: checkpoint.sourceRunId,
+        sessionId: checkpoint.sessionId,
+        path: checkpoint.path,
+        sha256: checkpoint.sha256,
+        size: checkpoint.size,
+      };
+    }
+  } catch {
+    // Older attempt results may be non-JSON or predate session checkpoints.
+  }
+  throw new RunSpecMappingError('The previous OpenCode session has no verified archive checkpoint', 'resumeSessionFrom');
+}
+
 async function handleWaitTimeout(store: TaskStore, p: PlanParams): Promise<PlanOutcome> {
   const { taskId, generation } = p;
   const current = await store.getTask(taskId);
@@ -329,6 +362,7 @@ export interface EngineRun {
   textSource: RunnerAnswer['source'];
   textVersion: RunnerAnswer['version'];
   answerSource: RunnerAnswer['answerSource'];
+  sessionCheckpoint?: { sourceRunId: string; sessionId: string; path: string; sha256: string; size: number };
 }
 
 /**
@@ -389,7 +423,10 @@ async function finalizeRun(
       },
     }),
   );
-  if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', { result });
+  if (p.runId) await store.finishRun(p.runId, ok ? 'success' : 'failed', {
+    result,
+    ...(engine?.sessionCheckpoint ? { sessionCheckpoint: engine.sessionCheckpoint } : {}),
+  });
 
   return { ok, answer: result.answer };
 }
@@ -525,11 +562,15 @@ export async function conversationPlan(
     const runSpecPolicy = p.mcpDescriptor ? { ...baseRunSpecPolicy, mcp: p.mcpDescriptor } : baseRunSpecPolicy;
     const attemptKey = await stableAttemptKey(taskId, generation);
     const inputManifest = current ? await inputManifestForTask(current) : null;
+    let resumeSessionFrom: Awaited<ReturnType<typeof latestOpenCodeCheckpoint>> = null;
     // Versioned mapping Task input → RunSpec: единственная точка сборки тела
     // submit. Идентичность и профиль — из записи в Task Store (хост), вложения —
     // из envelope приёма, cwd/env/outputs/MCP/repository — из хостовой политики.
     let runSpec: ReturnType<typeof buildRunSpec>;
     try {
+      resumeSessionFrom = p.runnerEngine === 'agent_api'
+        ? null
+        : await latestOpenCodeCheckpoint(store, taskId, generation);
       runSpec = buildRunSpec(
         {
           userTaskId: taskId,
@@ -539,6 +580,7 @@ export async function conversationPlan(
           engineName: p.runnerEngine ?? 'opencode',
           prompt: p.goal ?? current?.goal ?? '',
           refs: inputManifest ? [] : attachmentRefsOf(current?.user_value ?? null),
+          resumeSessionFrom,
           inputManifest: inputManifest ? {
             manifestRef: inputManifest.manifestRef,
             manifestVersion: inputManifest.manifestVersion,
@@ -551,21 +593,23 @@ export async function conversationPlan(
       );
     } catch (error) {
       if (!(error instanceof RunSpecMappingError)) throw error;
+      const errorClass = error.field === 'resumeSessionFrom'
+        ? 'opencode_resume_checkpoint_unavailable' : 'runner_request_invalid';
       // Mapping is deterministic and happens before runner_submit_started, so
       // there can be no external execution to reconcile. Persist a terminal
       // failure instead of leaving the Workflow errored and task active forever.
       if (p.runId) {
-        await store.finishRun(p.runId, 'failed', { errorClass: 'runner_request_invalid', errorText: error.field });
+        await store.finishRun(p.runId, 'failed', { errorClass, errorText: error.message });
       }
       await store.logEvent({ taskId, generation, source: 'executor', kind: 'error', executionId: p.runId ?? null,
-        payload: { class: 'runner_request_invalid', field: error.field, runnerSubmitStarted: false } });
+        payload: { class: errorClass, field: error.field, runnerSubmitStarted: false } });
       const task = await store.requireTask(taskId);
       if (!isTerminalStatus(task.status)) {
         await store.commit(taskId, generation, { status: 'failed', stage: 'finished',
-          executionId: p.runId ?? null, step: 'run_spec', result: { ok: false, reason: 'runner_request_invalid' },
-          payload: { errorClass: 'runner_request_invalid', field: error.field } });
+          executionId: p.runId ?? null, step: 'run_spec', result: { ok: false, reason: errorClass },
+          payload: { errorClass, field: error.field } });
       }
-      return { ok: false, reason: 'runner_request_invalid' };
+      return { ok: false, reason: errorClass };
     }
     // Durable witness before the external side effect. If cancellation sees this
     // marker without an attached Runner runId, submission outcome is ambiguous.
@@ -790,6 +834,7 @@ export async function conversationPlan(
       exitReason: runnerResult.exitReason,
       runId: runnerResult.runId,
       ownerGeneration: runnerResult.ownerGeneration,
+      ...(runnerResult.sessionCheckpoint ? { sessionCheckpoint: runnerResult.sessionCheckpoint } : {}),
     };
   }
 

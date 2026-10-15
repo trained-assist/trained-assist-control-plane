@@ -134,8 +134,7 @@ describe('v1 routing', () => {
     const select = vi.fn(selection('system_health'));
     const result = await routeRequest(await routingInput(text), { communicationV1: { select, health: healthy } });
     expect(result.decision.capabilityId).toBe('system_health');
-    expect(result.reply?.text).toContain('Runner API — доступен');
-    expect(result.reply?.text).toContain('не подтверждены');
+    expect(result.reply?.text).toBe('Сервис доступен. Готов принимать задачи.');
     expect(select).toHaveBeenCalledTimes(1);
     const payload = select.mock.calls[0] as unknown as [Record<string, unknown>];
     expect((payload[0].decision_options as Array<{ id: string }>).map((entry) => entry.id)).toEqual(['system_health', 'catalog.brief', 'agent']);
@@ -541,14 +540,22 @@ describe('system_health: проба Error Watcher', () => {
     const health = async () => ({ runner: 'reachable' as const, checkedAt: '2026-10-05T10:00:00Z', watcher: 'degraded' as const, watcherAlarmId: 'alarm-7', watcherReasons: ['stale_source'], openIncidents: 3, staleSources: ['sheets-sync'] });
     const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select: selection('system_health'), health } });
     expect(result.reply?.health).toEqual({ runner: 'reachable', watcher: 'degraded', openIncidents: 3, staleSources: ['sheets-sync'] });
-    expect(result.reply?.text).toContain('Error Watcher — деградирован; открытых инцидентов: 3; устаревшие источники: sheets-sync; причины: stale_source');
+    expect(result.reply?.text).toBe('Сервис доступен. Готов принимать задачи.');
     expect(result.reply?.evidenceRefs).toContain('error_watcher:degraded:alarm-7');
+  });
+
+  it('does not expose runner diagnostics in the short user-facing availability reply', async () => {
+    const result = await routeRequest(await routingInput('Работает?'), {
+      communicationV1: { select: selection('system_health'), health: async () => ({ runner: 'unreachable' as const, checkedAt: '2026-10-15T07:26:35Z' }) },
+    });
+    expect(result.reply?.text).toBe('Сервис доступен. Готов принимать задачи.');
+    expect(result.reply?.health?.runner).toBe('unreachable');
   });
 
   it('без данных о вотчере снимок деградирует в not_configured', async () => {
     const result = await routeRequest(await routingInput('Работает?'), { communicationV1: { select: selection('system_health'), health: healthy } });
     expect(result.reply?.health).toEqual({ runner: 'reachable', watcher: 'not_configured', openIncidents: 0, staleSources: [] });
-    expect(result.reply?.text).toContain('Error Watcher — не настроен; открытых инцидентов: 0');
+    expect(result.reply?.text).toBe('Сервис доступен. Готов принимать задачи.');
   });
 
   it('через /route настроенный вотчер входит в ответ system_health', async () => {
@@ -560,7 +567,7 @@ describe('system_health: проба Error Watcher', () => {
     const body = await response.json() as { reply: { text: string; evidenceRefs: string[]; health?: SystemHealthReport } };
     expect(watcherFetch).toHaveBeenCalledTimes(1);
     expect(body.reply?.health).toEqual({ runner: 'not_configured', watcher: 'ok', openIncidents: 1, staleSources: ['sheets-sync'] });
-    expect(body.reply?.text).toContain('Error Watcher — в норме; открытых инцидентов: 1; устаревшие источники: sheets-sync');
+    expect(body.reply?.text).toBe('Сервис доступен. Готов принимать задачи.');
     expect(body.reply?.evidenceRefs.some((ref) => ref.startsWith('error_watcher:ok:'))).toBe(true);
   });
 
@@ -574,6 +581,6 @@ describe('system_health: проба Error Watcher', () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { reply: { text: string; health?: SystemHealthReport } };
     expect(body.reply?.health).toEqual({ runner: 'not_configured', watcher: 'not_configured', openIncidents: 0, staleSources: [] });
-    expect(body.reply?.text).toContain('Error Watcher — не настроен');
+    expect(body.reply?.text).toBe('Сервис доступен. Готов принимать задачи.');
   });
 });

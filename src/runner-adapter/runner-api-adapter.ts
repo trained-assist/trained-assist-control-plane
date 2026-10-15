@@ -69,6 +69,7 @@ export interface RunnerResult {
   failure?: { code: string; failureClass: string; safeSummary: string; retryable: boolean };
   usage: { status: 'unknown' } | { status: 'known'; usd: number };
   outputRefs: string[];
+  sessionCheckpoint?: { sourceRunId: string; sessionId: string; path: string; sha256: string; size: number };
   persistence: 'pending' | 'persisted' | 'failed' | 'not_required';
   persistenceReason?: string;
   cleanup: 'pending' | 'completed' | 'failed';

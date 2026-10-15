@@ -72,6 +72,17 @@ describe('run-spec: сборка по умолчанию', () => {
     expect(validateRunSpec(built.spec).ok).toBe(true);
   });
 
+  it('passes a host-derived OpenCode checkpoint ref without putting session bytes in the RunSpec', () => {
+    const resumeSessionFrom = {
+      sourceRunId: 'run_ut-abc123_0', sessionId: 'ses_01J5Y5H0AH4Q4NXJ6P4C3P5V2K',
+      path: '.session-traces/ses_01J5Y5H0AH4Q4NXJ6P4C3P5V2K.json', sha256: 'a'.repeat(64), size: 4096,
+    };
+    const built = buildRunSpec({ ...baseInput, resumeSessionFrom }, policy);
+    expect(built.spec.input?.resumeSessionFrom).toEqual(resumeSessionFrom);
+    expect(toSubmitRequest(built.spec).input?.resumeSessionFrom).toEqual(resumeSessionFrom);
+    expect(validateRunSpec(built.spec).ok).toBe(true);
+  });
+
   it('passes the CP-pinned ingress manifest separately from workspace snapshot refs', () => {
     const built = buildRunSpec({ ...baseInput, inputManifest: {
       manifestRef: 'cp-input-manifest:ut-abc123', manifestVersion: 'a'.repeat(64),
@@ -366,7 +377,7 @@ describe('run-spec: удалённый MCP (transport remote)', () => {
   it('хостовая политика RUN_SPEC_MCP собирает remote-сервер и проходит локальную проверку контракта', () => {
     const built = buildRunSpec(baseInput, remotePolicy(remoteServer()));
 
-    expect(built.version).toBe('run-spec-v4');
+    expect(built.version).toBe('run-spec-v5');
     expect(built.spec.mcp).toEqual({ servers: [remoteServer()] });
     expect(validateRunSpec(built.spec).ok).toBe(true);
     expect(built.spec.credentialBindings).toBeUndefined();

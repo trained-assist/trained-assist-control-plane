@@ -25,7 +25,7 @@ import { logStructured } from '../logging/structured-log';
 import type { ExecutionContextManifest } from '../router/brief/execution-context';
 
 /** Версия mapping'а: меняется при смене формы RunSpec, а не при смене политики. */
-export const RUN_SPEC_VERSION = 'run-spec-v4';
+export const RUN_SPEC_VERSION = 'run-spec-v5';
 
 /** Версия контракта RunSpec на стороне Runner'а (RUN_SPEC_CONTRACT_VERSION). */
 export const RUN_SPEC_CONTRACT_VERSION = 1;
@@ -115,6 +115,14 @@ export interface IngressManifestRef {
   ownerGeneration: number;
 }
 
+export interface ResumeSessionRef {
+  sourceRunId: string;
+  sessionId: string;
+  path: string;
+  sha256: string;
+  size: number;
+}
+
 export interface ResultPolicy {
   destinationRef?: string;
   retentionPolicy?: string;
@@ -139,7 +147,7 @@ export interface RunSpec {
   cwd: string;
   envAllowlist: string[];
   limits: RunLimits;
-  input?: { refs?: InputRef[]; inlinePrompt?: string };
+  input?: { refs?: InputRef[]; inlinePrompt?: string; resumeSessionFrom?: ResumeSessionRef };
   /** Bounded task-level launch brief; Runner appends it to the accepted prompt. */
   instructions?: string;
   ingressManifest?: IngressManifestRef;
@@ -175,7 +183,7 @@ export interface SubmitRequest {
   conversationId?: string;
   /** Omitted when the authenticated Agent API selects from its configured engine chain. */
   engine?: EngineSpec;
-  input?: { refs?: InputRef[]; inlinePrompt?: string };
+  input?: { refs?: InputRef[]; inlinePrompt?: string; resumeSessionFrom?: ResumeSessionRef };
   ingressManifest?: { contractVersion: 1; manifestRef: string; manifestVersion: string };
   envAllowlist: string[];
   limits: RunLimits;
@@ -277,6 +285,8 @@ export interface RunSpecInput {
   prompt: string;
   /** Разрешённые вложения: `artifactRefs` из envelope приёма. */
   refs: InputRef[];
+  /** Host-derived reference to the previous verified OpenCode session checkpoint. */
+  resumeSessionFrom?: ResumeSessionRef | null;
   inputManifest?: InputManifestPin | null;
   instructions: string | null;
   /** Внутренний runId попытки control plane — корреляция (traceId). */
@@ -470,6 +480,13 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
   if (input.conversationId !== null && (input.conversationId.length === 0 || input.conversationId.length > 200)) {
     fail('conversationId', 'conversationId: expected 1..200 chars or null');
   }
+  if (input.resumeSessionFrom && (!SAFE_ID.test(input.resumeSessionFrom.sourceRunId)
+    || !/^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(input.resumeSessionFrom.sessionId)
+    || input.resumeSessionFrom.path !== `.session-traces/${input.resumeSessionFrom.sessionId}.json`
+    || !/^[0-9a-f]{64}$/.test(input.resumeSessionFrom.sha256)
+    || !Number.isSafeInteger(input.resumeSessionFrom.size) || input.resumeSessionFrom.size < 0)) {
+    fail('resumeSessionFrom', 'resumeSessionFrom: expected a verified OpenCode session from the profile archive');
+  }
   // Контракт Runner'а требует непустой conversationId. У headless-задачи его
   // нет — хост выводит стабильный scope из userTaskId (не из тела запроса).
   const conversationId = input.conversationId ?? `task:${input.userTaskId}`;
@@ -539,6 +556,7 @@ export function buildRunSpec(input: RunSpecInput, policy: RunSpecPolicy): BuiltR
     input: {
       ...(inlinePrompt ? { inlinePrompt } : {}),
       ...(refs.length ? { refs } : {}),
+      ...(input.resumeSessionFrom ? { resumeSessionFrom: input.resumeSessionFrom } : {}),
     },
     ...(instructions ? { instructions } : {}),
     ...(input.inputManifest ? { ingressManifest: {
