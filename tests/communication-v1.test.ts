@@ -291,6 +291,22 @@ describe('Task Store and Output ownership', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it('projects active intake goals without routing JSON and retains nonempty input metadata', () => {
+    const goal = JSON.stringify({ inputItems: [{ text: 'Подготовь план', artifactRefs: ['attachment-ref'] }],
+      artifactRefs: [], inputArtifacts: [], snapshotIds: ['snapshot-ref'], pilotRoute: 'new-plane', pilotReason: 'pilot_active_cohort_match' });
+    const result = agentConversationInstructions({ text: 'Текущий запрос',
+      durableContext: { history: [], active_tasks: [{ id: 'active-task', goal }, { id: 'legacy-task', goal: 'Прежний текст' }] } });
+    expect(result).toContain('- active-task: Подготовь план');
+    expect(result).toContain('attachment-ref');
+    expect(result).toContain('snapshot-ref');
+    expect(result).toContain('- legacy-task: Прежний текст');
+    expect(result).not.toContain('pilotRoute');
+    expect(result).not.toContain('pilotReason');
+    expect(result).not.toContain('inputItems');
+    expect(result).not.toContain('inputArtifacts');
+    expect(result).not.toContain('artifactRefs');
+  });
+
   it('keeps Runner instructions below their independent limit for long saved conversations', async () => {
     const text = 'Продолжи по последней реплике';
     const history = Array.from({ length: 20 }, (_, index) => ({
