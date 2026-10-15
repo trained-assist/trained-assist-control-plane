@@ -9,7 +9,8 @@
   "observability": { "enabled": true },
   "services": [
     { "binding": "COMMUNICATION_SERVICE", "service": "trained-assist-communication-skills" },
-    { "binding": "RUNNER_API_SERVICE", "service": "trained-assist-runner-api-production" }
+    { "binding": "RUNNER_API_SERVICE", "service": "trained-assist-runner-api-production" },
+    { "binding": "INGRESS_BUFFER", "service": "trained-assist-ingress-buffer-production" }
   ],
   "d1_databases": [{
     "binding": "DB",
