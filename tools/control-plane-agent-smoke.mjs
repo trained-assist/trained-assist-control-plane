@@ -21,7 +21,8 @@ export function classifyMcpDiagnostic(value) {
 export async function runControlPlaneAgentSmoke(config, environment = process.env, fetchImpl = fetch) {
   const { baseUrl, principal, profile, secretEnv, requestPrefix, runnerApiUrl, runnerPrincipal, runnerTenant,
     runnerProfile, expectedExecutionWorker, maxWaitMs = 8 * 60_000, inputText,
-    expectedRunnerResultIncludes, expectedToolName, runnerRouteMode, expectedRouteMode } = config;
+    expectedRunnerResultIncludes, expectedToolName, runnerRouteMode, expectedRouteMode,
+    requireNonEmptyRunnerResult = false } = config;
   const expectedBuildSha = environment.CONTROL_PLANE_EXPECTED_BUILD_SHA;
   const secret = typeof environment[secretEnv] === 'string' ? environment[secretEnv].trim() : '';
   const reportFile = environment.INTEGRATION_REPORT_FILE;
@@ -164,7 +165,8 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
       fail('agent_task_deadline_exceeded');
     }
 
-    if (!await captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName, expectedRouteMode)) fail('runner_run_not_successful');
+    if (!await captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName,
+      expectedRouteMode, requireNonEmptyRunnerResult)) fail('runner_run_not_successful');
     report.outcome = 'passed';
   } catch (error) {
     report.reason = error?.code ?? safeCode(error?.message) ?? 'agent_smoke_failed';
@@ -178,7 +180,8 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
             ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(20_000) });
           if (!response.ok) fail(`worker_tail_http_${response.status}`);
           return response.json();
-        }, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName, expectedRouteMode);
+        }, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName,
+        expectedRouteMode, requireNonEmptyRunnerResult);
         if (!tail && report.workerTailCapture !== 'captured') report.workerTailCapture = 'failed';
       } catch { report.workerTailCapture = 'failed'; }
       try {
@@ -197,7 +200,8 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
   return report;
 }
 
-async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName, expectedRouteMode) {
+async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName,
+  expectedRouteMode, requireNonEmptyRunnerResult) {
   const page = await call(`/events?taskId=${encodeURIComponent(taskId)}&limit=500`);
   if (!Array.isArray(page.events)) fail('worker_event_tail_invalid');
   const events = page.events.map(event => ({
@@ -259,6 +263,13 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
   if (result.runId !== report.runnerRunId || !['succeeded', 'failed', 'cancelled'].includes(result.outcome)) fail('runner_result_mapping_mismatch');
   report.runnerOutcome = result.outcome;
   report.runnerExitReason = safeCode(result.exitReason);
+  if (status.state === 'succeeded' && result.outcome === 'succeeded'
+      && (requireNonEmptyRunnerResult || typeof expectedRunnerResultIncludes === 'string')) {
+    const answer = typeof result.text === 'string' ? result.text : '';
+    report.runnerResultTextChars = answer.length;
+    report.runnerResultTextPresent = answer.trim().length > 0;
+    if (requireNonEmptyRunnerResult && !report.runnerResultTextPresent) fail('runner_result_text_empty');
+  }
   if (status.state === 'succeeded' && result.outcome === 'succeeded' && typeof expectedRunnerResultIncludes === 'string') {
     const answer = typeof result.text === 'string' ? result.text : '';
     report.runnerResultTextChars = answer.length;

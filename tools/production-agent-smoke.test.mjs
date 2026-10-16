@@ -19,7 +19,8 @@ const envFor = directory => ({
 });
 const jsonResponse = (body, init) => Response.json(body, init);
 
-for (const routeMode of ['gha', 'france']) test(`production smoke admits, routes and confirms a completed CP-to-Runner task (${routeMode})`, async () => {
+for (const routeMode of ['gha', 'france']) for (const resultText of ['Ответ: три вопроса для собеседования.', '']) test(
+  `production smoke checks the API result text (${routeMode}, ${resultText ? 'present' : 'empty'})`, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'cp-production-agent-smoke-'));
   const environment = envFor(directory);
   if (routeMode !== 'gha') environment.PRODUCTION_AGENT_SMOKE_ROUTE_MODE = routeMode;
@@ -39,7 +40,7 @@ for (const routeMode of ['gha', 'france']) test(`production smoke admits, routes
       assert.equal(headers.get('x-agent-profile-sig'), signature);
       if (parsed.pathname.endsWith('/status')) return jsonResponse({ runId: 'runner-run-1', state: 'succeeded', routeMode });
       if (parsed.pathname.endsWith('/events')) return jsonResponse({ events: [{ sequence: 3, type: 'run_finished', payload: { text: 'do not retain' } }] });
-      if (parsed.pathname.endsWith('/result')) return jsonResponse({ runId: 'runner-run-1', outcome: 'succeeded', exitReason: 'completed' });
+      if (parsed.pathname.endsWith('/result')) return jsonResponse({ runId: 'runner-run-1', outcome: 'succeeded', exitReason: 'completed', ...(resultText ? { text: resultText } : {}) });
     }
     const headers = new Headers(init.headers);
     if (parsed.hostname === 'trained-assist-cp-production.skillset-apply.workers.dev') {
@@ -58,7 +59,12 @@ for (const routeMode of ['gha', 'france']) test(`production smoke admits, routes
   };
   try {
     const report = await runProductionAgentSmoke(environment, fetchImpl);
-    assert.equal(report.outcome, 'passed');
+    assert.equal(report.outcome, resultText ? 'passed' : 'failed', JSON.stringify(report));
+    if (!resultText) {
+      assert.equal(report.reason, 'runner_result_text_empty');
+      assert.equal(report.runnerResultTextPresent, false);
+      return;
+    }
     assert.equal(report.deployedBuildSha, SHA);
     assert.equal(report.profile, 'production-agent-smoke-v1');
     assert.equal(report.runnerSessionObserved, true);
@@ -71,6 +77,8 @@ for (const routeMode of ['gha', 'france']) test(`production smoke admits, routes
     assert.equal(requests[2].body.continue, true);
     assert.equal(requests[2].body.runnerRouteMode, routeMode);
     assert.equal(report.runnerRouteMode, routeMode);
+    assert.equal(report.runnerResultTextPresent, true);
+    assert.ok(report.runnerResultTextChars > 0);
     const evidence = readFileSync(environment.INTEGRATION_REPORT_FILE, 'utf8');
     assert.doesNotMatch(evidence, /PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET|собеседования|do not retain/);
   } finally { rmSync(directory, { recursive: true, force: true }); }

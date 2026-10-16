@@ -14,6 +14,7 @@ export const PRODUCTION_AGENT_SMOKE = {
   expectedExecutionWorker: 'eu-vm-agent-run',
   runnerRouteMode: 'gha',
   expectedRouteMode: 'gha',
+  requireNonEmptyRunnerResult: true,
 };
 
 export function runProductionAgentSmoke(environment = process.env, fetchImpl = fetch) {
