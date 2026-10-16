@@ -78,8 +78,13 @@ export async function awaitRunnerResult(
 ): Promise<AwaitRunnerResult> {
   const pollSec = Math.max(1, opts.pollSec ?? 1);
   const deadline = Date.now() + (opts.timeoutSec ?? 120) * 1000;
+  const collected = { cursor: 0, eventsRecorded: 0, seenEvents: [] as RunnerEvent[] };
 
   for (;;) {
+    // Keep the durable task journal current while the Runner is working. This
+    // exposes its lifecycle/output events through the existing Control Plane
+    // /events endpoint instead of importing them only after terminal status.
+    try { await collectRunnerEvents(adapter, store, opts, collected); } catch { /* Status remains authoritative; retry the event cursor next poll. */ }
     let status: RunnerStatusView;
     try {
       status = await adapter.status(opts.runId);
@@ -99,7 +104,7 @@ export async function awaitRunnerResult(
     }
 
     if (['succeeded', 'failed', 'cancelled'].includes(status.state)) {
-      return finalize(adapter, store, opts, status);
+      return finalize(adapter, store, opts, status, collected);
     }
 
     if (Date.now() >= deadline) return { ok: false, reason: 'runner_timeout' };
@@ -107,20 +112,19 @@ export async function awaitRunnerResult(
   }
 }
 
-async function finalize(
+type CollectedRunnerEvents = { cursor: number; eventsRecorded: number; seenEvents: RunnerEvent[] };
+
+async function collectRunnerEvents(
   adapter: RunnerApiAdapter,
   store: TaskStore,
   opts: AwaitRunnerResultOptions,
-  status: RunnerStatusView,
-): Promise<AwaitRunnerResult> {
-  // События по курсору: читаем с нуля, записываем в журнал с курсором в payload.
-  let cursor = 0;
-  let eventsRecorded = 0;
-  const seenEvents: RunnerEvent[] = [];
+  collected: CollectedRunnerEvents,
+): Promise<void> {
   for (;;) {
-    const page = await adapter.events(opts.runId, cursor, 500);
+    const page = await adapter.events(opts.runId, collected.cursor, 500);
     for (const event of page.events) {
-      seenEvents.push(event);
+      if (!Number.isSafeInteger(event.sequence) || event.sequence <= collected.cursor) continue;
+      collected.seenEvents.push(event);
       await store.logEvent({
         taskId: opts.taskId,
         kind: RUNNER_EVENT_KIND[event.type] ?? 'progress',
@@ -136,11 +140,24 @@ async function finalize(
           ...(event.payload === undefined ? {} : { payload: event.payload }),
         },
       });
-      eventsRecorded += 1;
+      collected.eventsRecorded += 1;
+      collected.cursor = event.sequence;
     }
-    cursor = page.cursor;
+    if (page.resetRequired) collected.cursor = Math.max(collected.cursor, page.cursor);
     if (!page.hasMore) break;
   }
+}
+
+async function finalize(
+  adapter: RunnerApiAdapter,
+  store: TaskStore,
+  opts: AwaitRunnerResultOptions,
+  status: RunnerStatusView,
+  collected: CollectedRunnerEvents,
+): Promise<AwaitRunnerResult> {
+  // Drain the terminal tail before building the result, retaining the same
+  // cursor used for live journal updates so events are never duplicated.
+  await collectRunnerEvents(adapter, store, opts, collected);
 
   const result = await adapter.result(opts.runId);
 
@@ -235,7 +252,7 @@ async function finalize(
   // Конечный текст движка — из потока событий, а не из поля результата: в
   // контракте Runner'а текста нет. Отсутствие текста не прячется за ok=true —
   // вызывающий видит `engineText: null` и решает сам.
-  const engineText = extractEngineText(seenEvents);
+  const engineText = extractEngineText(collected.seenEvents);
   // In API mode, status.answer is the normalized public result. Legacy callers
   // can still use the versioned stdout contract; this switch is a caller/API
   // contract, never a physical worker name.
@@ -247,7 +264,7 @@ async function finalize(
   // fallback in case status and result were observed across a state update.
   // Never promote arbitrary stdout in API mode: it can contain progress/tool JSON.
   const text = opts.answerMode === 'runner_api' ? statusAnswer ?? resultText : engineText?.text ?? resultText;
-  const resolution = [...seenEvents].sort((first, second) => second.sequence - first.sequence)
+  const resolution = [...collected.seenEvents].sort((first, second) => second.sequence - first.sequence)
     .find((event) => event.type === 'agent_exit_resolved')?.payload as { answerSource?: unknown } | undefined;
   const answerSource = text !== null && (resolution?.answerSource === 'agent_file' || resolution?.answerSource === 'engine_stdout')
     ? resolution.answerSource : null;
@@ -256,5 +273,5 @@ async function finalize(
       ? statusAnswer !== null ? 'runner_status_answer' : 'runner_result_text'
       : engineText ? engineText.source : 'runner_result_text',
     version: text === null ? null : opts.answerMode === 'runner_api' ? 'runner-answer-v1' : engineText?.version ?? 'runner-answer-v1' };
-  return { ok: true, result, eventsRecorded, artifacts, engineText, answer };
+  return { ok: true, result, eventsRecorded: collected.eventsRecorded, artifacts, engineText, answer };
 }
