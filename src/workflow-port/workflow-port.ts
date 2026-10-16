@@ -83,6 +83,8 @@ export interface SubmitInput extends AdmitTaskInput {
   runnerTimeoutSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
   runnerEngine?: string;
+  /** Durable caller-selected Runner route, forwarded unchanged to /v1/runs. */
+  runnerRouteMode?: 'auto' | 'france' | 'gha';
   /**
    * Простая задача без уточнений (P22: occurrence расписания). План не открывает
    * ожидание человека: работа + terminal result, без control loop и без gtdId.
@@ -285,6 +287,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       runnerPollSec: input.runnerPollSec,
       runnerTimeoutSec: input.runnerTimeoutSec,
       runnerEngine: input.runnerEngine,
+      runnerRouteMode: input.runnerRouteMode,
     };
 
     // Экземпляр создаём, если задача новая или события старта попытки ещё не было.

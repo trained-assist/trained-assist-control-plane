@@ -24,6 +24,8 @@ export interface RunnerSubmitInput {
   instructions?: string | null;
   idempotencyKey: string;
   timeoutMs?: number;
+  /** Optional strict Serverless Runner route; omitted preserves prior engine selection. */
+  routeMode?: 'auto' | 'france' | 'gha';
   /**
    * Готовый RunSpec от versioned mapping'а хоста (`src/run-spec`). Если задан —
    * тело submit собирается из него, а поля выше игнорируются: единственный
@@ -200,6 +202,11 @@ export class RunnerApiAdapter {
         throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
       }
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
+      // Runner confirms this strict-route refusal before admitting a run. It is
+      // definitive, so do not leave a phantom attempt in connection_lost.
+      if (code === 'ROUTE_UNAVAILABLE') {
+        throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
+      }
       if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
       const fieldPaths = Array.isArray(err?.details?.errors)
         ? err.details.errors.flatMap((entry) => {
@@ -231,7 +238,10 @@ export class RunnerApiAdapter {
       // Полный RunSpec туда не уходит: checkKeys отклоняет неизвестные поля.
       return this.request<RunnerReceipt>('POST', '/v1/runs', {
         idempotencyKey: input.idempotencyKey,
-        body: toSubmitRequest(input.runSpec, { engineSelection: this.engineSelection }),
+        body: {
+          ...toSubmitRequest(input.runSpec, { engineSelection: this.engineSelection }),
+          ...(input.routeMode ? { routeMode: input.routeMode } : {}),
+        },
       });
     }
     const prompt = input.inputText?.trim();
@@ -247,6 +257,7 @@ export class RunnerApiAdapter {
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
         ...(prompt || refs.length ? { input: { ...(prompt ? { inlinePrompt: prompt } : {}), ...(refs.length ? { refs } : {}) } } : {}),
         ...(instructions ? { instructions } : {}),
+        ...(input.routeMode ? { routeMode: input.routeMode } : {}),
       },
     });
   }
