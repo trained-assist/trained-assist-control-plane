@@ -407,7 +407,7 @@ npm run check:evidence                     # негативные проверк
 | Runner → MCP Host invocation | Runner private signing key в mode-0600 env; public JWK и policy на Host Worker | Контракт и владельцы задокументированы; Host deployment settings не полностью отражены в checked-in config, live подпись не проверена. |
 | CP → Communication service | `COMMUNICATION_TOKEN` при вызове `COMMUNICATION_SERVICE` | Имя есть в Worker env contract, sandbox использует service binding; live credential presence/authorization не проверены. |
 | CP → Ingress Buffer | `INGRESS_BUFFER_TOKEN`; CP Worker и `trained-assist-ingress-buffer-sandbox` | Нужен только для artifact manifest/content path; имена и владельцы описаны в [artifact contract](docs/INGRESS-ARTIFACT-MANIFEST-V1.md); live auth не проверена. |
-| Runner → Model Ladder | `LLM_LADDER_TOKEN`; источник — GCP Secret Manager, Runner получает allowlisted env | Имя разрешено в sandbox RunSpec; актуальная выдача/доступность модели в этом прогоне не проверена. |
+| CP → Runner → Model Ladder | `LLM_LADDER_TOKEN`; значение хранится только в Runner, CP production передаёт только имя через `RUN_SPEC_ENV_ALLOWLIST`, GHA claim отдаёт его агенту как env | Production RunSpec явно разрешает имя model credential; значение секрета не попадает в CP и inputs GitHub workflow. Новый live-запуск должен подтвердить, что Ladder принимает настроенный токен. |
 
 На 2026-10-09 проверены repository bindings/docs и Cloudflare account ID. Значения секретов не читались. Из-за сетевого сбоя Cloudflare API inventory и все live downstream auth probes остаются `UNKNOWN`; этот PR не объявляет всю цепочку READY.
 
