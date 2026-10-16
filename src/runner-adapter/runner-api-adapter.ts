@@ -95,6 +95,7 @@ export interface RunnerEventsPage {
   events: RunnerEvent[];
   cursor: number;
   hasMore: boolean;
+  resetRequired?: boolean;
   snapshot: { state: string; connectionLost: boolean; sequence: number; ownerGeneration: number };
 }
 
