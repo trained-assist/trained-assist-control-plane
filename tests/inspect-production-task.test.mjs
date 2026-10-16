@@ -5,7 +5,7 @@ const attempt = { id: 'cp-attempt-1', session_id: `run_${'a'.repeat(24)}`, engin
   started_at: 1_797_500_000_000, finished_at: 1_797_500_010_000, error_class: 'ENGINE_EXIT_NONZERO', profile_id: 'profile-test' };
 const runnerProfileDelegation = { secret: 'delegation-test-secret', principalId: 'cp-production-runner', tenantId: 'trained-assist-production' };
 
-function mockFetch({ includeAttempt = true, includeGatewayRun = false, logUrl = 'https://storage.googleapis.com/private?sig=secret' } = {}) {
+function mockFetch({ includeAttempt = true, includeGatewayRun = false, logUrl = 'https://storage.googleapis.com/private?sig=secret', engine = 'azure-cloud' } = {}) {
   const calls = [];
   const fetchImpl = async (input, init) => {
     const url = String(input);
@@ -18,10 +18,11 @@ function mockFetch({ includeAttempt = true, includeGatewayRun = false, logUrl = 
         ? includeGatewayRun ? [{ run_id: attempt.session_id, user_task_id: 'ut-abcdefgh1234', github_run_id: 123456, github_repo: 'trained-assist/runner-ring' }] : []
         : includeAttempt ? [attempt] : [] }] });
     }
-    if (url.endsWith('/status')) return Response.json({ state: 'failed', engine: 'azure-cloud', routeMode: 'gha', workerStartPhase: 'ready', workerStartAttempts: 1 });
+    if (url.endsWith('/status')) return Response.json({ state: 'failed', engine, routeMode: engine === 'eu-vm-agent-run' ? 'auto' : 'gha', workerStartPhase: 'ready', workerStartAttempts: 1 });
     if (url.endsWith('/result')) return Response.json({ outcome: 'failed', exitReason: 'agent_exited_nonzero', exitCode: 17, exitSignal: null,
       exitObserved: true, failure: { code: 'ENGINE_EXIT_NONZERO', failureClass: 'engine_failure', safeSummary: 'Agent process exited with code 17', retryable: false } });
     if (url.includes('/events?')) return Response.json({ events: [{ sequence: 7, timestamp: '2026-10-16T00:00:00Z', type: 'log', payload: { stream: 'stderr', message: 'token=sk-' + 'x'.repeat(30) } }], resetRequired: false });
+    if (url.includes('/logs?after=0')) return new Response('event: stdout\ndata: "agent output"\n\nevent: stderr\ndata: "token=sk-' + 'x'.repeat(30) + '"\n\n', { status: 200 });
     if (url.endsWith('/artifacts')) return Response.json({ artifacts: [], logUrl });
     if (url.startsWith('https://storage.googleapis.com/')) return new Response(`Runner diagnostic\nBearer ${'b'.repeat(32)}\nexitCode=17`, { status: 200 });
     throw new Error(`unexpected request: ${url}`);
@@ -99,6 +100,18 @@ describe('production task diagnostics', () => {
     expect(report.attempts[0]?.runner.savedLog.text).toContain('[REDACTED]');
     expect(report.attempts[0]?.runner.savedLog.text).toContain('exitCode=17');
     expect(report.attempts[0]?.runner.savedLog.text).not.toContain('Bearer ' + 'b'.repeat(32));
+  });
+
+  it('fetches bounded, redacted logs from the VM worker for VM-run attempts', async () => {
+    const { fetchImpl, calls } = mockFetch({ engine: 'eu-vm-agent-run', logUrl: `local://runs/${attempt.session_id}/logs` });
+    const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
+      runnerApiKey: 'r'.repeat(32), runnerProfileDelegation, vmWorkerUrl: 'https://vm.example.test', vmWorkerToken: 'v'.repeat(32), includeLogs: true, fetchImpl });
+    expect(report.attempts[0]?.runner.workerLog).toMatchObject({ fetched: true, httpStatus: 200, stdoutChars: 12, stderrChars: 24 });
+    expect(report.attempts[0]?.runner.workerLog.text).toContain('[REDACTED_API_KEY]');
+    expect(report.attempts[0]?.runner.workerLog.text).not.toContain('x'.repeat(30));
+    const workerCall = calls.find((call) => call.url.includes('/logs?after=0'));
+    expect(workerCall?.url).toContain(`/v1/runs/${attempt.session_id}/logs?after=0`);
+    expect(new Headers(workerCall?.init.headers).get('authorization')).toBe(`Bearer ${'v'.repeat(32)}`);
   });
 
   it('returns a valid report when the task has no execution attempts', async () => {

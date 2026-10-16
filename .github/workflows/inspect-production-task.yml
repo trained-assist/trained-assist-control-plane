@@ -39,6 +39,8 @@ jobs:
           RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
           RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: cp-production-runner
           RUNNER_PROFILE_DELEGATION_TENANT_ID: trained-assist-production
+          EU_VM_WORKER_URL: ${{ vars.EU_VM_WORKER_URL }}
+          EU_VM_WORKER_TOKEN: ${{ secrets.EU_VM_WORKER_TOKEN }}
         run: node scripts/inspect-production-task.mjs
       - name: Upload private diagnostic report
         uses: actions/upload-artifact@v4
