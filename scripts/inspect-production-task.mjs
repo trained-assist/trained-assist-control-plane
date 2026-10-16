@@ -5,6 +5,7 @@ const RUNNER_RUN_ID = /^run_[A-Za-z0-9_-]{20,160}$/;
 const TASK_ID = /^ut-[A-Za-z0-9_-]{8,100}$/;
 const MAX_EVENT_PAGES = 10;
 const MAX_LOG_CHARS = 100_000;
+const MAX_LOG_SOURCE_BYTES = 2 * 1024 * 1024;
 
 export function redactDiagnosticText(text) {
   return String(text)
@@ -14,6 +15,31 @@ export function redactDiagnosticText(text) {
     .replace(/\b(?:cfat_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|sk-or-v1-[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,})\b/g, '[REDACTED_API_KEY]')
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
     .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[=:]\s*)["']?[^\s"',;}]+["']?/gi, '$1[REDACTED]');
+}
+
+async function readCappedText(response, maxBytes) {
+  if (Number(response.headers.get('content-length')) > maxBytes) return { text: '', bytes: 0, truncated: true };
+  if (!response.body) return { text: '', bytes: 0, truncated: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let bytes = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const remaining = maxBytes - bytes;
+    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+    bytes += chunk.byteLength;
+    text += decoder.decode(chunk, { stream: true });
+    if (chunk.byteLength !== value.byteLength) {
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+  }
+  text += decoder.decode();
+  return { text, bytes, truncated };
 }
 
 export async function inspectProductionTask({ taskId, accountId, apiToken, runnerApiKey, databaseId, includeLogs = false, fetchImpl = fetch }) {
@@ -76,6 +102,33 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
     const [status, result, artifactManifest] = await Promise.all([
       runnerGet(runnerRunId, 'status'), runnerGet(runnerRunId, 'result'), runnerGet(runnerRunId, 'artifacts'),
     ]);
+    let savedLog = { fetched: false, host: null, httpStatus: null, bytes: null, truncated: false, error: null };
+    const rawLogUrl = typeof artifactManifest.logUrl === 'string' ? artifactManifest.logUrl : null;
+    if (includeLogs && rawLogUrl) {
+      try {
+        const logUrl = new URL(rawLogUrl);
+        const storageHost = logUrl.hostname === 'storage.googleapis.com'
+          || logUrl.hostname.endsWith('.storage.googleapis.com')
+          || logUrl.hostname === 'storage.cloud.google.com'
+          || logUrl.hostname.endsWith('.storage.cloud.google.com');
+        savedLog = { ...savedLog, host: logUrl.hostname };
+        if (logUrl.protocol !== 'https:' || !storageHost || logUrl.username || logUrl.password) {
+          savedLog = { ...savedLog, error: 'log_host_not_allowlisted' };
+        } else {
+          const response = await fetchImpl(logUrl, { signal: AbortSignal.timeout(20_000), redirect: 'error' });
+          savedLog = { ...savedLog, httpStatus: response.status };
+          if (response.ok) {
+            const content = await readCappedText(response, MAX_LOG_SOURCE_BYTES);
+            const redacted = redactDiagnosticText(content.text);
+            savedLog = { ...savedLog, fetched: true, bytes: content.bytes,
+              truncated: content.truncated || redacted.length > MAX_LOG_CHARS,
+              text: redacted.slice(0, MAX_LOG_CHARS) };
+          }
+        }
+      } catch {
+        savedLog = { ...savedLog, error: 'log_fetch_failed' };
+      }
+    }
     const events = [];
     let cursor = 0;
     let eventPageResetRequired = false;
@@ -134,6 +187,7 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
         logEvents: safeLogEvents,
         artifactCount: Array.isArray(artifactManifest.artifacts) ? artifactManifest.artifacts.length : null,
         logAvailable: typeof artifactManifest.logUrl === 'string' && artifactManifest.logUrl.length > 0,
+        ...(includeLogs ? { savedLog } : {}),
       },
     };
     if (!includeLogs) attemptReport.runner.logEvents = attemptReport.runner.logEvents.map(({ message, ...metadata }) => ({ ...metadata, messageAvailable: Boolean(message) }));

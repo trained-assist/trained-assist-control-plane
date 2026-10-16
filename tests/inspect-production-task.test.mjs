@@ -14,7 +14,8 @@ function mockFetch({ includeAttempt = true } = {}) {
     if (url.endsWith('/result')) return Response.json({ outcome: 'failed', exitReason: 'agent_exited_nonzero', exitCode: 17, exitSignal: null,
       exitObserved: true, failure: { code: 'ENGINE_EXIT_NONZERO', failureClass: 'engine_failure', safeSummary: 'Agent process exited with code 17', retryable: false } });
     if (url.includes('/events?')) return Response.json({ events: [{ sequence: 7, timestamp: '2026-10-16T00:00:00Z', type: 'log', payload: { stream: 'stderr', message: 'token=sk-' + 'x'.repeat(30) } }], resetRequired: false });
-    if (url.endsWith('/artifacts')) return Response.json({ artifacts: [], logUrl: 'https://storage.example/private?sig=secret' });
+    if (url.endsWith('/artifacts')) return Response.json({ artifacts: [], logUrl: 'https://storage.googleapis.com/private?sig=secret' });
+    if (url.startsWith('https://storage.googleapis.com/')) return new Response(`Runner diagnostic\nBearer ${'b'.repeat(32)}\nexitCode=17`, { status: 200 });
     throw new Error(`unexpected request: ${url}`);
   };
   return { fetchImpl, calls };
@@ -39,6 +40,7 @@ describe('production task diagnostics', () => {
         logEvents: [{ stream: 'stderr', messageAvailable: true }] } });
     expect(JSON.stringify(report)).not.toContain('sk-' + 'x'.repeat(30));
     expect(calls.some((call) => call.url.endsWith('/status'))).toBe(true);
+    expect(calls.some((call) => call.url.startsWith('https://storage.googleapis.com/'))).toBe(false);
     const d1Call = calls.find((call) => call.url.includes('/d1/database/'));
     expect(JSON.parse(String(d1Call.init?.body)).params).toEqual(['ut-abcdefgh1234']);
   });
@@ -49,6 +51,10 @@ describe('production task diagnostics', () => {
       runnerApiKey: 'r'.repeat(32), includeLogs: true, fetchImpl });
     expect(report.includesRedactedLogText).toBe(true);
     expect(report.attempts[0]?.runner.logEvents[0]?.message).toContain('[REDACTED_API_KEY]');
+    expect(report.attempts[0]?.runner.savedLog).toMatchObject({ fetched: true, host: 'storage.googleapis.com', httpStatus: 200 });
+    expect(report.attempts[0]?.runner.savedLog.text).toContain('[REDACTED]');
+    expect(report.attempts[0]?.runner.savedLog.text).toContain('exitCode=17');
+    expect(report.attempts[0]?.runner.savedLog.text).not.toContain('Bearer ' + 'b'.repeat(32));
   });
 
   it('returns a valid report when the task has no execution attempts', async () => {
