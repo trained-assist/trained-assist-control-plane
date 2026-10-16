@@ -7,6 +7,14 @@ on:
         description: Exact production CP build SHA to accept
         required: true
         type: string
+      runner_route_mode:
+        description: Strict execution route to validate
+        required: false
+        type: choice
+        options:
+          - gha
+          - france
+        default: gha
 
 permissions:
   contents: read
@@ -32,6 +40,7 @@ jobs:
       - name: Verify the exact production Control Panel revision and complete one isolated agent run
         env:
           CONTROL_PLANE_EXPECTED_BUILD_SHA: ${{ inputs.expected_build_sha }}
+          PRODUCTION_AGENT_SMOKE_ROUTE_MODE: ${{ inputs.runner_route_mode }}
           PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: ${{ secrets.PRODUCTION_E2E_PRINCIPAL_SECRET }}
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
           RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
