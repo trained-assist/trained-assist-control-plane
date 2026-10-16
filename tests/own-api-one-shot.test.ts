@@ -24,9 +24,11 @@ const ctx: StepCtx = {
 /** Фейковый Runner: тот же контракт Serverless Agent API, без сети. */
 const makeFakeRunner = (opts: { stdout?: string[]; failSubmit?: boolean } = {}) => {
   const runId = nextId('run');
+  let submittedRouteMode: string | undefined;
   const stdout = opts.stdout ?? ['работаю', 'Готово: отчёт собран.'];
   const adapter = {
-    async submit(input: { userTaskId: string; idempotencyKey: string }) {
+    async submit(input: { userTaskId: string; idempotencyKey: string; routeMode?: string }) {
+      submittedRouteMode = input.routeMode;
       if (opts.failSubmit) throw new Error('injected: runner down');
       return { requestId: `req-${runId}`, userTaskId: input.userTaskId, runId, deduplicated: false };
     },
@@ -72,7 +74,7 @@ const makeFakeRunner = (opts: { stdout?: string[]; failSubmit?: boolean } = {}) 
       return { status: 'cancelled' };
     },
   };
-  return { adapter, runId };
+  return { adapter, runId, submittedRouteMode: () => submittedRouteMode };
 };
 
 describe('engine-text: конечный текст движка из событий Runner\'а', () => {
@@ -102,6 +104,19 @@ describe('engine-text: конечный текст движка из событ�
 });
 
 describe('one-shot с движком: результат = текст движка, ожидание не открывается', () => {
+  it('conversation plan forwards the durably selected strict route to Runner', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-route-mode');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'найди источники' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const runner = makeFakeRunner();
+    await conversationPlan(ctx, store, {
+      taskId, generation: 1, profileId: 'profile-1', runId: attempt.id,
+      goal: 'найди источники', runnerPollSec: 1, runnerTimeoutSec: 30, runnerRouteMode: 'gha',
+    }, { adapter: runner.adapter as unknown as RunnerApiAdapter });
+    expect(runner.submittedRouteMode()).toBe('gha');
+  });
+
   it('без awaitingPurpose план закрывает задачу текстом движка, без ожидания', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut-one-shot');

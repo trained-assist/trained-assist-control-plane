@@ -91,6 +91,8 @@ export interface PlanParams {
   runnerPersistencePollSec?: number;
   /** Движок попытки Runner'а (RunSpec.engine.name); по умолчанию opencode. */
   runnerEngine?: string;
+  /** Route selector persisted at intake; strict "gha" never falls back to France. */
+  runnerRouteMode?: 'auto' | 'france' | 'gha';
 }
 
 /**
@@ -607,6 +609,7 @@ export async function conversationPlan(
             userTaskId: taskId,
             idempotencyKey: attemptKey,
             runSpec: runSpec.spec,
+            routeMode: p.runnerRouteMode,
           });
           // Record only after a durable Runner receipt, inside the retried submit step.
           // A lost receipt is reconciled with the same idempotency key; it never exposes a draft.
