@@ -35,7 +35,7 @@ test('production smoke admits, routes and confirms a completed CP-to-Runner task
       const signature = createHmac('sha256', 'production-runner-delegation-secret')
         .update(`cp-production-runner\0trained-assist-production\0production-agent-smoke-v1\0${expiresAt}`).digest('hex');
       assert.equal(headers.get('x-agent-profile-sig'), signature);
-      if (parsed.pathname.endsWith('/status')) return jsonResponse({ runId: 'runner-run-1', state: 'succeeded' });
+      if (parsed.pathname.endsWith('/status')) return jsonResponse({ runId: 'runner-run-1', state: 'succeeded', routeMode: 'gha' });
       if (parsed.pathname.endsWith('/events')) return jsonResponse({ events: [{ sequence: 3, type: 'run_finished', payload: { text: 'do not retain' } }] });
       if (parsed.pathname.endsWith('/result')) return jsonResponse({ runId: 'runner-run-1', outcome: 'succeeded', exitReason: 'completed' });
     }
@@ -65,7 +65,10 @@ test('production smoke admits, routes and confirms a completed CP-to-Runner task
     assert.deepEqual(report.runnerEventTail, [{ sequence: 3, type: 'run_finished', code: null, phase: null, status: null }]);
     assert.deepEqual(requests.map(request => request.path), ['/healthz', '/intake', '/route', '/status', '/events']);
     assert.equal(requests[1].body.profileId, 'production-agent-smoke-v1');
+    assert.equal(requests[1].body.runnerRouteMode, 'gha');
     assert.equal(requests[2].body.continue, true);
+    assert.equal(requests[2].body.runnerRouteMode, 'gha');
+    assert.equal(report.runnerRouteMode, 'gha');
     const evidence = readFileSync(envFor(directory).INTEGRATION_REPORT_FILE, 'utf8');
     assert.doesNotMatch(evidence, /PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET|собеседования|do not retain/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
