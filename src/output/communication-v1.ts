@@ -117,9 +117,14 @@ export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPo
   }
   const selection = result.continuation;
   if (!selection) return { owner: 'output', issued: false, refusal: 'no_agent_selection' };
+  const routeMode = userValue.runnerRouteMode;
+  if (routeMode !== undefined && routeMode !== 'auto' && routeMode !== 'france' && routeMode !== 'gha') {
+    return { owner: 'output', requested: true, issued: false, refusal: 'runner_route_mode_invalid', reasonCode: 'INVALID_RUNNER_ROUTE_MODE' };
+  }
   const start = await port.submit({
     id: current.id, profileId: current.profile_id, goal: current.goal,
     runnerEngine, idempotentRun: true,
+    ...(routeMode ? { runnerRouteMode: routeMode } : {}),
     instructions: withWorkStyleInstructions(result.agentInstructions ?? selection.goal, current),
     mcpDescriptor,
   });

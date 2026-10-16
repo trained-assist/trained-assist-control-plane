@@ -19,6 +19,8 @@ Enable explicitly with `ROUTER_SELECTOR=communication_v1`. Unset keeps the exist
 
 After authenticated `/intake`, call `POST /route` with `{taskId, continue:true}`. Gateway does not call `/start` for this path.
 
+`POST /intake` also accepts the optional `runnerRouteMode: "auto" | "france" | "gha"` for a host-selected execution route. The value is stored durably and included in idempotency, then Output passes it to Runner API as `routeMode`. If `/route` repeats the choice, it must match the accepted intake value. Omission preserves legacy routing. `gha` is strict: Runner uses `azure-cloud` only and reports route unavailability rather than falling back to France. Callers must be authorized for that Runner engine. ChemistryGPT sets this only for its `sources` stage; other stages keep the existing route policy.
+
 Quick answer: HTTP response has `route:"deterministic"`, `capabilityId`, `reply.text`, and rendering metadata. Task Store is already `done`, with `result.answer`, quick-answer ID/version and evidence references. Completion is not channel delivery; the gateway reads the persisted result and uses its existing delivery flow.
 
 Agent: HTTP response has `route:"agent"`, `needsExecutor:true`, and `continuation:{owner:"output",requested:true,issued:true,runId,generation,jobRef,executor:<configured engine>}`. Disabled policy, missing Runner, unresolved execution or GTD ownership yield an explicit refusal. The first attempt uses `CfWorkflowPort.submit`, not `resume`, preserving the accepted task and generation. An unknown attempt is not silently repeated.

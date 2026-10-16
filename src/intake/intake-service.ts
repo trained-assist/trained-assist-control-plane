@@ -127,6 +127,7 @@ export class IntakeService {
         snapshotIds: envelope.inputItems.map((i) => i.snapshotId).filter((s): s is string => typeof s === 'string'),
         pilotRoute: route.route,
         pilotReason: route.reason,
+        ...(envelope.runnerRouteMode ? { runnerRouteMode: envelope.runnerRouteMode } : {}),
       },
       executionPolicy: { workStyle: envelope.workStyle ?? 'auto', source: envelope.workStyleSource ?? 'default' },
     });
