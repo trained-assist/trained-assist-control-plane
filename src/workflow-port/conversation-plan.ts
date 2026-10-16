@@ -614,13 +614,14 @@ export async function conversationPlan(
           // Record only after a durable Runner receipt, inside the retried submit step.
           // A lost receipt is reconciled with the same idempotency key; it never exposes a draft.
           await store.saveAcceptedAgentInput(acceptedAgentInput(runSpec.spec, submitted.runId, generation));
-          return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [] };
+          return { ...submitted, declaredOutputPaths: runSpec.spec.outputs?.map(output => output.path) ?? [], submitRejected: false as const };
         } catch (e) {
           // A definitive 4xx rejection means Runner did not admit this request;
           // transport/5xx failures remain unknown because dispatch may have won.
           const definitivelyRejected = e instanceof RunnerConflictError || e instanceof RunnerNotFoundError
             || e instanceof RunnerStaleGenerationError;
-          const errorClass = definitivelyRejected ? 'runner_rejected'
+          const routeUnavailable = e instanceof RunnerConflictError && e.apiCode === 'ROUTE_UNAVAILABLE';
+          const errorClass = routeUnavailable ? 'runner_route_unavailable' : definitivelyRejected ? 'runner_rejected'
             : e instanceof RunnerUnavailableError ? 'runner_unavailable' : 'runner_rejected';
           if (p.runId) {
             if (definitivelyRejected) {
@@ -631,15 +632,19 @@ export async function conversationPlan(
                 generation,
                 executionId: p.runId,
                 source: 'executor',
-                payload: { event: 'runner_submit_rejected', attemptId: p.runId, idempotencyKey: attemptKey },
+                payload: { event: 'runner_submit_rejected', attemptId: p.runId, idempotencyKey: attemptKey,
+                  ...(routeUnavailable ? { errorCode: 'ROUTE_UNAVAILABLE' } : {}) },
               });
               const task = await store.requireTask(taskId);
               if (!isTerminalStatus(task.status)) {
                 await store.commit(taskId, generation, { status: 'failed', stage: 'finished',
-                  executionId: p.runId, step: 'runner_submit', result: { ok: false, reason: 'runner_rejected' },
-                  payload: { errorClass } });
+                  executionId: p.runId, step: 'runner_submit',
+                  result: routeUnavailable
+                    ? { ok: false, reason: 'runner_route_unavailable', errorCode: 'ROUTE_UNAVAILABLE' }
+                    : { ok: false, reason: 'runner_rejected' },
+                  payload: { errorClass, ...(routeUnavailable ? { errorCode: 'ROUTE_UNAVAILABLE' } : {}) } });
               }
-              return { submitRejected: true as const };
+              return { submitRejected: true as const, ...(routeUnavailable ? { reason: 'runner_route_unavailable' as const } : {}) };
             }
             await store.markConnectionLost(p.runId, String((e as Error)?.message ?? e), errorClass).catch(() => null);
           }
@@ -655,8 +660,8 @@ export async function conversationPlan(
       },
       { limit: 8, delaySec: 3 },
     );
-    if ('submitRejected' in receipt && receipt.submitRejected) {
-      return { ok: false, reason: 'runner_rejected' };
+    if (receipt.submitRejected) {
+      return { ok: false, reason: receipt.reason ?? 'runner_rejected' };
     }
     runnerRunId = receipt.runId;
     runnerDeclaredOutputs = receipt.declaredOutputPaths;
