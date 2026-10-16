@@ -4,12 +4,19 @@ import { inspectProductionTask, redactDiagnosticText } from '../scripts/inspect-
 const attempt = { id: 'cp-attempt-1', session_id: `run_${'a'.repeat(24)}`, engine: 'azure-cloud', status: 'failed', generation: 2,
   started_at: 1_797_500_000_000, finished_at: 1_797_500_010_000, error_class: 'ENGINE_EXIT_NONZERO' };
 
-function mockFetch({ includeAttempt = true } = {}) {
+function mockFetch({ includeAttempt = true, includeGatewayRun = false } = {}) {
   const calls = [];
   const fetchImpl = async (input, init) => {
     const url = String(input);
     calls.push({ url, init });
-    if (url.includes('/d1/database/')) return Response.json({ success: true, result: [{ success: true, results: includeAttempt ? [attempt] : [] }] });
+    if (url.includes('/d1/database?')) return Response.json({ success: true, result: [{ name: 'opencode-gha-runner-gateway-state', uuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }] });
+    if (url.includes('/d1/database/')) {
+      const params = JSON.parse(String(init?.body ?? '{}')).params ?? [];
+      const gatewayQuery = params.length > 1;
+      return Response.json({ success: true, result: [{ success: true, results: gatewayQuery
+        ? includeGatewayRun ? [{ run_id: attempt.session_id, user_task_id: 'ut-abcdefgh1234', github_run_id: 123456, github_repo: 'trained-assist/runner-ring' }] : []
+        : includeAttempt ? [attempt] : [] }] });
+    }
     if (url.endsWith('/status')) return Response.json({ state: 'failed', engine: 'azure-cloud', routeMode: 'gha', workerStartPhase: 'ready', workerStartAttempts: 1 });
     if (url.endsWith('/result')) return Response.json({ outcome: 'failed', exitReason: 'agent_exited_nonzero', exitCode: 17, exitSignal: null,
       exitObserved: true, failure: { code: 'ENGINE_EXIT_NONZERO', failureClass: 'engine_failure', safeSummary: 'Agent process exited with code 17', retryable: false } });
@@ -41,8 +48,23 @@ describe('production task diagnostics', () => {
     expect(JSON.stringify(report)).not.toContain('sk-' + 'x'.repeat(30));
     expect(calls.some((call) => call.url.endsWith('/status'))).toBe(true);
     expect(calls.some((call) => call.url.startsWith('https://storage.googleapis.com/'))).toBe(false);
-    const d1Call = calls.find((call) => call.url.includes('/d1/database/'));
+    const d1Call = calls.find((call) => call.url.includes('/d1/database/') && call.init?.method === 'POST');
     expect(JSON.parse(String(d1Call.init?.body)).params).toEqual(['ut-abcdefgh1234']);
+  });
+
+  it('maps GHA-backed attempts to their exact Actions run without reading task content', async () => {
+    const { fetchImpl, calls } = mockFetch({ includeGatewayRun: true });
+    const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
+      runnerApiKey: 'r'.repeat(32), fetchImpl });
+    expect(report.attempts[0].runner.githubActionsRun).toEqual({
+      repository: 'trained-assist/runner-ring', runId: 123456,
+      url: 'https://github.com/trained-assist/runner-ring/actions/runs/123456',
+      logArtifactName: `session-log-${attempt.session_id}`,
+    });
+    const gatewayQuery = calls.map((call) => call.init?.body).filter(Boolean).map((body) => JSON.parse(String(body)))
+      .find((body) => body.sql?.includes('gateway_runs'));
+    expect(gatewayQuery.params).toEqual(['ut-abcdefgh1234', attempt.session_id]);
+    expect(gatewayQuery.sql).not.toContain('input');
   });
 
   it('includes redacted log text only when explicitly requested', async () => {

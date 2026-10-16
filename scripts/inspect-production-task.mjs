@@ -6,6 +6,7 @@ const TASK_ID = /^ut-[A-Za-z0-9_-]{8,100}$/;
 const MAX_EVENT_PAGES = 10;
 const MAX_LOG_CHARS = 100_000;
 const MAX_LOG_SOURCE_BYTES = 2 * 1024 * 1024;
+const GATEWAY_DATABASE_NAME = 'opencode-gha-runner-gateway-state';
 
 export function redactDiagnosticText(text) {
   return String(text)
@@ -68,6 +69,44 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
     return body.result[0].results ?? [];
   };
 
+  const gatewayRunsById = async (runIds) => {
+    if (runIds.length === 0) return new Map();
+    try {
+      const databases = [];
+      for (let page = 1; page <= 20; page += 1) {
+        const listUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database?per_page=100&page=${page}`;
+        const listResponse = await fetchImpl(listUrl, {
+          headers: { authorization: `Bearer ${apiToken}` },
+          signal: AbortSignal.timeout(15_000),
+        });
+        const listBody = await listResponse.json();
+        if (!listResponse.ok || listBody?.success !== true) return new Map();
+        databases.push(...(listBody.result ?? []).filter((entry) => entry.name === GATEWAY_DATABASE_NAME));
+        if (page >= (listBody.result_info?.total_pages ?? 1)) break;
+      }
+      if (databases.length !== 1 || !/^[a-f0-9-]{36}$/i.test(databases[0].uuid ?? '')) return new Map();
+      const placeholders = runIds.map(() => '?').join(',');
+      const gatewayUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databases[0].uuid}/query`;
+      const response = await fetchImpl(gatewayUrl, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sql: `SELECT run_id, user_task_id, github_run_id, json_extract(run_json, '$.target.repo') AS github_repo
+                  FROM gateway_runs WHERE user_task_id = ? AND run_id IN (${placeholders})`,
+          params: [taskId, ...runIds],
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const body = await response.json();
+      if (!response.ok || body?.success !== true || body?.result?.[0]?.success !== true) return new Map();
+      return new Map((body.result[0].results ?? []).map((row) => [row.run_id, row]));
+    } catch {
+      // Diagnostics for a task remain useful if the optional gateway journal has expired
+      // or is temporarily unavailable.
+      return new Map();
+    }
+  };
+
   const attempts = await query(
     `SELECT id, session_id, engine, status, generation, started_at, finished_at, error_class
        FROM executions WHERE task_id = ? ORDER BY started_at, id`,
@@ -83,6 +122,9 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
     try { return await response.json(); } catch { return { diagnosticError: 'runner_invalid_json' }; }
   };
   const inspected = [];
+  const gatewayRuns = await gatewayRunsById(attempts
+    .map((attempt) => RUNNER_RUN_ID.test(attempt.session_id ?? '') ? attempt.session_id : null)
+    .filter(Boolean));
   for (const attempt of attempts) {
     const runnerRunId = RUNNER_RUN_ID.test(attempt.session_id ?? '') ? attempt.session_id : null;
     const report = {
@@ -181,6 +223,16 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
           } : null,
         },
         eventCounts,
+        ...(gatewayRuns.has(runnerRunId) ? { githubActionsRun: (() => {
+          const gatewayRun = gatewayRuns.get(runnerRunId);
+          const repo = typeof gatewayRun.github_repo === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(gatewayRun.github_repo)
+            ? gatewayRun.github_repo : null;
+          const githubRunId = Number.isSafeInteger(gatewayRun.github_run_id) && gatewayRun.github_run_id > 0
+            ? gatewayRun.github_run_id : null;
+          return { repository: repo, runId: githubRunId,
+            url: repo && githubRunId ? `https://github.com/${repo}/actions/runs/${githubRunId}` : null,
+            logArtifactName: `session-log-${runnerRunId}` };
+        })() } : {}),
         eventPageResetRequired,
         eventPagesRead,
         eventReadError,
