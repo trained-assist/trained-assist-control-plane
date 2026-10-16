@@ -163,7 +163,9 @@ async function finalize(
 
   const commitFailure = async (reason: string, terminalStatus: 'failed' | 'cancelled', retryWorkerRestart = false) => {
     const failureResult = { reason, runId: result.runId, ownerGeneration: result.ownerGeneration,
-      outcome: result.outcome, persistence: result.persistence, exitReason: result.exitReason, failure: result.failure ?? null };
+      outcome: result.outcome, persistence: result.persistence, exitReason: result.exitReason,
+      exitCode: result.exitCode, exitSignal: result.exitSignal, exitObserved: result.exitObserved,
+      failure: result.failure ?? null };
     const attempt = (await store.listRuns(opts.taskId)).find((run) => run.session_id === opts.runId && run.generation === opts.generation);
     if (attempt) await store.finishRun(attempt.id, terminalStatus, {
       errorClass: result.failure?.code ?? reason, errorText: result.failure?.safeSummary ?? result.exitReason, result: failureResult,

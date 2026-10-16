@@ -27,6 +27,7 @@ interface FakeRun {
     persistence: 'pending' | 'persisted' | 'failed';
     ownerGeneration: number;
   };
+  failure?: { code: string; failureClass: string; safeSummary: string; retryable: boolean };
 }
 
 /** Фейковый Runner: тот же контракт, что у Serverless Agent API, без сети. */
@@ -37,6 +38,10 @@ const makeFakeRunner = (
     persistence?: 'persisted' | 'failed';
     outputRefs?: string[];
     artifactManifests?: Array<{ artifactId: string; name: string; storageKey: string; size: number; sha256: string; mime: string }>;
+    outcome?: 'succeeded' | 'failed' | 'cancelled';
+    exitReason?: string;
+    exitCode?: number | null;
+    failure?: { code: string; failureClass: string; safeSummary: string; retryable: boolean };
   } = {},
 ) => {
   const runs = new Map<string, FakeRun>();
@@ -61,12 +66,13 @@ const makeFakeRunner = (
           { type: 'log', sequence: 4, payload: { stream: 'stdout', level: 'info', message: 'Готово: отчёт собран.' } },
         ],
         result: {
-          outcome: 'succeeded',
-          exitReason: 'completed',
+          outcome: opts.outcome ?? 'succeeded',
+          exitReason: opts.exitReason ?? (opts.outcome === 'failed' ? 'agent_exited_nonzero' : opts.outcome === 'cancelled' ? 'cancelled' : 'completed'),
           outputRefs: opts.outputRefs ?? [`r2://control-plane/${input.userTaskId}/answer.json`],
           persistence: opts.persistence ?? 'persisted',
           ownerGeneration: 1,
         },
+        ...(opts.failure ? { failure: opts.failure } : {}),
       };
       runs.set(runId, run);
       receipts.set(input.idempotencyKey, { runId, deduplicated: false });
@@ -77,7 +83,7 @@ const makeFakeRunner = (
       if (!run) throw new Error(`unknown run ${runId}`);
       run.statusCalls = (run.statusCalls ?? 0) + 1;
       // Первый опрос — running, дальше — терминал (фейк завершает работу).
-      const state = run.statusCalls < 2 ? 'running' : 'succeeded';
+      const state = run.statusCalls < 2 ? 'running' : run.result.outcome;
       return {
         requestId: `req-${runId}`,
         userTaskId: 'ut-x',
@@ -102,7 +108,7 @@ const makeFakeRunner = (
         ownerGeneration: run.result.ownerGeneration,
         outcome: run.result.outcome,
         exitReason: run.result.exitReason,
-        exitCode: 0,
+        exitCode: opts.exitCode === undefined ? (run.result.outcome === 'failed' ? 1 : 0) : opts.exitCode,
         exitSignal: null,
         exitObserved: true,
         startedAt: new Date().toISOString(),
@@ -112,6 +118,7 @@ const makeFakeRunner = (
         persistence: run.result.persistence,
         cleanup: 'completed',
         logPath: `/logs/${runId}.log`,
+        ...(run.failure ? { failure: run.failure } : {}),
       };
     },
     async events(runId: string, cursor = 0) {
@@ -285,6 +292,48 @@ describe('Runner adapter: HTTP-клиент (маршруты, auth, идемп�
 });
 
 describe('Runner adapter: результат, курсор событий, артефакты', () => {
+  it('пишет события Runner в журнал до завершения запуска', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-live-events');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'проверим живой журнал' });
+    const { adapter: base } = makeFakeRunner();
+    const { runId } = await base.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
+    await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: runId });
+    let eventsSeenWhileRunning = 0;
+    const adapter = {
+      ...base,
+      async status(id: string) {
+        const status = await base.status(id);
+        if (status.state === 'running') eventsSeenWhileRunning = (await store.history(taskId)).filter(event => event.execution_id === runId).length;
+        return status;
+      },
+    };
+
+    const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
+
+    expect(outcome.ok).toBe(true);
+    expect(eventsSeenWhileRunning).toBeGreaterThan(0);
+  });
+
+  it('сохраняет exit и безопасную причину Runner failure для расследования', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-failure-diagnostics');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'проверим диагностику ошибки' });
+    const { adapter } = makeFakeRunner({ outcome: 'failed', exitReason: 'agent_exited_nonzero', exitCode: 17,
+      failure: { code: 'ENGINE_EXIT_NONZERO', failureClass: 'engine_failure', safeSummary: 'Agent process exited with code 17', retryable: false } });
+    const receipt = await adapter.submit({ userTaskId: taskId, idempotencyKey: await stableAttemptKey(taskId, 1) });
+    await store.startRun(taskId, { generation: 1, engine: 'opencode', sessionId: receipt.runId });
+
+    const outcome = await awaitRunnerResult(adapter as unknown as RunnerApiAdapter, store, { runId: receipt.runId, taskId, generation: 1, pollSec: 1, timeoutSec: 30 });
+
+    expect(outcome).toMatchObject({ ok: false, reason: 'runner_failed' });
+    const task = await store.requireTask(taskId);
+    const result = task.result_json ? JSON.parse(task.result_json) : null;
+    expect(result).toMatchObject({ runId: receipt.runId, exitReason: 'agent_exited_nonzero', exitCode: 17,
+      exitObserved: true,
+      failure: { code: 'ENGINE_EXIT_NONZERO', failureClass: 'engine_failure', safeSummary: 'Agent process exited with code 17', retryable: false } });
+  });
+
   it('awaitRunnerResult: события по курсору в журнал, артефакты зафиксированы, результат с маркерами попытки', async () => {
     const store = new TaskStore(env.DB);
     const taskId = nextId('ut');
