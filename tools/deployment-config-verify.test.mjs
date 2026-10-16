@@ -49,7 +49,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
 test('production release deploys the pinned Runner API and checks its revision before CP', () => {
     const workflow = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
     const runnerSha = workflow.match(/RUNNER_PRODUCTION_SOURCE_SHA: ([0-9a-f]{40})/)?.[1];
-    assert.equal(runnerSha, 'd00b905211f37f83242de6a5619b16a7d676ae13');
+    assert.equal(runnerSha, '5d511fe071253ac13cb3ae3bcd9b151fae7519dd');
     assert.match(workflow, /repository: trained-assist\/ai-agent-runner/);
     assert.match(workflow, /--config wrangler\.production\.jsonc --var BUILD_SHA:"\$RUNNER_PRODUCTION_SOURCE_SHA"/);
     assert.match(workflow, /for attempt in \$\(seq 1 30\)/);
@@ -61,6 +61,8 @@ test('production release deploys the pinned Runner API and checks its revision b
     const cpDeploy = workflow.indexOf('Deploy production');
     assert.ok(runnerDeploy >= 0 && runnerDeploy < runnerHealth && runnerHealth < cpMigration && cpMigration < cpDeploy);
     assert.ok(communicationPreflight >= 0 && communicationPreflight < cpDeploy);
+    const runnerHealthStep = workflow.slice(runnerHealth, cpMigration);
+    assert.match(runnerHealthStep, /GHA_WORKER_TOKEN_PRODUCTION_AGENT_API: \$\{\{ secrets\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \}\}/);
     assert.match(workflow, /Provision paired production Runner credentials/);
     assert.match(workflow, /Pair Control Plane with production Runner API/);
     assert.match(workflow, /production Runner authenticated capability probe failed/);
