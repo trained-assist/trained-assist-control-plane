@@ -86,7 +86,7 @@ jobs:
     environment: production
     env:
       # The CP deploy also ships this pinned Runner source; advance it with the reviewed Runner API release.
-      RUNNER_PRODUCTION_SOURCE_SHA: 6b66e9bd60670f44bac411bd2ea4a1c070990215
+      RUNNER_PRODUCTION_SOURCE_SHA: 5ed6abe15acaa60a472a074c274489982e164a98
       RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
@@ -139,24 +139,26 @@ jobs:
           RUN_LAUNCH_ENCRYPTION_KEY: ${{ secrets.RUN_LAUNCH_ENCRYPTION_KEY }}
           EU_VM_WORKER_URL: ${{ vars.EU_VM_WORKER_URL }}
           EU_VM_WORKER_TOKEN: ${{ secrets.EU_VM_WORKER_TOKEN }}
+          GHA_WORKER_TOKEN_PRODUCTION_AGENT_API: ${{ secrets.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API }}
           LLM_LADDER_TOKEN: ${{ secrets.LLM_LADDER_TOKEN }}
         run: |
           set -euo pipefail
-          for name in RUNNER_API_KEY_AGENT_API RUNNER_PROFILE_DELEGATION_SECRET RUN_LAUNCH_ENCRYPTION_KEY EU_VM_WORKER_URL EU_VM_WORKER_TOKEN LLM_LADDER_TOKEN; do
+          for name in RUNNER_API_KEY_AGENT_API RUNNER_PROFILE_DELEGATION_SECRET RUN_LAUNCH_ENCRYPTION_KEY EU_VM_WORKER_URL EU_VM_WORKER_TOKEN GHA_WORKER_TOKEN_PRODUCTION_AGENT_API LLM_LADDER_TOKEN; do
             test -n "${!name}" || { echo "required production Runner credential is missing: $name" >&2; exit 1; }
           done
           node --input-type=module <<'NODE' | npx wrangler secret bulk --config wrangler.production.jsonc >/dev/null
           import { createHash } from 'node:crypto';
-          const required = ['RUNNER_API_KEY_AGENT_API', 'RUNNER_PROFILE_DELEGATION_SECRET', 'RUN_LAUNCH_ENCRYPTION_KEY', 'EU_VM_WORKER_URL', 'EU_VM_WORKER_TOKEN', 'LLM_LADDER_TOKEN'];
+          const required = ['RUNNER_API_KEY_AGENT_API', 'RUNNER_PROFILE_DELEGATION_SECRET', 'RUN_LAUNCH_ENCRYPTION_KEY', 'EU_VM_WORKER_URL', 'EU_VM_WORKER_TOKEN', 'GHA_WORKER_TOKEN_PRODUCTION_AGENT_API', 'LLM_LADDER_TOKEN'];
           for (const name of required) if (!process.env[name]) throw new Error(`missing production Runner credential: ${name}`);
           const keyHash = createHash('sha256').update(process.env.RUNNER_API_KEY_AGENT_API).digest('hex');
-          const principal = { keyHash, principalId: 'cp-production-runner', profileId: 'trained-assist-production', tenantId: 'trained-assist-production', repository: 'trained-assist/ai-agent-runner', scopes: ['runs:read', 'runs:write'], engines: ['eu-vm-agent-run'] };
+          const principal = { keyHash, principalId: 'cp-production-runner', profileId: 'trained-assist-production', tenantId: 'trained-assist-production', repository: 'trained-assist/ai-agent-runner', scopes: ['runs:read', 'runs:write'], engines: ['eu-vm-agent-run', 'azure-cloud'] };
           process.stdout.write(JSON.stringify({
             RUNNER_API_KEYS_PRODUCTION: JSON.stringify([principal]),
             AGENT_API_PROFILE_DELEGATION_SECRET: process.env.RUNNER_PROFILE_DELEGATION_SECRET,
             RUN_LAUNCH_ENCRYPTION_KEY: process.env.RUN_LAUNCH_ENCRYPTION_KEY,
             VM_WORKER_URL: process.env.EU_VM_WORKER_URL,
             VM_WORKER_TOKEN: process.env.EU_VM_WORKER_TOKEN,
+            GHA_WORKER_TOKEN: process.env.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API,
             LLM_LADDER_TOKEN: process.env.LLM_LADDER_TOKEN,
           }));
           NODE
@@ -216,7 +218,9 @@ jobs:
           });
           if (!response.ok) throw new Error(`production Runner authenticated capability probe failed: HTTP ${response.status}`);
           const body = await response.json();
-          if (body.placement !== 'cloudflare-worker' || !body.executionRegions?.includes('eu-vm-agent-run')) {
+          if (body.placement !== 'cloudflare-worker' || !body.executionRegions?.includes('eu-vm-agent-run')
+            || !body.fallbackExecutionRegions?.includes('azure-cloud')
+            || body.routes?.gha?.available !== true || body.routes?.gha?.engine !== 'azure-cloud') {
             throw new Error('production Runner capability response mismatch');
           }
           console.log('Production Runner API key and delegated profile authenticated successfully.');
