@@ -86,7 +86,7 @@ jobs:
     environment: production
     env:
       # The CP deploy also ships this pinned Runner source; advance it with the reviewed Runner API release.
-      RUNNER_PRODUCTION_SOURCE_SHA: b1e979e7c57eb5811261d9e118c617c63a866f44
+      RUNNER_PRODUCTION_SOURCE_SHA: d00b905211f37f83242de6a5619b16a7d676ae13
       RUNNER_PRODUCTION_URL: https://trained-assist-runner-api-production.skillset-apply.workers.dev
     permissions:
       contents: read
