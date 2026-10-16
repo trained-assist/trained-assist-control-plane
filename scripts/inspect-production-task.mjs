@@ -59,7 +59,7 @@ async function readCappedText(response, maxBytes) {
 }
 
 export async function inspectProductionTask({ taskId, accountId, apiToken, runnerApiKey, runnerProfileDelegation,
-  databaseId, includeLogs = false, fetchImpl = fetch }) {
+  databaseId, vmWorkerUrl, vmWorkerToken, includeLogs = false, fetchImpl = fetch }) {
   if (!TASK_ID.test(taskId ?? '')) throw new Error('invalid_task_id');
   if (!/^[a-f0-9]{32}$/.test(accountId ?? '') || (apiToken?.length ?? 0) < 20) throw new Error('cloudflare_d1_credentials_missing');
   if ((runnerApiKey?.length ?? 0) < 32) throw new Error('runner_api_key_missing');
@@ -170,6 +170,44 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
       runnerGet(runnerRunId, 'artifacts', attempt.profile_id),
     ]);
     let savedLog = { fetched: false, host: null, httpStatus: null, bytes: null, truncated: false, error: null };
+    let workerLog = { fetched: false, httpStatus: null, bytes: null, stdoutChars: null, stderrChars: null, truncated: false, error: null };
+    if (includeLogs && status.engine === 'eu-vm-agent-run') {
+      try {
+        const workerBase = new URL(vmWorkerUrl ?? '');
+        if (workerBase.protocol !== 'https:' || workerBase.username || workerBase.password || workerBase.search || workerBase.hash
+          || typeof vmWorkerToken !== 'string' || vmWorkerToken.length < 32) {
+          workerLog = { ...workerLog, error: 'vm_worker_credentials_missing_or_invalid' };
+        } else {
+          const response = await fetchImpl(new URL(`/v1/runs/${encodeURIComponent(runnerRunId)}/logs?after=0`, workerBase), {
+            headers: { authorization: `Bearer ${vmWorkerToken}`, accept: 'text/event-stream' },
+            signal: AbortSignal.timeout(20_000), redirect: 'error',
+          });
+          workerLog = { ...workerLog, httpStatus: response.status };
+          if (response.ok) {
+            const content = await readCappedText(response, MAX_LOG_SOURCE_BYTES);
+            const redacted = redactDiagnosticText(content.text);
+            const streams = { stdout: [], stderr: [] };
+            for (const block of content.text.split(/\r?\n\r?\n/)) {
+              let event = '';
+              const data = [];
+              for (const line of block.split(/\r?\n/)) {
+                if (line.startsWith('event:')) event = line.slice(6).trim();
+                if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+              }
+              if (event !== 'stdout' && event !== 'stderr') continue;
+              let value = data.join('\n');
+              try { const parsed = JSON.parse(value); if (typeof parsed === 'string') value = parsed; } catch {}
+              streams[event].push(value);
+            }
+            const stdout = redactDiagnosticText(streams.stdout.join(''));
+            const stderr = redactDiagnosticText(streams.stderr.join(''));
+            workerLog = { ...workerLog, fetched: true, bytes: content.bytes, stdoutChars: stdout.length,
+              stderrChars: stderr.length, truncated: content.truncated || redacted.length > MAX_LOG_CHARS,
+              ...(redacted.length <= MAX_LOG_CHARS ? { text: redacted } : { text: redacted.slice(0, MAX_LOG_CHARS) }) };
+          }
+        }
+      } catch { workerLog = { ...workerLog, error: 'vm_worker_log_fetch_failed' }; }
+    }
     const rawLogUrl = typeof artifactManifest.logUrl === 'string' ? artifactManifest.logUrl : null;
     if (includeLogs && rawLogUrl) {
       try {
@@ -267,6 +305,8 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
         // A non-empty `worker-run:`/`local://` reference is not a log that this
         // inspector can retrieve. Keep this field tied to an allowlisted HTTP source.
         logAvailable: logReferenceKind(artifactManifest.logUrl) === 'google_storage',
+        ...(status.engine === 'eu-vm-agent-run' ? { workerLog: includeLogs ? workerLog
+          : { fetched: false, httpStatus: null, bytes: null, stdoutChars: null, stderrChars: null, truncated: false, error: 'logs_not_requested' } } : {}),
         ...(includeLogs ? { savedLog } : {}),
       },
     };
@@ -283,7 +323,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     apiToken: process.env.CF_API_TOKEN?.trim(), runnerApiKey: process.env.RUNNER_API_KEY_AGENT_API?.trim(),
     runnerProfileDelegation: { secret: process.env.RUNNER_PROFILE_DELEGATION_SECRET?.trim(),
       principalId: process.env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?.trim(),
-      tenantId: process.env.RUNNER_PROFILE_DELEGATION_TENANT_ID?.trim() }, includeLogs });
+      tenantId: process.env.RUNNER_PROFILE_DELEGATION_TENANT_ID?.trim() },
+    vmWorkerUrl: process.env.EU_VM_WORKER_URL?.trim(), vmWorkerToken: process.env.EU_VM_WORKER_TOKEN?.trim(), includeLogs });
   const path = process.env.DIAGNOSTICS_OUTPUT_PATH?.trim() || 'production-task-diagnostics.json';
   const { writeFile } = await import('node:fs/promises');
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
