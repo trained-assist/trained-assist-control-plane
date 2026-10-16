@@ -42,6 +42,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
     assert.equal(production.vars.COMMUNICATION_WRITER_TIMEOUT_MS, '20000');
     assert.equal(production.vars.RUNNER_API_ENGINE_SELECTION, 'agent_api');
     assert.equal(production.vars.RUNNER_API_URL, 'https://trained-assist-runner-api-production.skillset-apply.workers.dev');
+    assert.equal(production.vars.RUN_SPEC_ENV_ALLOWLIST, 'LLM_LADDER_TOKEN');
     assert.equal(production.vars.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID, 'cp-production-runner');
     assert.equal(production.vars.RUNNER_PROFILE_DELEGATION_TENANT_ID, 'trained-assist-production');
 });
