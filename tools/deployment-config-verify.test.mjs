@@ -70,7 +70,9 @@ test('production release deploys the pinned Runner API and checks its revision b
     assert.match(workflow, /GHA_WORKER_TOKEN_PRODUCTION_AGENT_API: \$\{\{ secrets\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \}\}/);
     assert.match(workflow, /engines: \['eu-vm-agent-run', 'azure-cloud'\]/);
     assert.match(workflow, /GHA_WORKER_TOKEN: process\.env\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API/);
-    assert.match(workflow, /body\.routes\?\.gha\?\.available !== true/);
+    assert.match(workflow, /const ghaExpected = Boolean\(process\.env\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API\)/);
+    assert.match(workflow, /const ghaUnavailable = body\.routes\?\.gha\?\.available === false/);
+    assert.match(workflow, /process\.env\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \? \{ GHA_WORKER_TOKEN:/);
     assert.match(workflow, /COMMUNICATION_PRODUCTION_TOKEN: \$\{\{ secrets\.COMMUNICATION_PRODUCTION_TOKEN \}\}/);
     assert.match(workflow, /COMMUNICATION_TOKEN: process\.env\.COMMUNICATION_PRODUCTION_TOKEN/);
     assert.match(workflow, /production-agent-smoke-v1/);
