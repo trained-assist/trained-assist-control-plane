@@ -148,6 +148,14 @@ describe('runner adapter route mode', () => {
     expect(bodies[0]).toMatchObject({ routeMode: 'gha', userTaskId: 'ut-abc123' });
     expect(bodies[0]).not.toHaveProperty('engine');
   });
+
+  it('treats ROUTE_UNAVAILABLE as a definitive strict-route refusal', async () => {
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', (async () => new Response(JSON.stringify({
+      error: { code: 'ROUTE_UNAVAILABLE', message: 'the GHA/Azure route is not configured for this Runner API' },
+    }), { status: 503, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch, 'agent_api');
+    await expect(adapter.submit({ userTaskId: 'ut-abc123', idempotencyKey: 'k1', routeMode: 'gha' }))
+      .rejects.toMatchObject({ name: 'RunnerConflictError', apiCode: 'ROUTE_UNAVAILABLE', statusCode: 503 });
+  });
 });
 
 describe('run-spec: хостовая политика из bindings', () => {

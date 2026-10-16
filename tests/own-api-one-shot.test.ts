@@ -5,6 +5,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { TaskStore } from '../src/taskstore';
 import { extractEngineText, ENGINE_TEXT_VERSION } from '../src/runner-adapter/engine-text';
 import { awaitRunnerResult, RunnerApiAdapter } from '../src/runner-adapter';
+import { RunnerConflictError } from '../src/runner-adapter/errors';
 import { conversationPlan, type PlanParams } from '../src/workflow-port/conversation-plan';
 import { cfStepCtx, type StepCtx } from '../src/workflow-port/step-ctx';
 import { describe, expect, it, vi } from 'vitest';
@@ -22,13 +23,14 @@ const ctx: StepCtx = {
 };
 
 /** Фейковый Runner: тот же контракт Serverless Agent API, без сети. */
-const makeFakeRunner = (opts: { stdout?: string[]; failSubmit?: boolean } = {}) => {
+const makeFakeRunner = (opts: { stdout?: string[]; failSubmit?: boolean; submitError?: Error } = {}) => {
   const runId = nextId('run');
   let submittedRouteMode: string | undefined;
   const stdout = opts.stdout ?? ['работаю', 'Готово: отчёт собран.'];
   const adapter = {
     async submit(input: { userTaskId: string; idempotencyKey: string; routeMode?: string }) {
       submittedRouteMode = input.routeMode;
+      if (opts.submitError) throw opts.submitError;
       if (opts.failSubmit) throw new Error('injected: runner down');
       return { requestId: `req-${runId}`, userTaskId: input.userTaskId, runId, deduplicated: false };
     },
@@ -115,6 +117,25 @@ describe('one-shot с движком: результат = текст движк
       goal: 'найди источники', runnerPollSec: 1, runnerTimeoutSec: 30, runnerRouteMode: 'gha',
     }, { adapter: runner.adapter as unknown as RunnerApiAdapter });
     expect(runner.submittedRouteMode()).toBe('gha');
+  });
+
+  it('fails the task clearly when the strict GHA route is unavailable', async () => {
+    const store = new TaskStore(env.DB);
+    const taskId = nextId('ut-route-unavailable');
+    await store.admitTask({ id: taskId, profileId: 'profile-1', goal: 'найди источники' });
+    const attempt = await store.startRun(taskId, { generation: 1, engine: 'opencode' });
+    const runner = makeFakeRunner({ submitError: new RunnerConflictError(
+      'ROUTE_UNAVAILABLE: GHA route is not configured', { apiCode: 'ROUTE_UNAVAILABLE', statusCode: 503 },
+    ) });
+    const outcome = await conversationPlan(ctx, store, {
+      taskId, generation: 1, profileId: 'profile-1', runId: attempt.id,
+      goal: 'найди источники', runnerPollSec: 1, runnerTimeoutSec: 30, runnerRouteMode: 'gha',
+    }, { adapter: runner.adapter as unknown as RunnerApiAdapter });
+    expect(outcome).toMatchObject({ ok: false, reason: 'runner_route_unavailable' });
+    expect(JSON.parse((await store.requireTask(taskId)).result_json!)).toMatchObject({
+      ok: false, reason: 'runner_route_unavailable', errorCode: 'ROUTE_UNAVAILABLE',
+    });
+    expect((await store.requireTask(taskId)).status).toBe('failed');
   });
 
   it('без awaitingPurpose план закрывает задачу текстом движка, без ожидания', async () => {

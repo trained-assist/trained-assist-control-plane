@@ -202,6 +202,11 @@ export class RunnerApiAdapter {
         throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
       }
       if (code === 'STALE_OWNER_GENERATION') throw new RunnerStaleGenerationError(message);
+      // Runner confirms this strict-route refusal before admitting a run. It is
+      // definitive, so do not leave a phantom attempt in connection_lost.
+      if (code === 'ROUTE_UNAVAILABLE') {
+        throw new RunnerConflictError(`${code}: ${message}`, { apiCode: code, statusCode: res.status });
+      }
       if (res.status >= 500 || res.status === 429) throw new RunnerUnavailableError(`${code}: ${message}`, undefined, res.status);
       const fieldPaths = Array.isArray(err?.details?.errors)
         ? err.details.errors.flatMap((entry) => {
