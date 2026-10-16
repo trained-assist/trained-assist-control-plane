@@ -247,6 +247,20 @@ describe('run-spec: хостовая политика из bindings', () => {
     expect(() => runSpecPolicyOf({ RUN_SPEC_POLICY_PROFILE: 'invented' })).toThrow(RunSpecMappingError);
   });
 
+  it('does not publish free-text Agent API runs without explicit outputs or a repository', () => {
+    const spec = buildRunSpec(baseInput, runSpecPolicyOf({})).spec;
+    expect(toSubmitRequest(spec, { engineSelection: 'agent_api' }).publicationMode).toBe('none');
+    expect(toSubmitRequest(spec).publicationMode).toBeUndefined();
+    const outputSpec = buildRunSpec(baseInput, runSpecPolicyOf({
+      RUN_SPEC_OUTPUTS: JSON.stringify([{ path: 'artifacts/report.md', name: 'report', mime: 'text/markdown' }]),
+    })).spec;
+    expect(toSubmitRequest(outputSpec, { engineSelection: 'agent_api' }).publicationMode).toBeUndefined();
+    const repositorySpec = buildRunSpec(baseInput, runSpecPolicyOf({
+      RUN_SPEC_REPOSITORY: JSON.stringify({ fullName: 'owner/repo' }),
+    })).spec;
+    expect(toSubmitRequest(repositorySpec, { engineSelection: 'agent_api' }).publicationMode).toBeUndefined();
+  });
+
   it('относительный путь выхода и небезопасный repository отклоняются локально', () => {
     const abs = runSpecPolicyOf({ RUN_SPEC_OUTPUTS: JSON.stringify([{ path: '/etc/passwd' }]) });
     expect(() => buildRunSpec(baseInput, abs)).toThrow(RunSpecMappingError);

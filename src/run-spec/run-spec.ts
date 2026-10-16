@@ -185,6 +185,7 @@ export interface SubmitRequest {
   budget?: BudgetSpec;
   result?: ResultPolicy;
   outputs?: OutputSpec[];
+  publicationMode?: 'git' | 'none';
   mcp?: McpSpec;
   traceId?: string;
   instructions?: string;
@@ -246,6 +247,12 @@ export function toSubmitRequest(spec: RunSpec, options: { engineSelection?: 'cal
   };
   if (spec.outputs) body.outputs = spec.outputs;
   if (spec.repository) body.repository = spec.repository;
+  // The Agent API principal can have an internal default repository binding. A
+  // free-text run with no declared outputs or explicit repository should return
+  // its answer without attempting an unrelated Git publication to that binding.
+  if (options.engineSelection === 'agent_api' && !spec.repository && !(spec.outputs?.length)) {
+    body.publicationMode = 'none';
+  }
   if (spec.result) body.result = spec.result;
   if (spec.mcp) body.mcp = mcpSubmitSpecOf(spec.mcp);
   if (spec.traceId) body.traceId = spec.traceId;
