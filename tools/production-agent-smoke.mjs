@@ -12,6 +12,8 @@ export const PRODUCTION_AGENT_SMOKE = {
   runnerTenant: 'trained-assist-production',
   runnerProfile: 'production-agent-smoke-v1',
   expectedExecutionWorker: 'eu-vm-agent-run',
+  runnerRouteMode: 'gha',
+  expectedRouteMode: 'gha',
 };
 
 export function runProductionAgentSmoke(environment = process.env, fetchImpl = fetch) {

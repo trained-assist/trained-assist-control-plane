@@ -21,7 +21,7 @@ export function classifyMcpDiagnostic(value) {
 export async function runControlPlaneAgentSmoke(config, environment = process.env, fetchImpl = fetch) {
   const { baseUrl, principal, profile, secretEnv, requestPrefix, runnerApiUrl, runnerPrincipal, runnerTenant,
     runnerProfile, expectedExecutionWorker, maxWaitMs = 8 * 60_000, inputText,
-    expectedRunnerResultIncludes, expectedToolName } = config;
+    expectedRunnerResultIncludes, expectedToolName, runnerRouteMode, expectedRouteMode } = config;
   const expectedBuildSha = environment.CONTROL_PLANE_EXPECTED_BUILD_SHA;
   const secret = typeof environment[secretEnv] === 'string' ? environment[secretEnv].trim() : '';
   const reportFile = environment.INTEGRATION_REPORT_FILE;
@@ -120,6 +120,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
 
     const envelope = { contractVersion: 1, requestId, profileId: profile,
       conversationRef: requestId, sessionId: requestId,
+      ...(runnerRouteMode ? { runnerRouteMode } : {}),
       inputItems: [{ text: inputText ?? 'Составь три коротких нейтральных вопроса для собеседования. Не используй инструменты.' }] };
     const receipt = await call('/intake', envelope, 60_000);
     if (receipt.durable !== true || typeof receipt.userTaskId !== 'string' || !receipt.userTaskId
@@ -127,7 +128,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
     taskId = receipt.userTaskId;
     report.userTaskId = taskId;
 
-    const route = await call('/route', { taskId, continue: true }, 90_000);
+    const route = await call('/route', { taskId, continue: true, ...(runnerRouteMode ? { runnerRouteMode } : {}) }, 90_000);
     if (route.route !== 'agent' || route.continuation?.issued !== true) fail('route_not_agent_or_not_started');
     report.route = route.route;
     report.routeReasonCode = safeCode(route.reasonCode);
@@ -163,7 +164,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
       fail('agent_task_deadline_exceeded');
     }
 
-    if (!await captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName)) fail('runner_run_not_successful');
+    if (!await captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName, expectedRouteMode)) fail('runner_run_not_successful');
     report.outcome = 'passed';
   } catch (error) {
     report.reason = error?.code ?? safeCode(error?.message) ?? 'agent_smoke_failed';
@@ -177,7 +178,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
             ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(20_000) });
           if (!response.ok) fail(`worker_tail_http_${response.status}`);
           return response.json();
-        }, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName);
+        }, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName, expectedRouteMode);
         if (!tail && report.workerTailCapture !== 'captured') report.workerTailCapture = 'failed';
       } catch { report.workerTailCapture = 'failed'; }
       try {
@@ -196,7 +197,7 @@ export async function runControlPlaneAgentSmoke(config, environment = process.en
   return report;
 }
 
-async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName) {
+async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRunnerResultIncludes, expectedToolName, expectedRouteMode) {
   const page = await call(`/events?taskId=${encodeURIComponent(taskId)}&limit=500`);
   if (!Array.isArray(page.events)) fail('worker_event_tail_invalid');
   const events = page.events.map(event => ({
@@ -225,6 +226,8 @@ async function captureWorkerTail(call, runnerRequest, taskId, report, expectedRu
   const toolCalls = outputEvents.filter(event => event.type === 'tool_use' && event.part?.tool === expectedToolName);
   const toolStates = toolCalls.map(event => event.part?.state).filter(state => state && typeof state === 'object');
   report.runnerState = status.state;
+  report.runnerRouteMode = safeCode(status.routeMode);
+  if (expectedRouteMode && status.routeMode !== expectedRouteMode) fail('runner_route_mode_mismatch');
   report.runnerEventCount = eventsPage.events.length;
   report.runnerOutputEvidence = {
     stdoutChars: stdout.length,
