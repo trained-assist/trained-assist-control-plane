@@ -660,6 +660,12 @@ async function handleRouteRoute(
 
   // Исходный текст — из принятой задачи: он неизменен и не переписывается шлюзом.
   const storedValue = task.user_value ? (JSON.parse(task.user_value) as Record<string, unknown>) : {};
+  const requestedRunnerRouteMode = body.runnerRouteMode;
+  if (requestedRunnerRouteMode !== undefined
+    && (requestedRunnerRouteMode !== 'auto' && requestedRunnerRouteMode !== 'france' && requestedRunnerRouteMode !== 'gha'
+      || requestedRunnerRouteMode !== storedValue.runnerRouteMode)) {
+    return json({ error: { code: 'RUNNER_ROUTE_MODE_MISMATCH', message: 'runnerRouteMode must match the value durably accepted with this task' } }, 400);
+  }
   const inputItems = Array.isArray(storedValue.inputItems) ? (storedValue.inputItems as Array<{ text?: string }>) : [];
   const text = inputItems.map((item) => item.text ?? '').join('\n').trim();
 

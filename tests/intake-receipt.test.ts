@@ -140,6 +140,24 @@ describe('Intake: квитанция и идемпотентность (C01)', (
       .toEqual({ workStyle: 'auto', source: 'default' });
   });
 
+  it('stores runnerRouteMode durably and includes it in the idempotency payload', async () => {
+    const { store, intake } = await setup();
+    const requestId = nextId('req-runner-route');
+    const accepted = await intake.admit({ principalId: 'sandbox-local' }, envelope({ requestId, runnerRouteMode: 'gha' }));
+    const task = await store.requireTask(accepted.userTaskId);
+    expect(JSON.parse(task.user_value!)).toMatchObject({ runnerRouteMode: 'gha' });
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({ requestId, runnerRouteMode: 'france' })))
+      .rejects.toBeInstanceOf(EnvelopeConflictError);
+  });
+
+  it('rejects an unsupported runner route before creating a task', async () => {
+    const { store, intake } = await setup();
+    const requestId = nextId('req-runner-route-invalid');
+    await expect(intake.admit({ principalId: 'sandbox-local' }, envelope({ requestId, runnerRouteMode: 'fallback' })))
+      .rejects.toThrow('runnerRouteMode must be auto, france, or gha');
+    expect(await store.getTask(await deriveUserTaskId('profile-1', requestId))).toBeNull();
+  });
+
   it('rejects unsupported workStyle before durable admission', async () => {
     const { store, intake } = await setup();
     const requestId = nextId('req-style-invalid');

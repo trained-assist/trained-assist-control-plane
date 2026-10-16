@@ -133,6 +133,31 @@ describe('run-spec: сборка по умолчанию', () => {
   });
 });
 
+describe('runner adapter route mode', () => {
+  it('forwards strict GHA selection to Runner API without changing the RunSpec contract', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ requestId: 'req-1', userTaskId: 'ut-abc123', runId: 'run-1', deduplicated: false }), {
+        status: 202, headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', fetchImpl, 'agent_api');
+    const built = buildRunSpec(baseInput, policy);
+    await adapter.submit({ userTaskId: 'ut-abc123', idempotencyKey: 'k1', runSpec: built.spec, routeMode: 'gha' });
+    expect(bodies[0]).toMatchObject({ routeMode: 'gha', userTaskId: 'ut-abc123' });
+    expect(bodies[0]).not.toHaveProperty('engine');
+  });
+
+  it('treats ROUTE_UNAVAILABLE as a definitive strict-route refusal', async () => {
+    const adapter = new RunnerApiAdapter('http://runner.local', 'test-key', (async () => new Response(JSON.stringify({
+      error: { code: 'ROUTE_UNAVAILABLE', message: 'the GHA/Azure route is not configured for this Runner API' },
+    }), { status: 503, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch, 'agent_api');
+    await expect(adapter.submit({ userTaskId: 'ut-abc123', idempotencyKey: 'k1', routeMode: 'gha' }))
+      .rejects.toMatchObject({ name: 'RunnerConflictError', apiCode: 'ROUTE_UNAVAILABLE', statusCode: 503 });
+  });
+});
+
 describe('run-spec: хостовая политика из bindings', () => {
   it('по умолчанию — минимальная и непривилегированная', () => {
     const p = runSpecPolicyOf({});

@@ -49,7 +49,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
 test('production release deploys the pinned Runner API and checks its revision before CP', () => {
     const workflow = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
     const runnerSha = workflow.match(/RUNNER_PRODUCTION_SOURCE_SHA: ([0-9a-f]{40})/)?.[1];
-    assert.equal(runnerSha, '6b66e9bd60670f44bac411bd2ea4a1c070990215');
+    assert.equal(runnerSha, '5d511fe071253ac13cb3ae3bcd9b151fae7519dd');
     assert.match(workflow, /repository: trained-assist\/ai-agent-runner/);
     assert.match(workflow, /--config wrangler\.production\.jsonc --var BUILD_SHA:"\$RUNNER_PRODUCTION_SOURCE_SHA"/);
     assert.match(workflow, /for attempt in \$\(seq 1 30\)/);
@@ -61,12 +61,20 @@ test('production release deploys the pinned Runner API and checks its revision b
     const cpDeploy = workflow.indexOf('Deploy production');
     assert.ok(runnerDeploy >= 0 && runnerDeploy < runnerHealth && runnerHealth < cpMigration && cpMigration < cpDeploy);
     assert.ok(communicationPreflight >= 0 && communicationPreflight < cpDeploy);
+    const runnerHealthStep = workflow.slice(runnerHealth, cpMigration);
+    assert.match(runnerHealthStep, /GHA_WORKER_TOKEN_PRODUCTION_AGENT_API: \$\{\{ secrets\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \}\}/);
     assert.match(workflow, /Provision paired production Runner credentials/);
     assert.match(workflow, /Pair Control Plane with production Runner API/);
     assert.match(workflow, /production Runner authenticated capability probe failed/);
     assert.match(workflow, /RUNNER_API_KEYS_PRODUCTION/);
     assert.match(workflow, /EU_VM_WORKER_URL: \$\{\{ vars\.EU_VM_WORKER_URL \}\}/);
     assert.match(workflow, /EU_VM_WORKER_TOKEN: \$\{\{ secrets\.EU_VM_WORKER_TOKEN \}\}/);
+    assert.match(workflow, /GHA_WORKER_TOKEN_PRODUCTION_AGENT_API: \$\{\{ secrets\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \}\}/);
+    assert.match(workflow, /engines: \['eu-vm-agent-run', 'azure-cloud'\]/);
+    assert.match(workflow, /GHA_WORKER_TOKEN: process\.env\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API/);
+    assert.match(workflow, /const ghaExpected = Boolean\(process\.env\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API\)/);
+    assert.match(workflow, /const ghaUnavailable = body\.routes\?\.gha\?\.available === false/);
+    assert.match(workflow, /process\.env\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \? \{ GHA_WORKER_TOKEN:/);
     assert.match(workflow, /COMMUNICATION_PRODUCTION_TOKEN: \$\{\{ secrets\.COMMUNICATION_PRODUCTION_TOKEN \}\}/);
     assert.match(workflow, /COMMUNICATION_TOKEN: process\.env\.COMMUNICATION_PRODUCTION_TOKEN/);
     assert.match(workflow, /production-agent-smoke-v1/);

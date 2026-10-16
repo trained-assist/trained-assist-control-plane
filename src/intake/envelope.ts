@@ -10,6 +10,7 @@
 
 export const ADMISSION_CONTRACT_VERSION = 1;
 export type WorkStyle = 'explore' | 'answer' | 'auto';
+export type RunnerRouteMode = 'auto' | 'france' | 'gha';
 
 /** Один элемент входа: текст и/или ссылки на артефакты (C01 inputItems/artifactRefs). */
 export interface IntakeItem {
@@ -50,6 +51,8 @@ export interface IntakeEnvelope {
   inputItems: IntakeItem[];
   /** Исполнение запрошено сейчас или только принято (C01: receipt != запуск). */
   requestedExecutionPolicy?: string | null;
+  /** Строгий маршрут Runner API, сохранённый вместе с задачей и не выбираемый моделью. */
+  runnerRouteMode?: RunnerRouteMode;
   /** Launch intent selected by the user; defaults to auto at durable admission. */
   workStyle?: WorkStyle;
   workStyleSource?: 'explicit' | 'default';
@@ -93,6 +96,11 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
   const contractVersion = e.contractVersion === undefined ? ADMISSION_CONTRACT_VERSION : Number(e.contractVersion);
   if (!Number.isInteger(contractVersion) || contractVersion < 1) {
     throw new InvalidEnvelopeError('contractVersion must be a positive integer', 'contractVersion');
+  }
+
+  const runnerRouteMode = e.runnerRouteMode;
+  if (runnerRouteMode !== undefined && runnerRouteMode !== 'auto' && runnerRouteMode !== 'france' && runnerRouteMode !== 'gha') {
+    throw new InvalidEnvelopeError('runnerRouteMode must be auto, france, or gha', 'runnerRouteMode');
   }
 
   const rawItems = e.inputItems === undefined ? [] : e.inputItems;
@@ -199,6 +207,7 @@ export function normalizeEnvelope(raw: unknown): IntakeEnvelope {
     pendingBatchId: str('pendingBatchId'),
     inputItems,
     requestedExecutionPolicy: str('requestedExecutionPolicy'),
+    ...(runnerRouteMode ? { runnerRouteMode } : {}),
     workStyle,
     workStyleSource,
     replyToRef: str('replyToRef'),
@@ -256,6 +265,7 @@ export function canonicalEnvelopeJson(envelope: IntakeEnvelope): string {
       snapshotId: item.snapshotId ?? null,
     })),
     requestedExecutionPolicy: envelope.requestedExecutionPolicy ?? null,
+    ...(envelope.runnerRouteMode ? { runnerRouteMode: envelope.runnerRouteMode } : {}),
     workStyle: envelope.workStyle ?? 'auto',
     workStyleSource: envelope.workStyleSource ?? 'default',
     question: envelope.question ?? null,
