@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { inspectProductionTask, redactDiagnosticText } from '../scripts/inspect-production-task.mjs';
+import { inspectProductionTask, logReferenceKind, redactDiagnosticText } from '../scripts/inspect-production-task.mjs';
 
 const attempt = { id: 'cp-attempt-1', session_id: `run_${'a'.repeat(24)}`, engine: 'azure-cloud', status: 'failed', generation: 2,
   started_at: 1_797_500_000_000, finished_at: 1_797_500_010_000, error_class: 'ENGINE_EXIT_NONZERO' };
 
-function mockFetch({ includeAttempt = true, includeGatewayRun = false } = {}) {
+function mockFetch({ includeAttempt = true, includeGatewayRun = false, logUrl = 'https://storage.googleapis.com/private?sig=secret' } = {}) {
   const calls = [];
   const fetchImpl = async (input, init) => {
     const url = String(input);
@@ -21,7 +21,7 @@ function mockFetch({ includeAttempt = true, includeGatewayRun = false } = {}) {
     if (url.endsWith('/result')) return Response.json({ outcome: 'failed', exitReason: 'agent_exited_nonzero', exitCode: 17, exitSignal: null,
       exitObserved: true, failure: { code: 'ENGINE_EXIT_NONZERO', failureClass: 'engine_failure', safeSummary: 'Agent process exited with code 17', retryable: false } });
     if (url.includes('/events?')) return Response.json({ events: [{ sequence: 7, timestamp: '2026-10-16T00:00:00Z', type: 'log', payload: { stream: 'stderr', message: 'token=sk-' + 'x'.repeat(30) } }], resetRequired: false });
-    if (url.endsWith('/artifacts')) return Response.json({ artifacts: [], logUrl: 'https://storage.googleapis.com/private?sig=secret' });
+    if (url.endsWith('/artifacts')) return Response.json({ artifacts: [], logUrl });
     if (url.startsWith('https://storage.googleapis.com/')) return new Response(`Runner diagnostic\nBearer ${'b'.repeat(32)}\nexitCode=17`, { status: 200 });
     throw new Error(`unexpected request: ${url}`);
   };
@@ -34,6 +34,12 @@ describe('production task diagnostics', () => {
       .rejects.toThrow('invalid_task_id');
     expect(redactDiagnosticText(`Bearer ${'b'.repeat(32)} sk-${'x'.repeat(30)}`)).toContain('[REDACTED]');
     expect(redactDiagnosticText(`Bearer ${'b'.repeat(32)} sk-${'x'.repeat(30)}`)).not.toContain('x'.repeat(30));
+  });
+
+  it('does not call internal and local log references downloadable logs', () => {
+    expect(logReferenceKind(`worker-run:${attempt.session_id}`)).toBe('runner_internal');
+    expect(logReferenceKind(`local://runs/${attempt.session_id}/logs`)).toBe('worker_local');
+    expect(logReferenceKind('https://storage.googleapis.com/bucket/run.log')).toBe('google_storage');
   });
 
   it('maps task attempts to Runner IDs and omits log text unless explicitly requested', async () => {
@@ -65,6 +71,13 @@ describe('production task diagnostics', () => {
       .find((body) => body.sql?.includes('gateway_runs'));
     expect(gatewayQuery.params).toEqual(['ut-abcdefgh1234', attempt.session_id]);
     expect(gatewayQuery.sql).not.toContain('input');
+  });
+
+  it('reports an internal Runner reference as unavailable instead of treating the placeholder as a log', async () => {
+    const { fetchImpl } = mockFetch({ logUrl: `worker-run:${attempt.session_id}` });
+    const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
+      runnerApiKey: 'r'.repeat(32), fetchImpl });
+    expect(report.attempts[0].runner).toMatchObject({ logReferenceKind: 'runner_internal', logAvailable: false });
   });
 
   it('includes redacted log text only when explicitly requested', async () => {

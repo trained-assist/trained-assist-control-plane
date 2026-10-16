@@ -18,6 +18,20 @@ export function redactDiagnosticText(text) {
     .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[=:]\s*)["']?[^\s"',;}]+["']?/gi, '$1[REDACTED]');
 }
 
+export function logReferenceKind(rawUrl) {
+  if (typeof rawUrl !== 'string' || rawUrl.length === 0) return 'none';
+  if (rawUrl.startsWith('local://')) return 'worker_local';
+  if (rawUrl.startsWith('worker-run:') || rawUrl.startsWith('worker://')) return 'runner_internal';
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol === 'https:' && (url.hostname === 'storage.googleapis.com'
+      || url.hostname.endsWith('.storage.googleapis.com') || url.hostname === 'storage.cloud.google.com'
+      || url.hostname.endsWith('.storage.cloud.google.com'))) return 'google_storage';
+    if (url.protocol === 'https:' && url.hostname === 'github.com' && /\/actions\/runs\/\d+\/?$/.test(url.pathname)) return 'github_actions';
+  } catch {}
+  return 'unsupported';
+}
+
 async function readCappedText(response, maxBytes) {
   if (Number(response.headers.get('content-length')) > maxBytes) return { text: '', bytes: 0, truncated: true };
   if (!response.body) return { text: '', bytes: 0, truncated: false };
@@ -238,7 +252,10 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
         eventReadError,
         logEvents: safeLogEvents,
         artifactCount: Array.isArray(artifactManifest.artifacts) ? artifactManifest.artifacts.length : null,
-        logAvailable: typeof artifactManifest.logUrl === 'string' && artifactManifest.logUrl.length > 0,
+        logReferenceKind: logReferenceKind(artifactManifest.logUrl),
+        // A non-empty `worker-run:`/`local://` reference is not a log that this
+        // inspector can retrieve. Keep this field tied to an allowlisted HTTP source.
+        logAvailable: logReferenceKind(artifactManifest.logUrl) === 'google_storage',
         ...(includeLogs ? { savedLog } : {}),
       },
     };
