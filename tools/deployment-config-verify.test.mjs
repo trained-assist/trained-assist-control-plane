@@ -49,7 +49,7 @@ test('staging stays isolated while production scheduler and CP admissions are en
 test('production release deploys the pinned Runner API and checks its revision before CP', () => {
     const workflow = readFileSync(new URL('.github/workflows/ci.yml', `file://${process.cwd()}/`), 'utf8');
     const runnerSha = workflow.match(/RUNNER_PRODUCTION_SOURCE_SHA: ([0-9a-f]{40})/)?.[1];
-    assert.equal(runnerSha, 'b9d4e2b793b56b68c92247cab9b90a21e2fc9a49');
+    assert.equal(runnerSha, '5ed6abe15acaa60a472a074c274489982e164a98');
     assert.match(workflow, /repository: trained-assist\/ai-agent-runner/);
     assert.match(workflow, /--config wrangler\.production\.jsonc --var BUILD_SHA:"\$RUNNER_PRODUCTION_SOURCE_SHA"/);
     assert.match(workflow, /for attempt in \$\(seq 1 30\)/);
