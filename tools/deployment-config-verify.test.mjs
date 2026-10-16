@@ -61,6 +61,8 @@ test('production release deploys the pinned Runner API and checks its revision b
     const cpDeploy = workflow.indexOf('Deploy production');
     assert.ok(runnerDeploy >= 0 && runnerDeploy < runnerHealth && runnerHealth < cpMigration && cpMigration < cpDeploy);
     assert.ok(communicationPreflight >= 0 && communicationPreflight < cpDeploy);
+    const runnerHealthStep = workflow.slice(runnerHealth, cpMigration);
+    assert.match(runnerHealthStep, /GHA_WORKER_TOKEN_PRODUCTION_AGENT_API: \$\{\{ secrets\.GHA_WORKER_TOKEN_PRODUCTION_AGENT_API \}\}/);
     assert.match(workflow, /Provision paired production Runner credentials/);
     assert.match(workflow, /Pair Control Plane with production Runner API/);
     assert.match(workflow, /production Runner authenticated capability probe failed/);
