@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createHmac } from 'node:crypto';
 
 const RUNNER_API = 'https://trained-assist-runner-api-production.skillset-apply.workers.dev';
 const RUNNER_RUN_ID = /^run_[A-Za-z0-9_-]{20,160}$/;
@@ -57,10 +58,14 @@ async function readCappedText(response, maxBytes) {
   return { text, bytes, truncated };
 }
 
-export async function inspectProductionTask({ taskId, accountId, apiToken, runnerApiKey, databaseId, includeLogs = false, fetchImpl = fetch }) {
+export async function inspectProductionTask({ taskId, accountId, apiToken, runnerApiKey, runnerProfileDelegation,
+  databaseId, includeLogs = false, fetchImpl = fetch }) {
   if (!TASK_ID.test(taskId ?? '')) throw new Error('invalid_task_id');
   if (!/^[a-f0-9]{32}$/.test(accountId ?? '') || (apiToken?.length ?? 0) < 20) throw new Error('cloudflare_d1_credentials_missing');
   if ((runnerApiKey?.length ?? 0) < 32) throw new Error('runner_api_key_missing');
+  const delegation = runnerProfileDelegation;
+  if (!delegation || [delegation.secret, delegation.principalId, delegation.tenantId]
+    .some((value) => typeof value !== 'string' || value.trim().length === 0)) throw new Error('runner_profile_delegation_missing');
 
   let resolvedDatabaseId = databaseId;
   if (!resolvedDatabaseId) {
@@ -122,14 +127,19 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
   };
 
   const attempts = await query(
-    `SELECT id, session_id, engine, status, generation, started_at, finished_at, error_class
-       FROM executions WHERE task_id = ? ORDER BY started_at, id`,
+    `SELECT executions.id, executions.session_id, executions.engine, executions.status, executions.generation,
+            executions.started_at, executions.finished_at, executions.error_class, durable_tasks.profile_id
+       FROM executions JOIN durable_tasks ON durable_tasks.id = executions.task_id
+      WHERE executions.task_id = ? ORDER BY executions.started_at, executions.id`,
     [taskId],
   );
-  const runnerHeaders = { authorization: `Bearer ${runnerApiKey}` };
-  const runnerGet = async (runId, endpoint) => {
+  const runnerGet = async (runId, endpoint, profileId) => {
+    const expiresAt = String(Date.now() + 60_000);
+    const message = `${delegation.principalId}\0${delegation.tenantId}\0${profileId}\0${expiresAt}`;
+    const signature = createHmac('sha256', delegation.secret).update(message).digest('hex');
     const response = await fetchImpl(`${RUNNER_API}/v1/runs/${encodeURIComponent(runId)}/${endpoint}`, {
-      headers: runnerHeaders,
+      headers: { authorization: `Bearer ${runnerApiKey}`, 'x-agent-profile-id': profileId,
+        'x-agent-profile-tenant': delegation.tenantId, 'x-agent-profile-exp': expiresAt, 'x-agent-profile-sig': signature },
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return { diagnosticError: `runner_http_${response.status}` };
@@ -156,7 +166,8 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
       continue;
     }
     const [status, result, artifactManifest] = await Promise.all([
-      runnerGet(runnerRunId, 'status'), runnerGet(runnerRunId, 'result'), runnerGet(runnerRunId, 'artifacts'),
+      runnerGet(runnerRunId, 'status', attempt.profile_id), runnerGet(runnerRunId, 'result', attempt.profile_id),
+      runnerGet(runnerRunId, 'artifacts', attempt.profile_id),
     ]);
     let savedLog = { fetched: false, host: null, httpStatus: null, bytes: null, truncated: false, error: null };
     const rawLogUrl = typeof artifactManifest.logUrl === 'string' ? artifactManifest.logUrl : null;
@@ -191,7 +202,7 @@ export async function inspectProductionTask({ taskId, accountId, apiToken, runne
     let eventPagesRead = 0;
     let eventReadError = null;
     for (; eventPagesRead < MAX_EVENT_PAGES;) {
-      const page = await runnerGet(runnerRunId, `events?cursor=${cursor}&limit=500`);
+      const page = await runnerGet(runnerRunId, `events?cursor=${cursor}&limit=500`, attempt.profile_id);
       if (page.diagnosticError) { eventReadError = page.diagnosticError; break; }
       eventPagesRead += 1;
       if (page.resetRequired === true) eventPageResetRequired = true;
@@ -269,7 +280,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const taskId = process.env.TASK_ID?.trim();
   const includeLogs = process.env.INCLUDE_REDACTED_LOGS === 'true';
   const report = await inspectProductionTask({ taskId, accountId: process.env.CF_ACCOUNT_ID?.trim(),
-    apiToken: process.env.CF_API_TOKEN?.trim(), runnerApiKey: process.env.RUNNER_API_KEY_AGENT_API?.trim(), includeLogs });
+    apiToken: process.env.CF_API_TOKEN?.trim(), runnerApiKey: process.env.RUNNER_API_KEY_AGENT_API?.trim(),
+    runnerProfileDelegation: { secret: process.env.RUNNER_PROFILE_DELEGATION_SECRET?.trim(),
+      principalId: process.env.RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID?.trim(),
+      tenantId: process.env.RUNNER_PROFILE_DELEGATION_TENANT_ID?.trim() }, includeLogs });
   const path = process.env.DIAGNOSTICS_OUTPUT_PATH?.trim() || 'production-task-diagnostics.json';
   const { writeFile } = await import('node:fs/promises');
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });

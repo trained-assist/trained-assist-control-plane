@@ -36,6 +36,9 @@ jobs:
           CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+          RUNNER_PROFILE_DELEGATION_SECRET: ${{ secrets.RUNNER_PROFILE_DELEGATION_SECRET }}
+          RUNNER_PROFILE_DELEGATION_PRINCIPAL_ID: cp-production-runner
+          RUNNER_PROFILE_DELEGATION_TENANT_ID: trained-assist-production
         run: node scripts/inspect-production-task.mjs
       - name: Upload private diagnostic report
         uses: actions/upload-artifact@v4
