@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { inspectProductionTask, logReferenceKind, redactDiagnosticText } from '../scripts/inspect-production-task.mjs';
 
 const attempt = { id: 'cp-attempt-1', session_id: `run_${'a'.repeat(24)}`, engine: 'azure-cloud', status: 'failed', generation: 2,
-  started_at: 1_797_500_000_000, finished_at: 1_797_500_010_000, error_class: 'ENGINE_EXIT_NONZERO' };
+  started_at: 1_797_500_000_000, finished_at: 1_797_500_010_000, error_class: 'ENGINE_EXIT_NONZERO', profile_id: 'profile-test' };
+const runnerProfileDelegation = { secret: 'delegation-test-secret', principalId: 'cp-production-runner', tenantId: 'trained-assist-production' };
 
 function mockFetch({ includeAttempt = true, includeGatewayRun = false, logUrl = 'https://storage.googleapis.com/private?sig=secret' } = {}) {
   const calls = [];
@@ -45,7 +46,7 @@ describe('production task diagnostics', () => {
   it('maps task attempts to Runner IDs and omits log text unless explicitly requested', async () => {
     const { fetchImpl, calls } = mockFetch();
     const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
-      runnerApiKey: 'r'.repeat(32), fetchImpl });
+      runnerApiKey: 'r'.repeat(32), runnerProfileDelegation, fetchImpl });
 
     expect(report.attemptCount).toBe(1);
     expect(report.attempts[0]).toMatchObject({ controlPlaneAttemptId: 'cp-attempt-1', runnerRunId: attempt.session_id,
@@ -53,6 +54,14 @@ describe('production task diagnostics', () => {
         logEvents: [{ stream: 'stderr', messageAvailable: true }] } });
     expect(JSON.stringify(report)).not.toContain('sk-' + 'x'.repeat(30));
     expect(calls.some((call) => call.url.endsWith('/status'))).toBe(true);
+    const statusCall = calls.find((call) => call.url.endsWith('/status'));
+    const headers = new Headers(statusCall.init.headers);
+    expect(headers.get('x-agent-profile-id')).toBe('profile-test');
+    expect(headers.get('x-agent-profile-tenant')).toBe('trained-assist-production');
+    const expiresAt = headers.get('x-agent-profile-exp');
+    const { createHmac } = await import('node:crypto');
+    expect(headers.get('x-agent-profile-sig')).toBe(createHmac('sha256', runnerProfileDelegation.secret)
+      .update(`cp-production-runner\0trained-assist-production\0profile-test\0${expiresAt}`).digest('hex'));
     expect(calls.some((call) => call.url.startsWith('https://storage.googleapis.com/'))).toBe(false);
     const d1Call = calls.find((call) => call.url.includes('/d1/database/') && call.init?.method === 'POST');
     expect(JSON.parse(String(d1Call.init?.body)).params).toEqual(['ut-abcdefgh1234']);
@@ -61,7 +70,7 @@ describe('production task diagnostics', () => {
   it('maps GHA-backed attempts to their exact Actions run without reading task content', async () => {
     const { fetchImpl, calls } = mockFetch({ includeGatewayRun: true });
     const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
-      runnerApiKey: 'r'.repeat(32), fetchImpl });
+      runnerApiKey: 'r'.repeat(32), runnerProfileDelegation, fetchImpl });
     expect(report.attempts[0].runner.githubActionsRun).toEqual({
       repository: 'trained-assist/runner-ring', runId: 123456,
       url: 'https://github.com/trained-assist/runner-ring/actions/runs/123456',
@@ -76,14 +85,14 @@ describe('production task diagnostics', () => {
   it('reports an internal Runner reference as unavailable instead of treating the placeholder as a log', async () => {
     const { fetchImpl } = mockFetch({ logUrl: `worker-run:${attempt.session_id}` });
     const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
-      runnerApiKey: 'r'.repeat(32), fetchImpl });
+      runnerApiKey: 'r'.repeat(32), runnerProfileDelegation, fetchImpl });
     expect(report.attempts[0].runner).toMatchObject({ logReferenceKind: 'runner_internal', logAvailable: false });
   });
 
   it('includes redacted log text only when explicitly requested', async () => {
     const { fetchImpl } = mockFetch();
     const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
-      runnerApiKey: 'r'.repeat(32), includeLogs: true, fetchImpl });
+      runnerApiKey: 'r'.repeat(32), runnerProfileDelegation, includeLogs: true, fetchImpl });
     expect(report.includesRedactedLogText).toBe(true);
     expect(report.attempts[0]?.runner.logEvents[0]?.message).toContain('[REDACTED_API_KEY]');
     expect(report.attempts[0]?.runner.savedLog).toMatchObject({ fetched: true, host: 'storage.googleapis.com', httpStatus: 200 });
@@ -95,7 +104,7 @@ describe('production task diagnostics', () => {
   it('returns a valid report when the task has no execution attempts', async () => {
     const { fetchImpl } = mockFetch({ includeAttempt: false });
     const report = await inspectProductionTask({ taskId: 'ut-abcdefgh1234', accountId: 'a'.repeat(32), databaseId: 'd'.repeat(36), apiToken: 't'.repeat(32),
-      runnerApiKey: 'r'.repeat(32), fetchImpl });
+      runnerApiKey: 'r'.repeat(32), runnerProfileDelegation, fetchImpl });
     expect(report).toEqual({ schemaVersion: 1, taskId: 'ut-abcdefgh1234', attemptCount: 0, includesRedactedLogText: false, attempts: [] });
   });
 });
