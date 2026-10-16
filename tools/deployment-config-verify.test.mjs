@@ -95,7 +95,10 @@ test('production agent smoke is channel-neutral, isolated and cannot deploy', ()
     assert.match(workflow, /PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET: \$\{\{ secrets\.PRODUCTION_E2E_PRINCIPAL_SECRET \}\}/);
     assert.match(smoke, /principal: 'production-agent-smoke-v1'/);
     assert.match(smoke, /profile: 'production-agent-smoke-v1'/);
+    assert.match(smoke, /runnerRouteMode: 'gha'/);
+    assert.match(smoke, /expectedRouteMode: 'gha'/);
     assert.match(sharedSmoke, /health\.buildSha !== expectedBuildSha/);
+    assert.match(sharedSmoke, /runner_route_mode_mismatch/);
     assert.match(sharedSmoke, /continue: true/);
     assert.match(sharedSmoke, /run\.status === 'success'.*run\.session_id/);
     assert.match(sharedSmoke, /captureWorkerTail/);
