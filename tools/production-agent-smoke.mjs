@@ -17,7 +17,19 @@ export const PRODUCTION_AGENT_SMOKE = {
 };
 
 export function runProductionAgentSmoke(environment = process.env, fetchImpl = fetch) {
-  return runControlPlaneAgentSmoke(PRODUCTION_AGENT_SMOKE, environment, fetchImpl);
+  const requestedRouteMode = environment.PRODUCTION_AGENT_SMOKE_ROUTE_MODE?.trim() || PRODUCTION_AGENT_SMOKE.runnerRouteMode;
+  if (!['gha', 'france'].includes(requestedRouteMode)) {
+    return Promise.resolve({
+      outcome: 'failed',
+      reason: 'runner_route_mode_invalid',
+      runnerRouteMode: requestedRouteMode,
+    });
+  }
+  return runControlPlaneAgentSmoke({
+    ...PRODUCTION_AGENT_SMOKE,
+    runnerRouteMode: requestedRouteMode,
+    expectedRouteMode: requestedRouteMode,
+  }, environment, fetchImpl);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

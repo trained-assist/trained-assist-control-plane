@@ -19,8 +19,10 @@ const envFor = directory => ({
 });
 const jsonResponse = (body, init) => Response.json(body, init);
 
-test('production smoke admits, routes and confirms a completed CP-to-Runner task', async () => {
+for (const routeMode of ['gha', 'france']) test(`production smoke admits, routes and confirms a completed CP-to-Runner task (${routeMode})`, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'cp-production-agent-smoke-'));
+  const environment = envFor(directory);
+  if (routeMode !== 'gha') environment.PRODUCTION_AGENT_SMOKE_ROUTE_MODE = routeMode;
   const requests = [];
   const fetchImpl = async (url, init) => {
     const parsed = new URL(url);
@@ -35,7 +37,7 @@ test('production smoke admits, routes and confirms a completed CP-to-Runner task
       const signature = createHmac('sha256', 'production-runner-delegation-secret')
         .update(`cp-production-runner\0trained-assist-production\0production-agent-smoke-v1\0${expiresAt}`).digest('hex');
       assert.equal(headers.get('x-agent-profile-sig'), signature);
-      if (parsed.pathname.endsWith('/status')) return jsonResponse({ runId: 'runner-run-1', state: 'succeeded', routeMode: 'gha' });
+      if (parsed.pathname.endsWith('/status')) return jsonResponse({ runId: 'runner-run-1', state: 'succeeded', routeMode });
       if (parsed.pathname.endsWith('/events')) return jsonResponse({ events: [{ sequence: 3, type: 'run_finished', payload: { text: 'do not retain' } }] });
       if (parsed.pathname.endsWith('/result')) return jsonResponse({ runId: 'runner-run-1', outcome: 'succeeded', exitReason: 'completed' });
     }
@@ -55,7 +57,7 @@ test('production smoke admits, routes and confirms a completed CP-to-Runner task
     throw new Error(`unexpected request ${parsed.pathname}`);
   };
   try {
-    const report = await runProductionAgentSmoke(envFor(directory), fetchImpl);
+    const report = await runProductionAgentSmoke(environment, fetchImpl);
     assert.equal(report.outcome, 'passed');
     assert.equal(report.deployedBuildSha, SHA);
     assert.equal(report.profile, 'production-agent-smoke-v1');
@@ -65,13 +67,19 @@ test('production smoke admits, routes and confirms a completed CP-to-Runner task
     assert.deepEqual(report.runnerEventTail, [{ sequence: 3, type: 'run_finished', code: null, phase: null, status: null }]);
     assert.deepEqual(requests.map(request => request.path), ['/healthz', '/intake', '/route', '/status', '/events']);
     assert.equal(requests[1].body.profileId, 'production-agent-smoke-v1');
-    assert.equal(requests[1].body.runnerRouteMode, 'gha');
+    assert.equal(requests[1].body.runnerRouteMode, routeMode);
     assert.equal(requests[2].body.continue, true);
-    assert.equal(requests[2].body.runnerRouteMode, 'gha');
-    assert.equal(report.runnerRouteMode, 'gha');
-    const evidence = readFileSync(envFor(directory).INTEGRATION_REPORT_FILE, 'utf8');
+    assert.equal(requests[2].body.runnerRouteMode, routeMode);
+    assert.equal(report.runnerRouteMode, routeMode);
+    const evidence = readFileSync(environment.INTEGRATION_REPORT_FILE, 'utf8');
     assert.doesNotMatch(evidence, /PRODUCTION_AGENT_SMOKE_PRINCIPAL_SECRET|собеседования|do not retain/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('production smoke rejects automatic routing so the smoke always proves a strict route', async () => {
+  const report = await runProductionAgentSmoke({ PRODUCTION_AGENT_SMOKE_ROUTE_MODE: 'auto' });
+  assert.equal(report.outcome, 'failed');
+  assert.equal(report.reason, 'runner_route_mode_invalid');
 });
 
 test('production smoke refuses a mismatched deployment before admitting a task', async () => {
