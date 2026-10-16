@@ -1,0 +1,46 @@
+name: Inspect one production task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Exact Control Plane userTaskId (ut-...)
+        required: true
+        type: string
+      include_redacted_logs:
+        description: Include redacted Runner log text in a private one-day artifact
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Inspect task attempts without printing task content
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          INCLUDE_REDACTED_LOGS: ${{ inputs.include_redacted_logs }}
+          CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RUNNER_API_KEY_AGENT_API: ${{ secrets.RUNNER_API_KEY_AGENT_API }}
+        run: node scripts/inspect-production-task.mjs
+      - name: Upload private diagnostic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-task-diagnostics
+          path: production-task-diagnostics.json
+          if-no-files-found: error
+          retention-days: 1

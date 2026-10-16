@@ -21,7 +21,7 @@ export default defineConfig(async () => {
       fileParallelism: false,
       testTimeout: 60_000,
       hookTimeout: 60_000,
-      include: ['tests/**/*.test.ts'],
+      include: ['tests/**/*.test.ts', 'tests/**/*.test.mjs'],
     },
   };
 });
