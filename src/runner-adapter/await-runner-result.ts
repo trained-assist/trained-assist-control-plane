@@ -55,7 +55,7 @@ export interface RunnerAnswer {
 
 export type AwaitRunnerResult =
   | { ok: true; result: RunnerResult; eventsRecorded: number; artifacts: TaskArtifactManifest[]; engineText: EngineText | null; answer?: RunnerAnswer }
-  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'export_not_persisted' | 'runner_artifact_manifest_invalid' };
+  | { ok: false; reason: 'connection_lost' | 'runner_timeout' | 'runner_unavailable' | 'runner_failed' | 'worker_restart_pending' | 'export_not_persisted' | 'runner_artifact_manifest_invalid' };
 
 /** События Runner -> лексика kind A2 §5.2 (оригинальный тип остаётся в payload). */
 const RUNNER_EVENT_KIND: Record<string, TaskEventKind> = {
@@ -161,7 +161,7 @@ async function finalize(
 
   const result = await adapter.result(opts.runId);
 
-  const commitFailure = async (reason: string, terminalStatus: 'failed' | 'cancelled') => {
+  const commitFailure = async (reason: string, terminalStatus: 'failed' | 'cancelled', retryWorkerRestart = false) => {
     const failureResult = { reason, runId: result.runId, ownerGeneration: result.ownerGeneration,
       outcome: result.outcome, persistence: result.persistence, exitReason: result.exitReason,
       exitCode: result.exitCode, exitSignal: result.exitSignal, exitObserved: result.exitObserved,
@@ -170,12 +170,25 @@ async function finalize(
     if (attempt) await store.finishRun(attempt.id, terminalStatus, {
       errorClass: result.failure?.code ?? reason, errorText: result.failure?.safeSummary ?? result.exitReason, result: failureResult,
     });
+    if (retryWorkerRestart) {
+      await store.logEvent({ taskId: opts.taskId, generation: opts.generation, source: 'executor', kind: 'progress',
+        executionId: attempt?.id ?? null,
+        payload: { event: 'worker_restart_pending', runId: result.runId, retry: 1, maxRetries: 1 } });
+      return;
+    }
     await store.commit(opts.taskId, opts.generation, { status: terminalStatus, stage: 'finished',
       kind: 'task_status_changed', step: 'finalize', result: failureResult, payload: failureResult });
   };
 
   if (status.state !== 'succeeded' || result.outcome !== 'succeeded') {
-    await commitFailure(result.failure?.code ?? result.exitReason, result.outcome === 'cancelled' ? 'cancelled' : 'failed');
+    const workerRestart = status.state === 'failed' && result.outcome === 'failed'
+      && result.failure?.code === 'WORKER_CRASH' && result.failure.retryable === true;
+    const priorCrashes = workerRestart
+      ? (await store.listRuns(opts.taskId)).filter(run => run.status === 'failed' && run.error_class === 'WORKER_CRASH').length : 0;
+    const retryWorkerRestart = workerRestart && priorCrashes === 0;
+    await commitFailure(result.failure?.code ?? result.exitReason,
+      result.outcome === 'cancelled' ? 'cancelled' : 'failed', retryWorkerRestart);
+    if (retryWorkerRestart) return { ok: false, reason: 'worker_restart_pending' };
     return { ok: false, reason: 'runner_failed' };
   }
 

@@ -164,6 +164,7 @@ export interface WorkflowPortApi {
       instructions?: string;
       executionContext?: ExecutionContextManifest;
       previousRunId?: string | null;
+      expectedGeneration?: number;
       /** Движок новой попытки (P17): продолжение fast path фиксирует терминального исполнителя. */
       engine?: string | null;
       awaitingPurpose?: AwaitingPurpose | null;
@@ -868,6 +869,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
       instructions?: string;
       executionContext?: ExecutionContextManifest;
       previousRunId?: string | null;
+      expectedGeneration?: number;
       awaitingPurpose?: AwaitingPurpose | null;
       awaitingOptions?: { id: string; label: string }[] | null;
       runnerPollSec?: number;
@@ -943,6 +945,7 @@ export class CfWorkflowPort implements WorkflowPortApi {
         executionContext: opts.executionContext ?? null,
         runnerPollSec: opts.runnerPollSec,
         runnerTimeoutSec: opts.runnerTimeoutSec,
+        runnerEngine: opts.engine ?? undefined,
       },
     });
     return { runId: run.id, generation };

@@ -2141,6 +2141,25 @@ const startResult = await port.submit(input);
       scheduleError = error;
     }
 
+    // A VM restart is terminal proof for the old Runner execution, but the
+    // user task remains active until its one bounded replacement attempt ends.
+    // Generation CAS fences concurrent cron invocations and late old writes.
+    const recoveryPort = workflowPortOf(env, store);
+    for (const candidate of await store.workerRestartCandidates()) {
+      try {
+        await recoveryPort.resume(candidate.taskId, {
+          reason: 'worker_restart', previousRunId: candidate.previousRunId,
+          expectedGeneration: candidate.generation,
+          engine: runnerEngineForRequest(env),
+          instructions: 'The VM restarted during the previous attempt. Inspect the task state and saved outputs before continuing. Avoid repeating completed external actions.',
+        });
+      } catch (error) {
+        if (error instanceof FencedError || error instanceof TerminalStateError) continue;
+        logError({ event: 'worker_restart_resume_failed', level: 'error',
+          taskId: candidate.taskId, errorClass: error instanceof Error ? error.name : 'unknown' });
+      }
+    }
+
     const adapter = await resolveDeliveryAdapter(env);
     await workflowPortOf(env, store).recoverCredentialContinuations();
 
