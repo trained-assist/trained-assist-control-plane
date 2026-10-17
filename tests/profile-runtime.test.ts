@@ -195,6 +195,8 @@ describe('trusted profile runtime', () => {
     expect(runtime.policy.mcp).toEqual(userSandboxMcpSpec());
     expect(runtime.policy.mcp?.servers[0]?.allowedTools).toEqual([
       'identity.whoami', 'google_docs.connect', 'google_docs.get_document',
+      'zerocreds_wallet_form_create', 'zerocreds_wallet_form_status',
+      'zerocreds_wallet_connection_status', 'zerocreds_wallet_connection_revoke',
     ]);
     expect(runtime.policy.envAllowlist).toEqual(['LLM_LADDER_TOKEN']);
     expect(resolveProfileRuntime(bindings, TELEGRAM_UX_PROFILE).policy.mcp).toBeNull();
