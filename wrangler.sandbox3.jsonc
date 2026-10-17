@@ -36,7 +36,7 @@
     "RUNNER_PROFILE_DELEGATION_TENANT_ID": "sandbox3-acceptance-a-20261008",
     "RUN_SPEC_PROFILE_OVERRIDES": "{\"integration-sandbox3-v1\":{\"policy\":\"generic_text_v1\",\"outputs\":[{\"path\":\"outputs/agent-note.md\",\"name\":\"agent-note.md\",\"mime\":\"text/markdown\"},{\"path\":\"outputs/browser-check.md\",\"name\":\"browser-check.md\",\"mime\":\"text/markdown\"},{\"path\":\"outputs/browser-proof.png\",\"name\":\"browser-proof.png\",\"mime\":\"image/png\"}]}}",
     "RUN_SPEC_ENV_ALLOWLIST": "LLM_LADDER_TOKEN",
-    "RUN_SPEC_TIMEOUT_MS": "180000",
+    "RUN_SPEC_TIMEOUT_MS": "600000",
     "RUN_SPEC_STARTUP_TIMEOUT_MS": "600000",
     "RUN_SPEC_MAX_OUTPUT_BYTES": "1048576",
     "RUN_SPEC_MAX_LOG_BYTES": "1048576",
