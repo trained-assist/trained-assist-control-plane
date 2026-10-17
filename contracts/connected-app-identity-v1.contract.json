@@ -1,0 +1,49 @@
+{
+  "urn": "urn:trained-assist:connected-app-identity:v1",
+  "version": 1,
+  "owner": "trained-assist-control-plane",
+  "status": "offline_contract_only",
+  "token": {
+    "format": "opaque_bearer",
+    "transport": "Authorization: Bearer <token>",
+    "maxLifetimeSeconds": 3600,
+    "urlQueryAllowed": false,
+    "legacyAgentCookieAllowed": false,
+    "agentRunRequired": false
+  },
+  "introspection": {
+    "method": "POST",
+    "path": "/v1/connected-app-sessions/introspect",
+    "caller": "registered_connected_app_service",
+    "cache": "no_store",
+    "requestFields": ["token", "audience"],
+    "activeResponseFields": ["active", "iss", "aud", "sub", "profileId", "sessionId", "nbf", "exp", "scopes"],
+    "inactiveResponse": { "active": false },
+    "invalidation": ["token_revoked", "session_revoked", "profile_switched", "principal_disabled", "scope_removed", "audience_changed", "expired"]
+  },
+  "agentProfileAuthority": {
+    "urn": "urn:trained-assist:agent-profile-context:v1",
+    "version": 1,
+    "owner": "trained-assist-agent",
+    "sourceRevision": "3cc6358b052a466410c3b45e3355ec3f7548dd30",
+    "sourcePath": "contracts/agent-profile-context-v1/contract.json",
+    "contextSchemaPath": "contracts/agent-profile-context-v1/profile-context.schema.json",
+    "contextFields": ["principalId", "profileId", "sessionId", "profileGeneration"],
+    "runtimeStatus": "opt_in_agent_authority_candidate"
+  },
+  "audiences": {
+    "recruiting-web": ["recruiting.responses.read", "recruiting.responses.conversation.open",
+      "recruiting.reports.read", "recruiting.reports.create", "recruiting.reports.edit",
+      "recruiting.reports.review", "recruiting.assignment.review", "recruiting.candidateSearch"],
+    "crm-web": ["crm.catalog.read", "crm.notes.read", "crm.deals.read", "crm.deals.create"]
+  },
+  "rules": {
+    "profileSelection": "host_only",
+    "scopeGrant": "explicit_per_audience",
+    "writeScopeVocabularyOnly": true,
+    "writeScopeGrantDoesNotImplyHumanApproval": true,
+    "introspectionRechecksCurrentBinding": true,
+    "browserHandoff": "one_time_code_exchange_required_before_live_issuance",
+    "oldWebJwtOrRunTokenAccepted": false
+  }
+}
