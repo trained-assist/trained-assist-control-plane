@@ -193,6 +193,8 @@ export class CpStopTargetsService {
     if (existing?.window_id === input.windowId) {
       const requestIds = JSON.stringify([...input.admissionRequestIds].sort());
       if (existing.admission_request_ids_json !== requestIds) {
+        await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, existing.snapshot_id, 'existing_admission_mismatch', {
+          windowAdmissionIds: existing.admission_request_ids_json, requestIds });
         return this.conflict(input, existing);
       }
       return this.pollWindow(input, existing);
@@ -204,6 +206,7 @@ export class CpStopTargetsService {
       admissionRequestIds: input.admissionRequestIds,
     });
     if (!resolution.ok) {
+      await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, null, 'resolve_failed', { reason: resolution.reason });
       return { snapshotId: null, ...base, tasks: [], unresolved: true,
         reason: resolution.reason, stopConfirmed: false };
     }
@@ -218,6 +221,8 @@ export class CpStopTargetsService {
     });
     if (!opened.ok) {
       const current = await this.store.cpStopWindow(input.profileId, input.conversationId);
+      await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, current?.snapshot_id ?? null, 'open_failed', {
+        windowId: input.windowId, admissionRequestIds: input.admissionRequestIds });
       return this.conflict(input, current);
     }
     return this.pollWindow(input, opened.window);
@@ -276,6 +281,10 @@ export class CpStopTargetsService {
     const saved = await this.store.updateCpStopWindow({ ...input, snapshotId: window.snapshot_id,
       expectedTargetsJson: window.targets_json,
       stopConfirmed, reason });
+    if (!saved) {
+      await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, window.snapshot_id, 'update_failed', {
+        stopConfirmed, reason, expectedTargetsJson: window.targets_json });
+    }
     return { snapshotId: window.snapshot_id, profileId: input.profileId, conversationId: input.conversationId,
       tasks, unresolved: !saved || !stopConfirmed, reason: saved ? reason : 'snapshot_conflict',
       stopConfirmed: !!saved && stopConfirmed };
