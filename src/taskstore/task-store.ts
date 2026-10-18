@@ -3026,17 +3026,30 @@ export class TaskStore {
                        AND stop_proof.event_id = 'cp-stop-proof:' || task.window_snapshot || ':' || json_extract(attempt.value, '$.attemptId')
                        AND stop_proof.task_id = task.id AND stop_proof.profile_id = task.profile_id
                        AND stop_proof.attempt_id = json_extract(attempt.value, '$.attemptId')
-                       AND stop_proof.owner_generation = json_extract(attempt.value, '$.ownerGeneration'))))
+                       AND stop_proof.owner_generation = json_extract(attempt.value, '$.ownerGeneration'))
+                   AND NOT EXISTS (SELECT 1 FROM events AS rproof,
+                     json_each(CASE WHEN json_type(rproof.payload, '$.nativeStops') = 'array'
+                       THEN json_extract(rproof.payload, '$.nativeStops') ELSE '[]' END) AS robserved
+                     WHERE rproof.user_task_id = task.id AND rproof.kind = 'progress' AND rproof.source = 'gateway'
+                       AND rproof.event_id = 'cp-stop-proof:' || task.window_snapshot || ':' || json_extract(attempt.value, '$.attemptId')
+                       AND rproof.generation = task.generation
+                       AND json_extract(rproof.payload, '$.event') = 'native_stop.confirmed'
+                       AND robserved.type = 'object'
+                       AND json_extract(robserved.value, '$.runId') IS NOT NULL
+                       AND json_type(robserved.value, '$.runnerTerminalStatusObserved') = 'true'
+                       AND json_extract(robserved.value, '$.state') IN ('succeeded','failed','cancelled'))))
                OR NOT EXISTS (SELECT 1 FROM executions AS execution
                  WHERE execution.task_id = task.id AND execution.id = json_extract(attempt.value, '$.attemptId')
                    AND execution.generation = json_extract(attempt.value, '$.ownerGeneration')
-                   AND execution.session_id IS COALESCE(json_extract(attempt.value, '$.runId'),
-                     (SELECT run_id FROM receipt_bindings WHERE user_task_id = task.id
-                       AND attempt_id = json_extract(attempt.value, '$.attemptId') LIMIT 1))
+                   AND (json_extract(attempt.value, '$.runId') IS NULL
+                     OR execution.session_id IS COALESCE(json_extract(attempt.value, '$.runId'),
+                       (SELECT run_id FROM receipt_bindings WHERE user_task_id = task.id
+                         AND attempt_id = json_extract(attempt.value, '$.attemptId') LIMIT 1)))
                    AND execution.finished_at IS NOT NULL AND execution.status IN ('success','failed','cancelled'))
                OR (COALESCE(json_extract(attempt.value, '$.runId'),
                  (SELECT run_id FROM receipt_bindings WHERE user_task_id = task.id
-                   AND attempt_id = json_extract(attempt.value, '$.attemptId') LIMIT 1)) IS NOT NULL
+                   AND attempt_id = json_extract(attempt.value, '$.attemptId') LIMIT 1),
+                 (SELECT session_id FROM executions WHERE id = json_extract(attempt.value, '$.attemptId') LIMIT 1)) IS NOT NULL
                  AND NOT EXISTS (SELECT 1 FROM events AS proof,
                  json_each(CASE WHEN json_type(proof.payload, '$.nativeStops') = 'array'
                    THEN json_extract(proof.payload, '$.nativeStops') ELSE '[]' END) AS observed
@@ -3048,7 +3061,8 @@ export class TaskStore {
                    AND json_extract(observed.value, '$.attemptId') = json_extract(attempt.value, '$.attemptId')
                    AND json_extract(observed.value, '$.runId') IS COALESCE(json_extract(attempt.value, '$.runId'),
                      (SELECT run_id FROM receipt_bindings WHERE user_task_id = task.id
-                       AND attempt_id = json_extract(attempt.value, '$.attemptId') LIMIT 1))
+                       AND attempt_id = json_extract(attempt.value, '$.attemptId') LIMIT 1),
+                     (SELECT session_id FROM executions WHERE id = json_extract(attempt.value, '$.attemptId') LIMIT 1))
                    AND json_extract(observed.value, '$.ownerGeneration') = json_extract(attempt.value, '$.ownerGeneration')
                    AND (json_type(observed.value, '$.exitObserved') = 'true'
                      OR (json_type(observed.value, '$.exitObserved') = 'false'
