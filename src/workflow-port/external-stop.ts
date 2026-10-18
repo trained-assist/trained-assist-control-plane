@@ -183,6 +183,7 @@ export class CpStopTargetsService {
   constructor(private readonly store: TaskStore, private readonly port: CpStopPort) {}
 
   async stop(input: CpStopTargetsInput): Promise<CpStopTargetsResponse> {
+    console.error(JSON.stringify({ event: 'cp.stop.service.start', windowId: input.windowId, admissionIds: input.admissionRequestIds }));
     const base = { profileId: input.profileId, conversationId: input.conversationId };
     if (!input.admissionBarrierComplete) {
       return { snapshotId: null, ...base, tasks: [], unresolved: true,
@@ -196,7 +197,8 @@ export class CpStopTargetsService {
         console.error(JSON.stringify({ event: 'cp.stop.debug', stage: 'existing_admission_mismatch' }));
         await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, existing.snapshot_id, 'existing_admission_mismatch', {
           windowAdmissionIds: existing.admission_request_ids_json, requestIds });
-        return this.conflict(input, existing);
+        console.error(JSON.stringify({ event: 'cp.stop.conflict.existing' }));
+    return this.conflict(input, existing);
       }
       return this.pollWindow(input, existing);
     }
