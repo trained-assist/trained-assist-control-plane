@@ -193,6 +193,7 @@ export class CpStopTargetsService {
     if (existing?.window_id === input.windowId) {
       const requestIds = JSON.stringify([...input.admissionRequestIds].sort());
       if (existing.admission_request_ids_json !== requestIds) {
+        console.error(JSON.stringify({ event: 'cp.stop.debug', stage: 'existing_admission_mismatch' }));
         await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, existing.snapshot_id, 'existing_admission_mismatch', {
           windowAdmissionIds: existing.admission_request_ids_json, requestIds });
         return this.conflict(input, existing);
@@ -206,6 +207,7 @@ export class CpStopTargetsService {
       admissionRequestIds: input.admissionRequestIds,
     });
     if (!resolution.ok) {
+      console.error(JSON.stringify({ event: 'cp.stop.debug', stage: 'resolve_failed' }));
       await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, null, 'resolve_failed', { reason: resolution.reason });
       return { snapshotId: null, ...base, tasks: [], unresolved: true,
         reason: resolution.reason, stopConfirmed: false };
@@ -221,6 +223,7 @@ export class CpStopTargetsService {
     });
     if (!opened.ok) {
       const current = await this.store.cpStopWindow(input.profileId, input.conversationId);
+      console.error(JSON.stringify({ event: 'cp.stop.debug', stage: 'open_failed' }));
       await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, current?.snapshot_id ?? null, 'open_failed', {
         windowId: input.windowId, admissionRequestIds: input.admissionRequestIds });
       return this.conflict(input, current);
@@ -282,6 +285,7 @@ export class CpStopTargetsService {
       expectedTargetsJson: window.targets_json,
       stopConfirmed, reason });
     if (!saved) {
+      console.error(JSON.stringify({ event: 'cp.stop.debug', stage: 'update_failed' }));
       await this.store.debugCpStopSnapshot(input.profileId, input.conversationId, window.snapshot_id, 'update_failed', {
         stopConfirmed, reason, expectedTargetsJson: window.targets_json });
     }

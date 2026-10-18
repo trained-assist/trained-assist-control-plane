@@ -2834,7 +2834,7 @@ export class TaskStore {
       const executions = await this.db.prepare(`SELECT id, task_id, status, generation, session_id, finished_at FROM executions WHERE task_id IN (SELECT id FROM durable_tasks WHERE profile_id = ? AND conversation_id = ?)`).bind(profileId, conversationId).all();
       const payload = { stage, profileId, conversationId, snapshotId, extra, window, tasks: tasks.results, executions: executions.results };
       await this.db.prepare(`INSERT INTO cp_stop_debug (created_at, payload_json) VALUES (?, ?)`).bind(Date.now(), JSON.stringify(payload)).run();
-    } catch { /* diagnostics must not change stop behavior */ }
+    } catch (error) { console.error(JSON.stringify({ event: 'cp.stop.debug.error', message: String(error) })); }
   }
 
   /** Atomic idempotent current-window claim; a new identity may replace only a confirmed window. */
