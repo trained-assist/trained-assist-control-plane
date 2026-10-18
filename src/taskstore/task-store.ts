@@ -2844,17 +2844,6 @@ export class TaskStore {
       .bind(eventId, target.userTaskId, generation).first();
   }
 
-  async debugCpStopSnapshot(profileId: string, conversationId: string, snapshotId: string | null, stage: string, extra: unknown): Promise<void> {
-    try {
-      await this.db.prepare(`CREATE TABLE IF NOT EXISTS cp_stop_debug (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, payload_json TEXT NOT NULL)`).run();
-      const window = await this.db.prepare(`SELECT * FROM cp_stop_windows WHERE profile_id = ? AND conversation_id = ?`).bind(profileId, conversationId).first();
-      const tasks = await this.db.prepare(`SELECT id, status, generation, revision, delivery_state, request_id, conversation_id, profile_id FROM durable_tasks WHERE profile_id = ? AND conversation_id = ? ORDER BY created_at, id`).bind(profileId, conversationId).all();
-      const executions = await this.db.prepare(`SELECT id, task_id, status, generation, session_id, finished_at FROM executions WHERE task_id IN (SELECT id FROM durable_tasks WHERE profile_id = ? AND conversation_id = ?)`).bind(profileId, conversationId).all();
-      const payload = { stage, profileId, conversationId, snapshotId, extra, window, tasks: tasks.results, executions: executions.results };
-      await this.db.prepare(`INSERT INTO cp_stop_debug (created_at, payload_json) VALUES (?, ?)`).bind(Date.now(), JSON.stringify(payload)).run();
-    } catch { /* diagnostics must not change stop behavior */ }
-  }
-
   /** Atomic idempotent current-window claim; a new identity may replace only a confirmed window. */
   async openCpStopWindow(input: OpenCpStopWindowInput): Promise<OpenCpStopWindowResult> {
     const admissionIdsJson = JSON.stringify([...input.admissionRequestIds].sort());
