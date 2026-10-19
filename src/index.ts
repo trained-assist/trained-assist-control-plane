@@ -46,6 +46,8 @@ import { CpStopTargetsService, cpStopTargetsInputOf } from './workflow-port/exte
 import { SANDBOX3 } from './deployment/sandbox3';
 import { TELEGRAM_UX_SANDBOX } from './deployment/telegram-ux-sandbox';
 import { principalAuthOf, verifyPrincipal, type PrincipalAuth } from './auth/principal-auth';
+import { verifyPrincipalLease } from './auth/principal-lease';
+import { issueGithubPrincipalLease, revokeGithubPrincipalLease } from './auth/github-principal-leases';
 import { InvalidEnvelopeError } from './intake/envelope';
 import { PilotRouter } from './pilot';
 import { reportSnapshot, reportHistory, reportView } from './reporting';
@@ -537,6 +539,11 @@ const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: NonN
  * `src/auth/principal-auth.ts`.
  */
 const principalOf = async (req: Request, auth: PrincipalAuth): Promise<string> => {
+  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1];
+  if (bearer) {
+    const lease = await verifyPrincipalLease(bearer, auth.secret);
+    if (lease) return lease.principalId;
+  }
   const principalId = await verifyPrincipal(req, auth);
   return principalId ?? '';
 };
@@ -1351,6 +1358,46 @@ const store = new TaskStore(env.DB);
         return json({ service: 'trained-assist-control-plane', status: 'healthy', observedAt: new Date().toISOString(),
           ...(env.BUILD_SHA ? { buildSha: env.BUILD_SHA } : {}),
           ...(url.pathname === '/healthz' ? { check: 'liveness' } : {}) });
+      }
+      if (url.pathname === '/auth/agent-profile-lease/issue') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        try {
+          const result = await issueGithubPrincipalLease(env.DB,
+            env as unknown as Record<string, string | undefined>, auth.secret, body,
+            /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? '');
+          logStructured({ event: 'principal_lease.issued', leaseId: result.leaseId, principalId: result.principalId,
+            profileId: result.profileId, issuedBy: result.issuedBy, workflowRunId: result.runId,
+            runAttempt: result.runAttempt, expiresAt: result.expiresAt });
+          return new Response(JSON.stringify(result), { status: 201, headers: {
+            'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+        } catch (error) {
+          const code = String((error as Error)?.message ?? 'principal_lease_issue_failed');
+          logStructured({ event: 'principal_lease.issue_rejected', level: 'warn', reasonCode: code });
+          const status = code === 'github_workflow_not_authorized' ? 403
+            : code === 'invalid_github_oidc' || code === 'github_signing_key_unknown' ? 401
+              : code.includes('not_configured') || code.includes('unavailable') || code.startsWith('github_jwks_') ? 503 : 400;
+          return new Response(JSON.stringify({ error: code }), { status, headers: {
+            'content-type': 'application/json', 'cache-control': 'no-store' } });
+        }
+      }
+      if (url.pathname === '/auth/agent-profile-lease/revoke') {
+        if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        try {
+          const result = await revokeGithubPrincipalLease(env.DB, body,
+            /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? '');
+          logStructured({ event: 'principal_lease.revoked', ...result });
+          return new Response(JSON.stringify(result), { status: 200, headers: {
+            'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+        } catch (error) {
+          const code = String((error as Error)?.message ?? 'principal_lease_revoke_failed');
+          logStructured({ event: 'principal_lease.revoke_rejected', level: 'warn', reasonCode: code });
+          const status = code === 'lease_not_found' ? 404 : code === 'lease_revoke_forbidden'
+            || code === 'github_workflow_not_authorized' ? 403
+              : code === 'invalid_github_oidc' || code === 'github_signing_key_unknown' ? 401
+                : code.includes('unavailable') || code.startsWith('github_jwks_') ? 503 : 400;
+          return new Response(JSON.stringify({ error: code }), { status, headers: {
+            'content-type': 'application/json', 'cache-control': 'no-store' } });
+        }
       }
       if (url.pathname === '/internal/runner/profile-health') {
         if (req.method !== 'GET') return diagnosticsJson({ error: 'method not allowed' }, 405);
