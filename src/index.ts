@@ -539,7 +539,7 @@ const serveIngressInputArtifact = async (env: Env, task: TaskRow, manifest: NonN
  * `src/auth/principal-auth.ts`.
  */
 const principalOf = async (req: Request, auth: PrincipalAuth): Promise<string> => {
-  const bearer = /^Bearer\\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1];
+  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1];
   if (bearer) {
     const lease = await verifyPrincipalLease(bearer, auth.secret);
     if (lease) return lease.principalId;
@@ -1364,7 +1364,7 @@ const store = new TaskStore(env.DB);
         try {
           const result = await issueGithubPrincipalLease(env.DB,
             env as unknown as Record<string, string | undefined>, auth.secret, body,
-            /^Bearer\\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? '');
+            /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? '');
           logStructured({ event: 'principal_lease.issued', leaseId: result.leaseId, principalId: result.principalId,
             profileId: result.profileId, issuedBy: result.issuedBy, workflowRunId: result.runId,
             runAttempt: result.runAttempt, expiresAt: result.expiresAt });
@@ -1384,7 +1384,7 @@ const store = new TaskStore(env.DB);
         if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
         try {
           const result = await revokeGithubPrincipalLease(env.DB, body,
-            /^Bearer\\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? '');
+            /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1] ?? '');
           logStructured({ event: 'principal_lease.revoked', ...result });
           return new Response(JSON.stringify(result), { status: 200, headers: {
             'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
