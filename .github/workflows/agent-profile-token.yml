@@ -1,0 +1,69 @@
+name: Issue or revoke an agent profile token
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Issue an 8-hour profile token or revoke a token early
+        type: choice
+        options: [issue, revoke]
+        required: true
+        default: issue
+      profile_id:
+        description: Existing Runner profile ID (issue only)
+        type: string
+        required: false
+        default: flexi-consult
+      lease_id:
+        description: Lease ID from the issue run (revoke only)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: agent-profile-token-${{ inputs.profile_id || inputs.lease_id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  lease:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate request and issue or revoke token
+        env:
+          LEASE_ACTION: ${{ inputs.action }}
+          PROFILE_ID: ${{ inputs.profile_id }}
+          LEASE_ID: ${{ inputs.lease_id }}
+          PRINCIPAL_LEASE_API_URL: https://trained-assist-cp-production.skillset-apply.workers.dev
+          LEASE_OUTPUT_FILE: ${{ runner.temp }}/agent-profile-token.json
+        run: |
+          set -euo pipefail
+          if [[ "$LEASE_ACTION" == issue ]]; then
+            [[ "$PROFILE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$ ]] || { echo 'Set a valid Runner profile ID.' >&2; exit 2; }
+          else
+            [[ "$LEASE_ACTION" == revoke && "$LEASE_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo 'Set a valid lease_id to revoke.' >&2; exit 2; }
+          fi
+          node scripts/agent-profile-token.mjs
+
+      - name: Publish the short-lived token artifact
+        if: inputs.action == 'issue'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-profile-token-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-profile-token.json
+          if-no-files-found: error
+          retention-days: 1
