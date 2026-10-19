@@ -27,9 +27,16 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+      - name: Install dependencies
+        run: npm ci
+      - name: Agent Profile Context contract pin
+        run: node tools/agent-profile-context-contract-check.mjs
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      # Проверки санитизации evidence (P16) идут отдельным node-скриптом:
+      # файловые операции в workerd-пуле vitest запрещены.
       - name: Evidence sanitizer self-check
         run: npm run check:evidence
       - name: Safe sandbox bootstrap command diagnostics
