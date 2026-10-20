@@ -18,6 +18,11 @@ on:
         description: Lease ID from the issue run (revoke only)
         type: string
         required: false
+      task_prompt:
+        description: Optional task to run immediately with the issued profile lease
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -32,7 +37,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 3
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,14 +53,17 @@ jobs:
           LEASE_ACTION: ${{ inputs.action }}
           PROFILE_ID: ${{ inputs.profile_id }}
           LEASE_ID: ${{ inputs.lease_id }}
+          TASK_PROMPT: ${{ inputs.task_prompt }}
           PRINCIPAL_LEASE_API_URL: https://trained-assist-cp-production.skillset-apply.workers.dev
           LEASE_OUTPUT_FILE: ${{ runner.temp }}/agent-profile-token.json
+          TASK_EVIDENCE_OUTPUT: ${{ runner.temp }}/agent-profile-task-evidence.json
         run: |
           set -euo pipefail
           if [[ "$LEASE_ACTION" == issue ]]; then
             [[ "$PROFILE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$ ]] || { echo 'Set a valid Runner profile ID.' >&2; exit 2; }
           else
             [[ "$LEASE_ACTION" == revoke && "$LEASE_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo 'Set a valid lease_id to revoke.' >&2; exit 2; }
+            [[ -z "$TASK_PROMPT" ]] || { echo 'A task prompt can only accompany token issuance.' >&2; exit 2; }
           fi
           node scripts/agent-profile-token.mjs
 
@@ -67,3 +75,22 @@ jobs:
           path: ${{ runner.temp }}/agent-profile-token.json
           if-no-files-found: error
           retention-days: 1
+
+      - name: Run task as the leased profile
+        if: inputs.action == 'issue' && inputs.task_prompt != ''
+        env:
+          PROFILE_ID: ${{ inputs.profile_id }}
+          TASK_PROMPT: ${{ inputs.task_prompt }}
+          PRINCIPAL_LEASE_API_URL: https://trained-assist-cp-production.skillset-apply.workers.dev
+          LEASE_OUTPUT_FILE: ${{ runner.temp }}/agent-profile-token.json
+          TASK_EVIDENCE_OUTPUT: ${{ runner.temp }}/agent-profile-task-evidence.json
+        run: node scripts/agent-profile-task.mjs
+
+      - name: Publish sanitized Agent Run evidence
+        if: always() && inputs.action == 'issue' && inputs.task_prompt != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-profile-task-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-profile-task-evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
