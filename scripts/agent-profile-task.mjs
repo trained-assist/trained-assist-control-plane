@@ -33,12 +33,26 @@ const evidence = {
   stage: null,
   answer: null,
   events: [],
+  diagnostics: null,
   error: null,
 };
 
 const redact = (value) => String(value)
   .replace(/(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})/g, '[redacted]')
   .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
+
+function sanitize(value, depth = 0) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return redact(value).slice(0, 20_000);
+  if (depth >= 8) return '[depth_limited]';
+  if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitize(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).slice(0, 100)
+      .filter(([key]) => !/token|secret|authorization|bearer|credential/i.test(key))
+      .map(([key, item]) => [key.slice(0, 120), sanitize(item, depth + 1)]));
+  }
+  return String(value);
+}
 
 async function saveEvidence() {
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
@@ -98,13 +112,22 @@ try {
     if (['done', 'failed', 'cancelled'].includes(state)) break;
     await new Promise(resolve => setTimeout(resolve, 5_000));
   }
-  history = await request('GET', `/report/history?taskId=${encodeURIComponent(accepted.userTaskId)}`);
+  const [history, trace] = await Promise.all([
+    request('GET', `/report/history?taskId=${encodeURIComponent(accepted.userTaskId)}`),
+    request('GET', `/trace/${encodeURIComponent(accepted.userTaskId)}`),
+  ]);
   const events = history?.events ?? [];
   evidence.state = report?.snapshot?.status ?? 'poll_timeout';
   evidence.stage = report?.snapshot?.stage ?? null;
   evidence.answer = typeof report?.snapshot?.answer === 'string'
     ? redact(report.snapshot.answer).slice(0, 20_000) : null;
   evidence.events = events.map(event => ({ kind: event.kind, occurredAt: event.occurredAt }));
+  evidence.diagnostics = sanitize({
+    snapshot: report?.snapshot ?? null,
+    trace,
+    events: events.map(event => ({ sequence: event.sequence, kind: event.kind,
+      occurredAt: event.occurredAt, payload: event.payload ?? null })),
+  });
   const agentRuns = events.filter(event => event.kind === 'run_started')
     .map(event => event.payload?.runId).filter(value => typeof value === 'string');
   evidence.agentRunId = [...agentRuns].reverse()
@@ -120,6 +143,7 @@ try {
     state: evidence.state,
     stage: evidence.stage,
     answerPresent: Boolean(evidence.answer),
+    diagnostics: evidence.diagnostics,
     evidencePath,
   }));
   if (evidence.state !== 'done' || !evidence.agentRunId || !evidence.answer) {
