@@ -471,6 +471,58 @@ describe('Task Store and Output ownership', () => {
     expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
   });
 
+  it.each(['explore', 'answer', 'auto'] as const)('applies the explicit %s work style only when continuation is authorized', async (workStyle) => {
+    const store = new TaskStore(env.DB);
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:intake', 'tasks:read', 'tasks:control'] });
+    const admitted = await new IntakeService(store, new PilotRouter({ config: { enabled: true, activatedAt: null, cohortProfileIds: ['selector-profile'], legacyProfileIds: null } })).admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1, requestId: nextId(), inputItems: [{ text: 'Prepare a detailed answer about the project schedule and dependencies.' }],
+    });
+    createdIds.push(admitted.userTaskId);
+    const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const rpc = JSON.parse(String(init?.body)); const quick = taskRpc(rpc); if (quick) return quick;
+      return Response.json({ id: rpc.id, result: { structuredContent: { user_goal: 'Подготовить ответ о графике проекта.', decision: 'agent' } } });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const signature = await signPrincipal('selector-principal', 'test-principal-secret');
+    const route = (continueRun: boolean) => new Request('https://control.example.test/route', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature },
+      body: JSON.stringify({ taskId: admitted.userTaskId, continue: continueRun, ...(continueRun ? { workStyle } : {}) }) });
+    const instances = new Map<string, unknown>();
+    const workflow = { create: async (request: { id: string; params: unknown }) => { instances.set(request.id, request.params); return {}; },
+      get: async (id: string) => ({ status: async () => instances.has(id) ? ({ status: 'running' }) : ({ status: 'unknown' }) }) } as unknown as Workflow;
+    const bindings = { DB: env.DB, TASK_WORKFLOW: workflow, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1',
+      ROUTER_CONTINUATION_ENABLED: 'true', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential',
+      RUNNER_API_URL: 'https://runner.example.test', RUNNER_API_KEY: 'test-runner-credential' };
+    const decision = await (await worker.fetch(route(false), bindings)).json() as { continuation: { issued: boolean } };
+    expect(decision.continuation.issued).toBe(false);
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+    const launched = await worker.fetch(route(true), bindings);
+    expect(launched.status).toBe(200);
+    const result = await launched.json() as { continuation: { issued: boolean } };
+    expect(result.continuation.issued).toBe(true);
+    const replay = await worker.fetch(route(true), bindings);
+    expect(replay.status).toBe(200);
+    expect(await store.listRuns(admitted.userTaskId)).toHaveLength(1);
+    const run = [...instances.values()].find(value => (value as { taskId?: string }).taskId === admitted.userTaskId) as { instructions?: string } | undefined;
+    expect(run?.instructions).toContain(`Режим запуска: ${workStyle}`);
+  });
+
+  it('rejects invalid continuation work style before creating a Runner execution', async () => {
+    const store = new TaskStore(env.DB);
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:intake', 'tasks:read', 'tasks:control'] });
+    const admitted = await new IntakeService(store, new PilotRouter({ config: { enabled: true, activatedAt: null, cohortProfileIds: ['selector-profile'], legacyProfileIds: null } })).admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1, requestId: nextId(), inputItems: [{ text: 'Prepare a detailed answer about the project schedule and dependencies.' }],
+    });
+    createdIds.push(admitted.userTaskId);
+    const signature = await signPrincipal('selector-principal', 'test-principal-secret');
+    const response = await worker.fetch(new Request('https://control.example.test/route', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature },
+      body: JSON.stringify({ taskId: admitted.userTaskId, continue: true, workStyle: 'deep' }) }),
+    { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'test-principal-secret' });
+    expect(response.status).toBe(400);
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+  });
+
   it('HTTP fallback dispatches through Output without requiring gateway start', async () => {
     const store = new TaskStore(env.DB);
     const goal = 'Разбери паттерны сильных заголовков Instagram и предложи 10 свежих вариантов для карусели про неожиданные поступки кандидатов на собеседовании. Не повторяй формулировки из исходных историй.';
