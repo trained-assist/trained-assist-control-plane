@@ -42,3 +42,13 @@ itself prove that the remote Runner has usable credentials for that account or
 that a task can complete; verify those separately with a task scoped to the
 lease profile. Never copy the artifact token into issues, PR comments, or
 workflow summaries.
+
+
+### Inspecting Runner/session logs
+
+The `Inspect one production task` workflow reads the saved Control Plane and Runner
+attempt. With `include_redacted_logs=true`, it emits the redacted Runner event log and
+available session log text directly into the Actions job log, then retains the
+same sanitized diagnostics as a one-day artifact. This makes the output readable
+through the Actions log tools as well as downloadable by the operator. The option is
+off by default; Actions logs and artifacts follow repository visibility.
