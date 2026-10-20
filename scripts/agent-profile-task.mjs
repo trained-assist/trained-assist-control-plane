@@ -105,7 +105,6 @@ try {
 
   const deadline = Date.now() + 12 * 60_000;
   let report;
-  let history;
   while (Date.now() < deadline) {
     report = await request('GET', `/report?taskId=${encodeURIComponent(accepted.userTaskId)}`);
     const state = report?.snapshot?.status;
