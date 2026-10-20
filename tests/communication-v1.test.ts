@@ -486,12 +486,13 @@ describe('Task Store and Output ownership', () => {
     });
     vi.stubGlobal('fetch', fetcher);
     const signature = await signPrincipal('selector-principal', 'test-principal-secret');
-    const route = (continueRun: boolean) => new Request('https://control.example.test/route', { method: 'POST',
+    let decisionId: string;
+    const route = (continueRun: boolean, selectedStyle = workStyle, generation = 1) => new Request('https://control.example.test/route', { method: 'POST',
       headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature },
-      body: JSON.stringify({ taskId: admitted.userTaskId, continue: continueRun, ...(continueRun ? { workStyle } : {}) }) });
+      body: JSON.stringify({ taskId: admitted.userTaskId, continue: continueRun, ...(continueRun ? { workStyle: selectedStyle, decisionId, generation, idempotencyKey: 'ready-choice' } : {}) }) });
     const instances = new Map<string, unknown>();
     const workflow = { create: async (request: { id: string; params: unknown }) => { instances.set(request.id, request.params); return {}; },
-      get: async (id: string) => ({ terminate: async () => {}, delete: async () => {}, status: async () => ({ status: instances.has(id) ? 'running' : 'unknown' }) }),
+      get: async (id: string) => ({ terminate: async () => {}, delete: async () => {}, status: async () => { if (!instances.has(id)) throw new Error('not found'); return { status: 'running' }; } }),
     } as unknown as Workflow;
     const bindings = { DB: env.DB, TASK_WORKFLOW: workflow, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1',
       ROUTER_CONTINUATION_ENABLED: 'true', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential',
@@ -499,7 +500,8 @@ describe('Task Store and Output ownership', () => {
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ 'integration-telegram-ux-v1': { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX' } }) };
     const firstResponse = await worker.fetch(route(false), bindings);
     if (firstResponse.status !== 200) throw new Error(`route error ${firstResponse.status}: ${JSON.stringify(await firstResponse.clone().json())}`);
-    const decision = await firstResponse.json() as { continuation?: { issued: boolean } };
+    const decision = await firstResponse.json() as { decisionId: string; continuation?: { issued: boolean } };
+    decisionId = decision.decisionId;
     expect(decision.continuation?.issued).toBe(false);
     expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
     const launched = await worker.fetch(route(true), bindings);
@@ -509,12 +511,19 @@ describe('Task Store and Output ownership', () => {
     const replay = await worker.fetch(route(true), bindings);
     expect(replay.status).toBe(200);
     expect(await store.listRuns(admitted.userTaskId)).toHaveLength(1);
-    expect([...instances.keys()]).toHaveLength(0);
+    expect([...instances.keys()]).toHaveLength(1);
+    const conflicting = await worker.fetch(route(true, workStyle === 'answer' ? 'explore' : 'answer'), bindings);
+    expect(conflicting.status).toBe(409);
+    const stale = await worker.fetch(route(true, workStyle, 2), bindings);
+    expect(stale.status).toBe(409);
+    expect(await store.listRuns(admitted.userTaskId)).toHaveLength(1);
     const saved = await store.routingSelection(admitted.userTaskId, 1) as { agentInstructions?: string };
     expect(saved.agentInstructions).toBeTruthy();
-    const run = [...instances.values()].map(value => (value as { params?: { taskId?: string; instructions?: string } }).params)
-      .find(value => value?.taskId === admitted.userTaskId);
-    expect(run).toBeUndefined();
+    const run = [...instances.values()][0] as { instructions: string };
+    expect(run.instructions).toContain(`Режим запуска: ${workStyle}.`);
+    expect(run.instructions.match(/\[work-style:v1\]/g)).toHaveLength(1);
+    const history = await store.history(admitted.userTaskId);
+    expect(history.filter(event => event.kind === 'routing.continuation_selected')).toHaveLength(1);
   });
 
   it('rejects invalid continuation work style before creating a Runner execution', async () => {

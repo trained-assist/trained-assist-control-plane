@@ -1,3 +1,4 @@
+import { isTerminalStatus } from './taskstore';
 import { taskReplyMcp, type TaskReplyTool } from './router/task-reply-mcp';
 import { agentInputArtifact } from './run-spec/agent-input';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -783,6 +784,21 @@ async function handleRouteRoute(
   // запрашивает, но не создаёт ни job, ни run; выдача — по явному запросу и
   // только при включённой политике (по умолчанию выключена: запуск исполнителя
   // — отдельное решение, а не побочный эффект маршрутизации).
+  if (body.workStyle !== undefined) {
+    // Bind the explicit choice before any execution side effect. The unique
+    // generation event makes competing callbacks and crash retries agree.
+    if (!ordinaryV1 || !saved || result.decision.route !== 'agent' || result.decision.degraded ||
+        !result.continuation || body.decisionId !== result.decisionId || body.generation !== task.generation ||
+        typeof body.idempotencyKey !== 'string' || !body.idempotencyKey || body.idempotencyKey.length > 200) {
+      return json({ error: { code: 'STALE_CONTINUATION', message: 'A current agent decision and continuation identity are required' } }, 409);
+    }
+    if (isTerminalStatus(task.status)) return json({ error: { code: 'TASK_TERMINAL' } }, 409);
+    const claimed = await store.claimRoutingContinuation(task.id, task.generation, {
+      decisionId: result.decisionId, workStyle: body.workStyle as string, idempotencyKey: body.idempotencyKey,
+    });
+    if (!claimed) return json({ error: { code: 'CONTINUATION_CHOICE_CONFLICT' } }, 409);
+  }
+
   const continuation = ordinaryV1 && result.continuation && body.continue === true
     ? env.ROUTER_CONTINUATION_ENABLED === 'true'
       ? runtime.adapter
@@ -799,6 +815,7 @@ async function handleRouteRoute(
 
   return json({
     decisionId: result.decisionId,
+    generation: task.generation,
     policyVersion: result.decision.policyVersion,
     route: result.decision.route,
     mode: result.decision.mode,
