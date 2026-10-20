@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       include_redacted_logs:
-        description: Include redacted Runner log text in a private one-day artifact
+        description: Include redacted Runner/session log text in Actions output and a one-day artifact
         required: false
         default: false
         type: boolean
@@ -42,7 +42,32 @@ jobs:
           EU_VM_WORKER_URL: ${{ vars.EU_VM_WORKER_URL }}
           EU_VM_WORKER_TOKEN: ${{ secrets.EU_VM_WORKER_TOKEN }}
         run: node scripts/inspect-production-task.mjs
-      - name: Upload private diagnostic report
+      - name: Emit redacted Runner and session logs for agent debugging
+        if: inputs.include_redacted_logs
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync('production-task-diagnostics.json', 'utf8'));
+          for (const attempt of report.attempts ?? []) {
+            const runner = attempt.runner ?? {};
+            const diagnostics = {
+              taskId: report.taskId,
+              runnerRunId: attempt.runnerRunId,
+              engine: runner.engine ?? null,
+              state: runner.state ?? null,
+              result: runner.result ?? null,
+              eventCounts: runner.eventCounts ?? {},
+              eventPageResetRequired: runner.eventPageResetRequired ?? null,
+              eventReadError: runner.eventReadError ?? null,
+              logEvents: runner.logEvents ?? [],
+              workerLog: runner.workerLog?.text ? { text: runner.workerLog.text, truncated: runner.workerLog.truncated } : null,
+              savedLog: runner.savedLog?.text ? { text: runner.savedLog.text, truncated: runner.savedLog.truncated } : null,
+            };
+            console.log(`SANITIZED_RUNNER_DIAGNOSTICS ${JSON.stringify(diagnostics)}`);
+          }
+          NODE
+      - name: Upload one-day diagnostic report
+        if: always() && hashFiles('production-task-diagnostics.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: production-task-diagnostics
