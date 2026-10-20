@@ -760,7 +760,11 @@ async function handleRouteRoute(
       },
     },
   );
-  if (ordinaryV1 && !saved) result = await store.saveRoutingSelection(task.id, task.generation, result) as RouteResult;
+  // A failed preview is retryable on the same durable task after the user
+  // presses Ready again; do not freeze a transient provider fallback forever.
+  if (ordinaryV1 && !saved && !(body.continue === false && result.decision.degraded)) {
+    result = await store.saveRoutingSelection(task.id, task.generation, result) as RouteResult;
+  }
   if (ordinaryV1 && result.reply) await commitQuickAnswer(store, task, result);
 
   logStructured({

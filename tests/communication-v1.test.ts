@@ -480,8 +480,10 @@ describe('Task Store and Output ownership', () => {
     createdIds.push(admitted.userTaskId);
     const taskRow = await store.requireTask(admitted.userTaskId);
     await store.admitTask({ id: admitted.userTaskId, profileId: 'integration-telegram-ux-v1', goal: taskRow.goal, userValue: taskRow.user_value ? JSON.parse(taskRow.user_value) : {} });
+    let providerUnavailable = true;
     const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const rpc = JSON.parse(String(init?.body)); const quick = taskRpc(rpc); if (quick) return quick;
+      if (providerUnavailable) return new Response('fixture unavailable', { status: 503 });
       return Response.json({ id: rpc.id, result: { structuredContent: { user_goal: 'Подготовить ответ о графике проекта.', decision: 'agent' } } });
     });
     vi.stubGlobal('fetch', fetcher);
@@ -498,6 +500,11 @@ describe('Task Store and Output ownership', () => {
       ROUTER_CONTINUATION_ENABLED: 'true', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential',
       RUNNER_API_URL: 'https://runner.example.test', RUNNER_API_KEY_TELEGRAM_UX: 'test-runner-credential',
       RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ 'integration-telegram-ux-v1': { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX' } }) };
+    const failedPreview = await worker.fetch(route(false), bindings);
+    expect(await failedPreview.json()).toMatchObject({ degraded: true, continuation: { issued: false } });
+    expect(await store.routingSelection(admitted.userTaskId, 1)).toBeNull();
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+    providerUnavailable = false;
     const firstResponse = await worker.fetch(route(false), bindings);
     if (firstResponse.status !== 200) throw new Error(`route error ${firstResponse.status}: ${JSON.stringify(await firstResponse.clone().json())}`);
     const decision = await firstResponse.json() as { decisionId: string; continuation?: { issued: boolean } };

@@ -58,3 +58,7 @@ generation before dispatch. Conflicting choices, stale decisions, degraded or
 non-agent decisions and terminal tasks return 409 without a new Run. A matching
 retry reconciles the existing Run. The selected style appears exactly once in
 the execution instructions; the original intake/default policy is preserved.
+
+A degraded `continue:false` preview is not cached as a successful selection.
+A new explicit Ready action can retry classification on the same durable task
+after the provider recovers; neither failed preview creates a Run.
