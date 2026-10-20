@@ -89,7 +89,7 @@ export function withWorkStyleInstructions(instructions: string | null | undefine
   return [base, workStyleInstructions(task)].filter(Boolean).join('\n\n');
 }
 
-export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPort, task: TaskRow, result: RouteResult, runnerEngine = 'opencode', hostMcp?: HostMcpRoutingDeps): Promise<DispatchAcceptedAgentResult> {
+export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPort, task: TaskRow, result: RouteResult, runnerEngine = 'opencode', hostMcp?: HostMcpRoutingDeps, selectedWorkStyle?: 'explore' | 'answer' | 'auto'): Promise<DispatchAcceptedAgentResult> {
   const current = await store.requireTask(task.id);
   if (current.generation !== task.generation) throw new FencedError(task.id, task.generation, current.generation);
   if (isTerminalStatus(current.status)) return { owner: 'output', issued: false, refusal: 'task_terminal' };
@@ -121,11 +121,13 @@ export async function dispatchAcceptedAgent(store: TaskStore, port: CfWorkflowPo
   if (routeMode !== undefined && routeMode !== 'auto' && routeMode !== 'france' && routeMode !== 'gha') {
     return { owner: 'output', requested: true, issued: false, refusal: 'runner_route_mode_invalid', reasonCode: 'INVALID_RUNNER_ROUTE_MODE' };
   }
+  const effectiveTask: TaskRow = selectedWorkStyle ? { ...current,
+    execution_policy_json: JSON.stringify({ workStyle: selectedWorkStyle, source: 'explicit' }) } : current;
   const start = await port.submit({
     id: current.id, profileId: current.profile_id, goal: current.goal,
     runnerEngine, idempotentRun: true,
     ...(routeMode ? { runnerRouteMode: routeMode } : {}),
-    instructions: withWorkStyleInstructions(result.agentInstructions ?? selection.goal, current),
+    instructions: withWorkStyleInstructions(result.agentInstructions ?? selection.goal, effectiveTask),
     mcpDescriptor,
   });
   return { owner: 'output', issued: start.runId !== null, requested: true, runId: start.runId, generation: start.generation, jobRef: `job_${current.id}_g${start.generation}`, executor: runnerEngine };
