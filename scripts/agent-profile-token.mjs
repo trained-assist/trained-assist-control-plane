@@ -40,7 +40,7 @@ if (action === 'issue') {
     `- Issued by: \`${data.issuedBy}\``, `- GitHub run: \`${data.runId}\`, attempt \`${data.runAttempt}\``,
     `- Lease ID: \`${data.leaseId}\``, `- Scopes: ${data.scopes.map(scope => `\`${scope}\``).join(', ')}`,
     `- Expires: \`${new Date(data.expiresAt * 1000).toISOString()}\``, '',
-    'The bearer is in this run’s private Actions artifact and is not printed in logs or this summary.',
+    'The bearer is in this run’s Actions artifact and is not printed in logs or this summary.',
     'Repository readers can download the artifact. The bearer expires in 8 hours; use the revoke action to invalidate it early.'].join('\n');
   await writeFile(process.env.GITHUB_STEP_SUMMARY, `${lines}\n`, { flag: 'a' });
   console.log(JSON.stringify({ ok: true, action, leaseId: data.leaseId, profileId: data.profileId,
