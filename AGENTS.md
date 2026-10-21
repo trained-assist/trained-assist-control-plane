@@ -45,6 +45,17 @@ prove real Telegram execution. Do not reset either lane or restart the shared
 API. VM-hosted sandbox3 Runner API setup and proxy modes are retired; production
 cutover stays separate.
 
+For cross-repository PR acceptance, the TG `sandbox3-worker-e2e.yml` job may
+check out an exact CP candidate SHA from `tools/sandbox3-cp-candidate.txt` and
+run `npm ci && npx wrangler deploy --config wrangler.sandbox3.jsonc --var
+BUILD_SHA:<candidate-sha>` from that checkout. This uses the same isolated
+sandbox3 bindings and existing secrets. The job owns the shared lane lock,
+verifies account identity and clean state with the owner preflight, pauses TG,
+and verifies the exact CP SHA before enabling test input. No production
+workflow or migration is invoked. Record both candidate SHAs and final cleanup.
+This closes the #365/#293 testability gap: a protected-main-only CP deploy
+cannot verify the unmerged continuation contract.
+
 CP3 execution flags stay disabled until real worker/profile storage, cost bounds,
 and Telegram delivery have separate acceptance. The Runner API Worker owns the
 France worker URL/token and placement policy. The France VM is only an execution

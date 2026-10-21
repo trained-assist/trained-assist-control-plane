@@ -1,3 +1,4 @@
+import { isTerminalStatus } from './taskstore';
 import { taskReplyMcp, type TaskReplyTool } from './router/task-reply-mcp';
 import { agentInputArtifact } from './run-spec/agent-input';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -620,6 +621,12 @@ async function handleRouteRoute(
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
   const taskId = String(body.taskId ?? '');
   if (!taskId) return json({ error: 'taskId is required' }, 400);
+  if (body.workStyle !== undefined && body.workStyle !== 'explore' && body.workStyle !== 'answer' && body.workStyle !== 'auto') {
+    return json({ error: { code: 'INVALID_WORK_STYLE', message: 'workStyle must be explore, answer or auto' } }, 400);
+  }
+  if (body.workStyle !== undefined && body.continue !== true) {
+    return json({ error: { code: 'WORK_STYLE_REQUIRES_CONTINUATION', message: 'workStyle is only accepted with continue=true' } }, 400);
+  }
 
   const task = await authorizeTaskRoute(store, req, taskId, 'tasks:read', auth);
   const principal = await resolvePrincipal(store, { principalId: await principalOf(req, auth) });
@@ -753,7 +760,11 @@ async function handleRouteRoute(
       },
     },
   );
-  if (ordinaryV1 && !saved) result = await store.saveRoutingSelection(task.id, task.generation, result) as RouteResult;
+  // A failed preview is retryable on the same durable task after the user
+  // presses Ready again; do not freeze a transient provider fallback forever.
+  if (ordinaryV1 && !saved && !(body.continue === false && result.decision.degraded)) {
+    result = await store.saveRoutingSelection(task.id, task.generation, result) as RouteResult;
+  }
   if (ordinaryV1 && result.reply) await commitQuickAnswer(store, task, result);
 
   logStructured({
@@ -777,10 +788,26 @@ async function handleRouteRoute(
   // запрашивает, но не создаёт ни job, ни run; выдача — по явному запросу и
   // только при включённой политике (по умолчанию выключена: запуск исполнителя
   // — отдельное решение, а не побочный эффект маршрутизации).
+  if (body.workStyle !== undefined) {
+    // Bind the explicit choice before any execution side effect. The unique
+    // generation event makes competing callbacks and crash retries agree.
+    if (!ordinaryV1 || !saved || result.decision.route !== 'agent' || result.decision.degraded ||
+        !result.continuation || body.decisionId !== result.decisionId || body.generation !== task.generation ||
+        typeof body.idempotencyKey !== 'string' || !body.idempotencyKey || body.idempotencyKey.length > 200) {
+      return json({ error: { code: 'STALE_CONTINUATION', message: 'A current agent decision and continuation identity are required' } }, 409);
+    }
+    if (isTerminalStatus(task.status)) return json({ error: { code: 'TASK_TERMINAL' } }, 409);
+    const claimed = await store.claimRoutingContinuation(task.id, task.generation, {
+      decisionId: result.decisionId, workStyle: body.workStyle as string, idempotencyKey: body.idempotencyKey,
+    });
+    if (!claimed) return json({ error: { code: 'CONTINUATION_CHOICE_CONFLICT' } }, 409);
+  }
+
   const continuation = ordinaryV1 && result.continuation && body.continue === true
     ? env.ROUTER_CONTINUATION_ENABLED === 'true'
       ? runtime.adapter
-        ? await dispatchAcceptedAgent(store, port, task, result, runnerEngineForRequest(env) ?? 'opencode', hostMcp)
+        ? await dispatchAcceptedAgent(store, port, task, result, runnerEngineForRequest(env) ?? 'opencode', hostMcp,
+          body.workStyle as 'explore' | 'answer' | 'auto' | undefined)
         : { owner: 'output', requested: true, issued: false, refusal: 'runner_not_configured' }
       : { owner: 'output', requested: true, issued: false, refusal: 'continuation_policy_disabled' }
     : await issueContinuation(result, env, store, port, body);
@@ -792,6 +819,7 @@ async function handleRouteRoute(
 
   return json({
     decisionId: result.decisionId,
+    generation: task.generation,
     policyVersion: result.decision.policyVersion,
     route: result.decision.route,
     mode: result.decision.mode,
@@ -854,7 +882,18 @@ async function issueContinuation(
   if (!request) {
     return { owner: 'output', requested: false, issued: false, refusal: null, jobRef: null, runId: null, generation: null };
   }
-  const outcome = await continueFastPathEscalation(request, {
+  const selectedWorkStyle = body.workStyle;
+  if (selectedWorkStyle !== undefined && selectedWorkStyle !== 'explore' && selectedWorkStyle !== 'answer' && selectedWorkStyle !== 'auto') {
+    throw new InvalidEnvelopeError('workStyle must be explore, answer or auto', 'workStyle');
+  }
+  const continuationRequest = selectedWorkStyle === undefined ? request : {
+    ...request,
+    executionContext: {
+      ...request.executionContext,
+      instructions: withSelectedWorkStyle(request.executionContext.instructions, selectedWorkStyle),
+    },
+  };
+  const outcome = await continueFastPathEscalation(continuationRequest, {
     port: portContinuationPort(port),
     store: taskStoreContinuationStore(store),
     agentAllowed: env.ROUTER_AGENT_ALLOWED !== 'false',
@@ -897,6 +936,16 @@ async function issueContinuation(
     generation: outcome.generation,
     executor: outcome.executor,
   };
+}
+
+function withSelectedWorkStyle(instructions: string, style: 'explore' | 'answer' | 'auto'): string {
+  const guidance = style === 'explore'
+    ? 'Сначала изучи запрос и доступные материалы. Помоги пользователю сформулировать задачу: выясни цель, существенные ограничения и неизвестные. Задай до трёх важных вопросов за один ход и дождись ответов. Не повторяй уже известное. Если существенных неизвестных нет, сообщи об этом и дай краткий вывод; не выдумывай вопросы. Не запускай полное выполнение до готовности задачи или явной просьбы пользователя.'
+    : style === 'answer'
+      ? 'Дай полный ответ на текущий запрос с достаточным обоснованием. Используй нужные материалы и инструменты; обозначь существенные допущения и ограничения. Если без ответа пользователя результат невозможен, задай необходимые вопросы. Заверши после ответа или явно заказанного результата; не начинай новые этапы только потому, что они возможны. Полный ответ не означает обязательное выполнение действий, которые ты только предложил.'
+      : 'Выбери полезный способ работы по текущему запросу: изучение и уточнение, ответ или выполнение явно заказанного действия. Используй достаточную глубину и доступный бюджет. Спрашивай при существенной неопределённости; не выдумывай цели и не расширяй задачу без основания. Заверши, когда текущая цель достигнута либо нужен ответ пользователя. Не трактуй этот режим как разрешение на бесконечное автономное выполнение.';
+  const base = instructions.replace(/^\[work-style:v1\][^\n]*(?:\n\n)?/gm, '').trim();
+  return [base, `[work-style:v1] Инструкции режима запуска (выбран пользователем): Режим запуска: ${style}. ${guidance}`].filter(Boolean).join('\n\n');
 }
 
 /** Сценарий решений скриптованной модели: массив строк, по одной на вызов. */

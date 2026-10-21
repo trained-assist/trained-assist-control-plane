@@ -458,6 +458,18 @@ export class TaskStore {
     throw new TerminalStateError(taskId, task.status);
   }
 
+  async claimRoutingContinuation(taskId: string, generation: number, choice: { decisionId: string; workStyle: string; idempotencyKey: string }): Promise<boolean> {
+    const eventId = `routing-continuation:${taskId}:${generation}`;
+    await this.db.prepare(
+      `INSERT OR IGNORE INTO task_events(event_id, user_task_id, kind, generation, source, payload_json, created_at)
+       SELECT ?, id, 'routing.continuation_selected', generation, 'output', ?, ? FROM durable_tasks
+       WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}`,
+    ).bind(eventId, JSON.stringify(choice), Date.now(), taskId, generation).run();
+    const row = await this.db.prepare('SELECT payload_json FROM task_events WHERE event_id = ?')
+      .bind(eventId).first<{ payload_json: string }>();
+    return !!row && JSON.stringify(JSON.parse(row.payload_json)) === JSON.stringify(choice);
+  }
+
   /**
    * Нетерминальные задачи ПРОФИЛЯ: снимок «своих» данных для быстрых ответов
    * (`/status`, «что сейчас в работе»). Чужие задачи не выдаются никогда

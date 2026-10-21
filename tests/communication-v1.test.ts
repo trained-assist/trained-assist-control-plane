@@ -471,6 +471,90 @@ describe('Task Store and Output ownership', () => {
     expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
   });
 
+  it.each(['explore', 'answer', 'auto'] as const)('applies the explicit %s work style only when continuation is authorized', async (workStyle) => {
+    const store = new TaskStore(env.DB);
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'integration-telegram-ux-v1', scopes: ['tasks:intake', 'tasks:read', 'tasks:control'] });
+    const admitted = await new IntakeService(store, new PilotRouter({ config: { enabled: true, activatedAt: null, cohortProfileIds: ['integration-telegram-ux-v1'], legacyProfileIds: null } })).admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1, requestId: nextId(), profileId: 'integration-telegram-ux-v1', inputItems: [{ text: 'Prepare a detailed answer about the project schedule and dependencies.' }],
+    });
+    createdIds.push(admitted.userTaskId);
+    const taskRow = await store.requireTask(admitted.userTaskId);
+    await store.admitTask({ id: admitted.userTaskId, profileId: 'integration-telegram-ux-v1', goal: taskRow.goal, userValue: taskRow.user_value ? JSON.parse(taskRow.user_value) : {} });
+    let providerUnavailable = true;
+    const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const rpc = JSON.parse(String(init?.body)); const quick = taskRpc(rpc); if (quick) return quick;
+      if (providerUnavailable) return new Response('fixture unavailable', { status: 503 });
+      return Response.json({ id: rpc.id, result: { structuredContent: { user_goal: 'Подготовить ответ о графике проекта.', decision: 'agent' } } });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const signature = await signPrincipal('selector-principal', 'test-principal-secret');
+    let decisionId: string;
+    const route = (continueRun: boolean, selectedStyle = workStyle, generation = 1) => new Request('https://control.example.test/route', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature },
+      body: JSON.stringify({ taskId: admitted.userTaskId, continue: continueRun, ...(continueRun ? { workStyle: selectedStyle, decisionId, generation, idempotencyKey: 'ready-choice' } : {}) }) });
+    const instances = new Map<string, unknown>();
+    const workflow = { create: async (request: { id: string; params: unknown }) => { instances.set(request.id, request.params); return {}; },
+      get: async (id: string) => ({ terminate: async () => {}, delete: async () => {}, status: async () => { if (!instances.has(id)) throw new Error('not found'); return { status: 'running' }; } }),
+    } as unknown as Workflow;
+    const bindings = { DB: env.DB, TASK_WORKFLOW: workflow, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1',
+      ROUTER_CONTINUATION_ENABLED: 'true', COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential',
+      RUNNER_API_URL: 'https://runner.example.test', RUNNER_API_KEY_TELEGRAM_UX: 'test-runner-credential',
+      RUN_SPEC_PROFILE_OVERRIDES: JSON.stringify({ 'integration-telegram-ux-v1': { policy: 'generic_text_v1', runnerKeyBinding: 'RUNNER_API_KEY_TELEGRAM_UX' } }) };
+    const failedPreview = await worker.fetch(route(false), bindings);
+    expect(await failedPreview.json()).toMatchObject({ degraded: true, continuation: { issued: false } });
+    expect(await store.routingSelection(admitted.userTaskId, 1)).toBeNull();
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+    providerUnavailable = false;
+    const firstResponse = await worker.fetch(route(false), bindings);
+    if (firstResponse.status !== 200) throw new Error(`route error ${firstResponse.status}: ${JSON.stringify(await firstResponse.clone().json())}`);
+    const decision = await firstResponse.json() as { decisionId: string; continuation?: { issued: boolean } };
+    decisionId = decision.decisionId;
+    expect(decision.continuation?.issued).toBe(false);
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+    const launched = await worker.fetch(route(true), bindings);
+    expect(launched.status).toBe(200);
+    const result = await launched.json() as Record<string, unknown>;
+    expect(result).toMatchObject({ continuation: { owner: 'output', requested: true, issued: true } });
+    const replay = await worker.fetch(route(true), bindings);
+    expect(replay.status).toBe(200);
+    expect(await store.listRuns(admitted.userTaskId)).toHaveLength(1);
+    expect([...instances.keys()]).toHaveLength(1);
+    const conflicting = await worker.fetch(route(true, workStyle === 'answer' ? 'explore' : 'answer'), bindings);
+    expect(conflicting.status).toBe(409);
+    const stale = await worker.fetch(route(true, workStyle, 2), bindings);
+    expect(stale.status).toBe(409);
+    expect(await store.listRuns(admitted.userTaskId)).toHaveLength(1);
+    const saved = await store.routingSelection(admitted.userTaskId, 1) as { agentInstructions?: string };
+    expect(saved.agentInstructions).toBeTruthy();
+    const run = [...instances.values()][0] as { instructions: string };
+    expect(run.instructions).toContain(`Режим запуска: ${workStyle}.`);
+    expect(run.instructions.match(/\[work-style:v1\]/g)).toHaveLength(1);
+    const history = await store.history(admitted.userTaskId);
+    expect(history.filter(event => event.kind === 'routing.continuation_selected')).toHaveLength(1);
+  });
+
+  it('rejects invalid continuation work style before creating a Runner execution', async () => {
+    const store = new TaskStore(env.DB);
+    await store.upsertPrincipal({ principalId: 'selector-principal', profileId: 'selector-profile', scopes: ['tasks:intake', 'tasks:read', 'tasks:control'] });
+    const admitted = await new IntakeService(store, new PilotRouter({ config: { enabled: true, activatedAt: null, cohortProfileIds: ['selector-profile'], legacyProfileIds: null } })).admit({ principalId: 'selector-principal' }, {
+      contractVersion: 1, requestId: nextId(), inputItems: [{ text: 'Prepare a detailed answer about the project schedule and dependencies.' }],
+    });
+    createdIds.push(admitted.userTaskId);
+    const signature = await signPrincipal('selector-principal', 'test-principal-secret');
+    const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const rpc = JSON.parse(String(init?.body)); const quick = taskRpc(rpc); if (quick) return quick;
+      return Response.json({ id: rpc.id, result: { structuredContent: { user_goal: 'Подготовить ответ.', decision: 'agent' } } });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const response = await worker.fetch(new Request('https://control.example.test/route', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-principal': 'selector-principal', 'x-principal-sig': signature },
+      body: JSON.stringify({ taskId: admitted.userTaskId, continue: true, workStyle: 'deep' }) }),
+    { DB: env.DB, TASK_WORKFLOW: env.TASK_WORKFLOW, PRINCIPAL_SECRET: 'test-principal-secret', ROUTER_SELECTOR: 'communication_v1',
+      COMMUNICATION_API_URL: 'https://communication.example.test', COMMUNICATION_TOKEN: 'test-credential' });
+    expect(response.status).toBe(400);
+    expect(await store.listRuns(admitted.userTaskId)).toEqual([]);
+  });
+
   it('HTTP fallback dispatches through Output without requiring gateway start', async () => {
     const store = new TaskStore(env.DB);
     const goal = 'Разбери паттерны сильных заголовков Instagram и предложи 10 свежих вариантов для карусели про неожиданные поступки кандидатов на собеседовании. Не повторяй формулировки из исходных историй.';

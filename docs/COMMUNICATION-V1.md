@@ -47,3 +47,18 @@ npm test -- tests/communication-v1.test.ts tests/p16-route-policy.test.ts tests/
 ```
 
 These tests validate HTTP/MCP contracts, D1 ownership and controlled failure. Real selector quality, Runner execution and channel delivery are separate integration evidence owned by the parent harness. No deployment is performed by this change.
+
+## Explicit Ready continuation
+
+After `/route` with `continue:false`, the gateway can choose `workStyle`
+(`explore`, `answer`, `auto`) on the same task. Send `continue:true`, the returned
+`decisionId` and `generation`, and a stable `idempotencyKey`. A durable
+`routing.continuation_selected` event binds the first choice to that task and
+generation before dispatch. Conflicting choices, stale decisions, degraded or
+non-agent decisions and terminal tasks return 409 without a new Run. A matching
+retry reconciles the existing Run. The selected style appears exactly once in
+the execution instructions; the original intake/default policy is preserved.
+
+A degraded `continue:false` preview is not cached as a successful selection.
+A new explicit Ready action can retry classification on the same durable task
+after the provider recovers; neither failed preview creates a Run.
