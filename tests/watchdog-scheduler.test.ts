@@ -14,6 +14,28 @@ const dbOf = (s: TaskStore): typeof env.DB => (s as unknown as { db: typeof env.
 const fakeCtx = () => ({ waitUntil: () => {}, passedWhileWaiting: false } as unknown as ExecutionContext);
 
 describe('П3c: планировщик watchdog и его работоспособность', () => {
+  it('restarts a proven crashed VM attempt once with a fresh fenced workflow', async () => {
+    const s = store();
+    const taskId = `vm-restart-${Date.now()}`;
+    await s.admitTask({ id: taskId, profileId: 'profile-vm-restart', goal: 'continue after reboot' });
+    const first = await s.startRun(taskId, { generation: 1, engine: 'cloudflare-workflows', sessionId: `run-${taskId}` });
+    await s.finishRun(first.id, 'failed', { errorClass: 'WORKER_CRASH', errorText: 'VM restarted' });
+    const workflow = { get: vi.fn(async () => { throw new Error('already finished'); }), create: vi.fn(async () => ({})) };
+    const bindings = { ...env, TASK_WORKFLOW: workflow as unknown as Workflow,
+      DELIVERY_ADAPTER: 'local', RUNNER_API_ENGINE_SELECTION: 'agent_api' } as never;
+    const event = { cron: '* * * * *', scheduledTime: Date.now(), noRetry: () => {} } as never;
+
+    await worker.scheduled(event, bindings, fakeCtx());
+    expect((await s.requireTask(taskId)).generation).toBe(2);
+    expect((await s.listRuns(taskId)).map(run => run.generation)).toEqual([1, 2]);
+    expect(workflow.create).toHaveBeenCalledWith(expect.objectContaining({
+      params: expect.objectContaining({ taskId, generation: 2, runnerEngine: 'agent_api' }),
+    }));
+    await worker.scheduled(event, bindings, fakeCtx());
+    expect((await s.requireTask(taskId)).generation).toBe(2);
+    expect(workflow.create).toHaveBeenCalledTimes(1);
+  });
+
   it('scheduled-обработчик существует и действительно запускает детектор', async () => {
     expect(typeof worker.scheduled).toBe('function');
     const mark = vi.spyOn(TaskStore.prototype, 'markWatchdogRun');
