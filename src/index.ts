@@ -2,7 +2,15 @@ import { taskReplyMcp, type TaskReplyTool } from './router/task-reply-mcp';
 import { agentInputArtifact } from './run-spec/agent-input';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { FencedError, TaskNotFoundError, TaskStore, TerminalStateError, UnresolvedRunError } from './taskstore';
+import {
+  DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS,
+  DEFAULT_STALE_UNKNOWN_MAX_AGE_MS,
+  FencedError,
+  TaskNotFoundError,
+  TaskStore,
+  TerminalStateError,
+  UnresolvedRunError,
+} from './taskstore';
 import type { AdmissionScope, AwaitingKind, AwaitingPurpose, TaskRow } from './taskstore';
 import { authorizeIntake, resolvePrincipal, requirePermission } from './intake/authorization';
 import { toC02Event } from './events';
@@ -162,6 +170,18 @@ export interface Env {
   RUN_SPEC_RESULT_DESTINATION_REF?: string;
   RUN_SPEC_TIMEOUT_MS?: string;
   RUN_SPEC_STARTUP_TIMEOUT_MS?: string;
+  /**
+   * Порог sweep'а брошенных попыток (issue #367): возраст попытки в статусе
+   * running БЕЗ runner-сессии, после которого попытка и задача закрываются как
+   * failed. По умолчанию DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS (10 мин).
+   */
+  STALE_RUNNING_NO_SESSION_MAX_AGE_MS?: string;
+  /**
+   * Порог sweep'а брошенных попыток (issue #367): возраст попытки в статусе
+   * unknown (connection_lost), после которого попытка и задача закрываются как
+   * failed. По умолчанию DEFAULT_STALE_UNKNOWN_MAX_AGE_MS (2 ч).
+   */
+  STALE_UNKNOWN_MAX_AGE_MS?: string;
   RUN_SPEC_MAX_OUTPUT_BYTES?: string;
   RUN_SPEC_MAX_LOG_BYTES?: string;
   /**
@@ -2210,6 +2230,52 @@ const startResult = await port.submit(input);
     const adapter = await resolveDeliveryAdapter(env);
     await workflowPortOf(env, store).recoverCredentialContinuations();
 
+    // Sweep брошенных попыток (issue #367). До этого места висел только
+    // WORKER_CRASH: попытка в статусе running без runner-сессии и попытка в
+    // статусе unknown (connection_lost) закрывались НЕКОГДА — задача жила
+    // месяцами. Здесь попытка старше порога закрывается как failed, а задача
+    // переводится в тот же терминальный статус той же транзакцией.
+    //
+    // Границы (архитектурные):
+    //  • закрытие, а НЕ перезапуск: авто-rerun запрещён (ARCHITECTURE §4.6),
+    //    перезапуск — отдельное решение оператора (POST /recover);
+    //  • generation-fence: работаем только с попыткой текущего поколения,
+    //    superseded-попытки не трогаем;
+    //  • терминальные задачи не трогаем.
+    //
+    // Ошибка sweep не отменяет проход watchdog intake: она фиксируется и
+    // поднимается в конце вместе с ошибкой расписаний.
+    let staleAttemptError: unknown;
+    try {
+      const stale = await store.sweepStaleAttempts(
+        Date.now(),
+        staleRunningNoSessionMaxAgeMs(env),
+        staleUnknownMaxAgeMs(env),
+      );
+      if (stale.scanned > 0) {
+        logStructured({
+          event: 'recovery.stale_attempt_sweep',
+          level: stale.closed > 0 ? 'warn' : 'info',
+          reason: stale.closed > 0 ? 'stale_attempts_closed' : null,
+          scanned: stale.scanned,
+          closed: stale.closed,
+          closedTaskIds: stale.closedTaskIds,
+          skippedGeneration: stale.skippedGeneration,
+          skippedTerminal: stale.skippedTerminal,
+          skippedDelivered: stale.skippedDelivered,
+          oldestAgeMs: stale.oldestAgeMs,
+        });
+      }
+    } catch (error) {
+      staleAttemptError = error;
+      logError({
+        event: 'recovery.stale_attempt_sweep_failed',
+        level: 'error',
+        reason: 'sweep_failed',
+        errorClass: error instanceof Error ? error.name : 'unknown',
+      });
+    }
+
     // Детектор наблюдает и уведомляет; переход состояния и запуск выполняет
     // существующий авторитетный владелец (Output/Router), не планировщик.
     const result = await runStuckInputSweep(store, { adapter, retryAfterSec: 60 });
@@ -2240,5 +2306,27 @@ const startResult = await port.submit(input);
     }
 
     if (scheduleError !== undefined) throw scheduleError;
+    if (staleAttemptError !== undefined) throw staleAttemptError;
   },
 };
+
+/**
+ * Порог sweep'а брошенных попыток: running без runner-сессии (issue #367).
+ * Env-переопределение — только для изолированных стендов; дефолт в модуле.
+ */
+function staleRunningNoSessionMaxAgeMs(env: Env): number {
+  const raw = env.STALE_RUNNING_NO_SESSION_MAX_AGE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS;
+}
+
+/**
+ * Порог sweep'а брошенных попыток: unknown (connection_lost), issue #367.
+ */
+function staleUnknownMaxAgeMs(env: Env): number {
+  const raw = env.STALE_UNKNOWN_MAX_AGE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_STALE_UNKNOWN_MAX_AGE_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_STALE_UNKNOWN_MAX_AGE_MS;
+}
