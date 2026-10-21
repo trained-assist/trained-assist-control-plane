@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       include_redacted_logs:
-        description: Include redacted Runner log text in a private one-day artifact
+        description: Include redacted Runner/session log text in Actions output and a one-day artifact
         required: false
         default: false
         type: boolean
@@ -42,7 +42,40 @@ jobs:
           EU_VM_WORKER_URL: ${{ vars.EU_VM_WORKER_URL }}
           EU_VM_WORKER_TOKEN: ${{ secrets.EU_VM_WORKER_TOKEN }}
         run: node scripts/inspect-production-task.mjs
-      - name: Upload private diagnostic report
+      - name: Emit redacted Runner and session logs for agent debugging
+        if: inputs.include_redacted_logs
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync('production-task-diagnostics.json', 'utf8'));
+          const chunkSize = 6000;
+          for (const attempt of report.attempts ?? []) {
+            const runner = attempt.runner ?? {};
+            const id = { taskId: report.taskId, runnerRunId: attempt.runnerRunId };
+            console.log(`RUNNER_DIAGNOSTIC ${JSON.stringify({
+              ...id, engine: runner.engine ?? null, state: runner.state ?? null,
+              result: runner.result ?? null, eventCounts: runner.eventCounts ?? {},
+              eventPageResetRequired: runner.eventPageResetRequired ?? null,
+              eventReadError: runner.eventReadError ?? null,
+              workerLog: runner.workerLog ? { fetched: runner.workerLog.fetched, error: runner.workerLog.error,
+                truncated: runner.workerLog.truncated, stdoutChars: runner.workerLog.stdoutChars,
+                stderrChars: runner.workerLog.stderrChars } : null,
+              savedLog: runner.savedLog ? { fetched: runner.savedLog.fetched, error: runner.savedLog.error,
+                host: runner.savedLog.host, truncated: runner.savedLog.truncated } : null,
+            })}`);
+            for (const event of runner.logEvents ?? []) console.log(`RUNNER_EVENT ${JSON.stringify({ ...id, ...event })}`);
+            for (const [source, text] of [['worker_log', runner.workerLog?.text], ['session_log', runner.savedLog?.text]]) {
+              if (typeof text !== 'string' || !text) continue;
+              const total = Math.ceil(text.length / chunkSize);
+              for (let part = 0; part < total; part += 1) {
+                console.log(`AGENT_LOG_CHUNK ${JSON.stringify({ ...id, source, part: part + 1, total,
+                  text: text.slice(part * chunkSize, (part + 1) * chunkSize) })}`);
+              }
+            }
+          }
+          NODE
+      - name: Upload one-day diagnostic report
+        if: always() && hashFiles('production-task-diagnostics.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: production-task-diagnostics
