@@ -30,6 +30,8 @@ import { validateCredentialReadyEvent, validateCredentialRequirement } from '../
 import type { CredentialCompletionRow, CredentialReadyEvent, CredentialRequirement } from '../awaiting/credential-ready';
 import {
   DEFAULT_PENDING_INPUT_DEADLINE_MS,
+  DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS,
+  DEFAULT_STALE_UNKNOWN_MAX_AGE_MS,
   DEFAULT_START_DEADLINE_MS,
   PREP_STATES,
   PRE_START_STAGES,
@@ -1109,6 +1111,161 @@ export class TaskStore {
       .bind(now)
       .all<RunAttemptRow>();
     return res.results;
+  }
+
+  /**
+   * Sweep брошенных попыток: running без runner-сессии и unknown → failed.
+   *
+   * Класс 1: running без session_id (попытка создана в CP, но workflow не
+   * дошёл до attachRunnerRun — Runner к ней не подключался). Порог:
+   * DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS (10 мин по умолчанию) от
+   * started_at.
+   *
+   * Класс 2: unknown (connection_lost). Исход неизвестен, авто-rerun нет
+   * (ARCHITECTURE §4.6). Порог: DEFAULT_STALE_UNKNOWN_MAX_AGE_MS (2 ч по
+   * умолчанию) от started_at.
+   *
+   * Generation-fence: sweep работает только с попыткой, у которой
+   * executions.generation == durable_tasks.generation. Попытка предыдущего
+   * поколения (superseded) не трогается — иначе sweep закрыл бы задачу, у
+   * которой уже идёт новая попытка.
+   *
+   * Терминальные задачи (done/failed/cancelled) не трогаются; result_json не
+   * перезаписывается (guard в commit()).
+   *
+   * Задачи, которым ответ УЖЕ ушёл в канал (delivery_state accepted/delivered),
+   * не трогаются: «исполнитель ошибся» после доставленного ответа противоречит
+   * тому, что пользователь уже видел. Их разбор — другой класс (у задачи может
+   * вообще не быть попыток).
+   *
+   * Закрытие попытки, переход задачи в failed и события — одна D1-транзакция.
+   * error_class попытки: 'stale_attempt' (running без сессии) или
+   * 'stale_unknown' (unknown), для отличимости в логах/диагностике.
+   */
+  async sweepStaleAttempts(
+    now: number = Date.now(),
+    runningNoSessionMaxAgeMs: number = DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS,
+    unknownMaxAgeMs: number = DEFAULT_STALE_UNKNOWN_MAX_AGE_MS,
+    limit = 50,
+  ): Promise<{
+    scanned: number;
+    closed: number;
+    closedTaskIds: string[];
+    skippedGeneration: number;
+    skippedTerminal: number;
+    skippedDelivered: number;
+    oldestAgeMs: number | null;
+  }> {
+    // 1. Кандидаты: running без session_id ИЛИ unknown, с возрастом > порога,
+    // только текущего поколения задачи.
+    const runningCutoff = now - runningNoSessionMaxAgeMs;
+    const unknownCutoff = now - unknownMaxAgeMs;
+
+    const res = await this.db.prepare(`
+      SELECT e.id AS attemptId, e.task_id AS taskId, e.generation, e.status, e.started_at,
+             t.status AS taskStatus, t.generation AS taskGeneration
+      FROM executions e
+      JOIN durable_tasks t ON t.id = e.task_id
+      WHERE e.generation = t.generation
+        AND (
+          (e.status = 'running' AND e.session_id IS NULL AND e.started_at < ?)
+          OR (e.status = 'unknown' AND e.started_at < ?)
+        )
+        AND t.status NOT IN (${TERMINAL_STATUS_SQL})
+        AND t.delivery_state NOT IN ('accepted', 'delivered')
+      ORDER BY e.started_at ASC
+      LIMIT ?
+    `).bind(runningCutoff, unknownCutoff, limit).all<{
+      attemptId: string;
+      taskId: string;
+      generation: number;
+      status: string;
+      started_at: number;
+      taskStatus: string;
+      taskGeneration: number;
+    }>();
+
+    const candidates = res.results;
+    let scanned = 0;
+    let closed = 0;
+    const closedTaskIds: string[] = [];
+    let skippedGeneration = 0;
+    let skippedTerminal = 0;
+    let skippedDelivered = 0;
+    let oldestAgeMs: number | null = null;
+
+    for (const c of candidates) {
+      scanned++;
+      const ageMs = now - c.started_at;
+      if (oldestAgeMs === null || ageMs > oldestAgeMs) oldestAgeMs = ageMs;
+
+      // Generation fence: попытка должна быть того же поколения, что и задача сейчас.
+      // (JOIN гарантирует это на момент SELECT, но между SELECT и UPDATE задача
+      // могла поднять поколение — повторная проверка в UPDATE guard.)
+      // Terminal guard: задача не должна стать терминальной между SELECT и UPDATE.
+
+      const errorClass = c.status === 'running' ? 'stale_attempt' : 'stale_unknown';
+      const errorText = c.status === 'running'
+        ? 'Attempt started but never left Control Plane (no runner session attached)'
+        : 'Connection lost; outcome unknown and reconciliation window exhausted';
+
+      // Атомарно: закрыть попытку + перевести задачу в failed + события.
+      //
+      // ПОРЯДОК ВАЖЕН (как в runTransition): guard каждого условия читает
+      // состояние ДО перехода. Поэтому событие task_status_changed идёт ПЕРЕД
+      // статусным апдейтом — иначе его guard «задача ещё не терминальная» уже
+      // не прошёл бы, и переход остался бы без следа в журнале. Статусный
+      // апдейт идёт последним.
+      const results = await this.db.batch([
+        // 1. Закрыть попытку. Guard — только по попытке: поколение и терминальный
+        //    статус задачи проверяются ниже, в апдейте задачи (единая транзакция).
+        this.db.prepare(
+          `UPDATE executions SET status = 'failed', finished_at = ?, error_class = ?, error_text = ?
+           WHERE id = ? AND status IN ('running', 'unknown')`
+        ).bind(now, errorClass, errorText, c.attemptId),
+        // 2. Журнал попытки: попытка закрыта. previousStatus показывает, из
+        //    какого состояния попытка вышла (unknown — исход был неизвестен).
+        this.db.prepare(
+          `INSERT INTO task_events(user_task_id, kind, generation, source, payload_json, created_at)
+           SELECT task_id, 'run_finished', generation, 'watcher', ?, ? FROM executions WHERE id = ? AND changes() = 1`
+        ).bind(JSON.stringify({ runId: c.attemptId, attemptId: c.attemptId, outcome: 'failed', previousStatus: c.status, errorClass, reason: errorText }), now, c.attemptId),
+        // 3. Журнал перехода задачи. Guard читает состояние ДО перехода в failed;
+        //    status_before берётся тем же SELECT, что и guard, — не из кэша.
+        //    Если ответ уже ушёл в канал, перехода не будет — и события перехода
+        //    тоже не будет (событие пишется только вместе с состоянием).
+        this.db.prepare(
+          `INSERT INTO task_events(user_task_id, kind, status_before, status_after, generation, source, payload_json, created_at)
+           SELECT ?, 'task_status_changed', (SELECT status FROM durable_tasks WHERE id = ?), 'failed', ?, 'watcher', ?, ?
+           WHERE EXISTS (SELECT 1 FROM durable_tasks WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}
+                           AND delivery_state NOT IN ('accepted', 'delivered'))`
+        ).bind(c.taskId, c.taskId, c.taskGeneration, JSON.stringify({ errorClass, errorText, attemptId: c.attemptId, reason: 'stale_attempt_sweep' }), now, c.taskId, c.taskGeneration),
+        // 4. Перевод задачи в failed. Generation-fence и терминальный guard —
+        //    одним условием: запись с устаревшим поколением отклоняется,
+        //    терминальная задача не перезаписывается. Ответ, ушедший в канал
+        //    между SELECT и UPDATE, тоже делает задачу нетронутой.
+        this.db.prepare(
+          `UPDATE durable_tasks SET status = 'failed', stage = 'finished', result_json = ?, updated_at = ?, revision = revision + 1
+           WHERE id = ? AND generation = ? AND ${NON_TERMINAL_SQL}
+             AND delivery_state NOT IN ('accepted', 'delivered')`
+        ).bind(JSON.stringify({ ok: false, reason: 'stale_attempt', errorClass, errorText }), now, c.taskId, c.taskGeneration),
+      ]);
+
+      // Проверяем, что UPDATE задачи прошёл (changes == 1).
+      if (results[3]!.meta.changes === 1) {
+        closed++;
+        closedTaskIds.push(c.taskId);
+      } else {
+        // Задача уже терминальная, поколение изменилось или ответ уже ушёл в
+        // канал — попытка закрыта, задача остаётся как есть.
+        const task = await this.getTask(c.taskId);
+        if (!task || isTerminalStatus(task.status)) skippedTerminal++;
+        else if (task.generation !== c.taskGeneration) skippedGeneration++;
+        else if (task.delivery_state === 'accepted' || task.delivery_state === 'delivered') skippedDelivered++;
+        // Иначе редкая гонка — игнорируем, следующий проход подхватит.
+      }
+    }
+
+    return { scanned, closed, closedTaskIds, skippedGeneration, skippedTerminal, skippedDelivered, oldestAgeMs };
   }
 
   // ------------------------------------------------- доставка (outbox, C02)

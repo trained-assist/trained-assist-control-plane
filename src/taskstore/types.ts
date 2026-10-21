@@ -375,6 +375,20 @@ export type PrepState = (typeof PREP_STATES)[number];
  */
 export const DEFAULT_PENDING_INPUT_DEADLINE_MS = 5 * 60_000;
 
+/**
+ * Максимальный возраст попытки в статусе running БЕЗ runner-сессии (session_id IS NULL).
+ * Такая попытка создана в CP, но workflow не дошёл до attachRunnerRun —
+ * Runner к ней не подключался. Исход попытки заведомо никогда не будет известен.
+ */
+export const DEFAULT_STALE_RUNNING_NO_SESSION_MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * Максимальный возраст попытки в статусе unknown (connection_lost).
+ * Исход неизвестен, авто-rerun нет (ARCHITECTURE §4.6). Когда workflow исчерпал
+ * попытки наблюдения, закрывать попытку больше некому.
+ */
+export const DEFAULT_STALE_UNKNOWN_MAX_AGE_MS = 2 * 60 * 60_000;
+
 /** Операторский алерт по инциденту «принято, но не начато» (arch#132 R4). */
 export interface StuckInputAlertRow {
   incident_id: string;
